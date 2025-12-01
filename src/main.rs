@@ -34,9 +34,9 @@ fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
         .to_string();
 
     let file = fs::File::open(input_path)
-        .with_context(|| format!("Failed to open input file: {:?}", input_path))?;
+        .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
     let mut archive =
-        ZipArchive::new(file).with_context(|| format!("Failed to read zip archive: {:?}", input_path))?;
+        ZipArchive::new(file).with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
 
     let mut gif_indices = Vec::new();
 
@@ -57,7 +57,7 @@ fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
     }
 
     let total_gifs = gif_indices.len();
-    println!("Found {} .gif files in {:?}.", total_gifs, input_path);
+    println!("Found {} .gif files in {}.", total_gifs, input_path.display());
 
     for (seq_index, &zip_index) in gif_indices.iter().enumerate() {
         let mut file = archive.by_index(zip_index)?;
@@ -70,10 +70,10 @@ fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
 
         let output_path = output_base_dir.join(output_filename);
 
-        println!("Extracting to: {:?}", output_path);
+        println!("Extracting to: {}", output_path.display());
 
         let mut outfile = fs::File::create(&output_path)
-            .with_context(|| format!("Failed to create output file: {:?}", output_path))?;
+            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
 
         io::copy(&mut file, &mut outfile)?;
     }
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
 
     if !input_path_buf.exists() {
-        anyhow::bail!("Input path does not exist: {:?}", input_path_buf);
+        anyhow::bail!("Input path does not exist: {}", input_path_buf.display());
     }
 
     if input_path_buf.is_file() {
@@ -103,7 +103,7 @@ fn main() -> Result<()> {
                         .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
                 {
                     if let Err(e) = process_file(path, &output_dir) {
-                        eprintln!("Error processing {:?}: {}", path, e);
+                        eprintln!("Error processing {}: {}", path.display(), e);
                     }
                 }
             }
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                         .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
                 {
                     if let Err(e) = process_file(&path, &output_dir) {
-                        eprintln!("Error processing {:?}: {}", path, e);
+                        eprintln!("Error processing {}: {}", path.display(), e);
                     }
                 }
             }
