@@ -6,7 +6,8 @@ This project is a Rust-based Command Line Interface (CLI) tool designed to extra
 ## Key Features
 - **Extraction:** Isolates `.gif` files from the document structure.
 - **Renaming:** Renames extracted files based on the document name (e.g., `MyDoc_1.gif`, `MyDoc_2.gif`) to avoid conflicts and maintain context.
-- **Flexible Input:** Accepts the input file path as either a positional argument or a named flag (`--input`).
+- **Flexible Input:** Accepts the input file path as either a positional argument or a named flag (`--input`). Supports both single files and directories.
+- **Recursive Scan:** Optionally searches directories recursively for `.docx` files.
 - **Standalone:** Compiled as a static binary for easy distribution without runtime dependencies.
 
 ## Tech Stack
@@ -15,6 +16,7 @@ This project is a Rust-based Command Line Interface (CLI) tool designed to extra
     - `clap`: For robust command-line argument parsing.
     - `zip`: For reading and traversing the `.docx` archive structure.
     - `anyhow`: For flexible error handling.
+    - `walkdir`: For recursive directory traversal.
 
 ## Building and Running
 
@@ -37,17 +39,27 @@ word-gif-extractor.exe [OPTIONS] [INPUT_POS]
 ```
 
 **Examples:**
-1. **Positional Input:**
+1. **Positional Input (File):**
    ```bash
    word-gif-extractor.exe "path/to/document.docx"
    ```
 
-2. **Named Input Flag:**
+2. **Positional Input (Directory):**
+   ```bash
+   word-gif-extractor.exe "path/to/documents_folder"
+   ```
+
+3. **Recursive Directory Scan:**
+   ```bash
+   word-gif-extractor.exe "path/to/documents_folder" --recursive
+   ```
+
+4. **Named Input Flag:**
    ```bash
    word-gif-extractor.exe --input "path/to/document.docx"
    ```
 
-3. **Specifying Output Directory:**
+5. **Specifying Output Directory:**
    ```bash
    word-gif-extractor.exe "path/to/document.docx" --output "path/to/output/folder"
    ```
