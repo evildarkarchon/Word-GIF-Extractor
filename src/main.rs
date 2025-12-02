@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,9 +25,39 @@ struct Args {
     /// Recursively search for .docx files if input is a directory
     #[arg(short, long)]
     recursive: bool,
+
+    /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
+    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    formats: Option<Vec<String>>,
 }
 
-fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
+fn get_supported_extensions() -> HashSet<&'static str> {
+    HashSet::from([
+        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "svg", "wmf", "emf", "webp", "ico",
+    ])
+}
+
+fn normalize_format(fmt: &str) -> Vec<&'static str> {
+    match fmt.trim().to_lowercase().as_str() {
+        "jpg" | "jpeg" => vec!["jpg", "jpeg"],
+        "png" => vec!["png"],
+        "gif" => vec!["gif"],
+        "bmp" => vec!["bmp"],
+        "tiff" | "tif" => vec!["tiff", "tif"],
+        "svg" => vec!["svg"],
+        "wmf" => vec!["wmf"],
+        "emf" => vec!["emf"],
+        "webp" => vec!["webp"],
+        "ico" => vec!["ico"],
+        _ => vec![],
+    }
+}
+
+fn process_file(
+    input_path: &Path,
+    output_base_dir: &Path,
+    allowed_extensions: &HashSet<&str>,
+) -> Result<()> {
     let doc_name = input_path
         .file_stem()
         .context("Invalid filename")?
@@ -35,20 +66,32 @@ fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
 
     let file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
-    let mut archive =
-        ZipArchive::new(file).with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
 
-    let mut gif_indices = Vec::new();
+    struct ImageToExtract {
+        index: usize,
+        extension: String,
+    }
+
+    let mut images: Vec<ImageToExtract> = Vec::new();
 
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
         let name = file.name();
-        if name.to_lowercase().ends_with(".gif") {
-            gif_indices.push(i);
+        // Check if file has an extension and if it's in our allowed list
+        if let Some(ext) = Path::new(name).extension().and_then(|e| e.to_str()) {
+            let ext_lower = ext.to_lowercase();
+            if allowed_extensions.contains(ext_lower.as_str()) {
+                images.push(ImageToExtract {
+                    index: i,
+                    extension: ext_lower,
+                });
+            }
         }
     }
 
-    if gif_indices.is_empty() {
+    if images.is_empty() {
         return Ok(());
     }
 
@@ -56,16 +99,20 @@ fn process_file(input_path: &Path, output_base_dir: &Path) -> Result<()> {
         fs::create_dir_all(&output_base_dir).context("Failed to create output directory")?;
     }
 
-    let total_gifs = gif_indices.len();
-    println!("Found {} .gif files in {}.", total_gifs, input_path.display());
+    let total_images = images.len();
+    println!(
+        "Found {} image files in {}.",
+        total_images,
+        input_path.display()
+    );
 
-    for (seq_index, &zip_index) in gif_indices.iter().enumerate() {
-        let mut file = archive.by_index(zip_index)?;
+    for (seq_index, image) in images.iter().enumerate() {
+        let mut file = archive.by_index(image.index)?;
 
-        let output_filename = if total_gifs > 1 {
-            format!("{}_{}.gif", doc_name, seq_index + 1)
+        let output_filename = if total_images > 1 {
+            format!("{}_{}.{}", doc_name, seq_index + 1, image.extension)
         } else {
-            format!("{}.gif", doc_name)
+            format!("{}.{}", doc_name, image.extension)
         };
 
         let output_path = output_base_dir.join(output_filename);
@@ -87,12 +134,28 @@ fn main() -> Result<()> {
     let input_path_buf = args.input.or(args.input_pos).unwrap();
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
 
+    // Determine allowed extensions
+    let mut target_extensions = HashSet::new();
+    if let Some(formats) = &args.formats {
+        for fmt in formats {
+            let normalized = normalize_format(fmt);
+            for ext in normalized {
+                target_extensions.insert(ext);
+            }
+        }
+    }
+
+    // Fallback if empty or no formats specified
+    if target_extensions.is_empty() {
+        target_extensions = get_supported_extensions();
+    }
+
     if !input_path_buf.exists() {
         anyhow::bail!("Input path does not exist: {}", input_path_buf.display());
     }
 
     if input_path_buf.is_file() {
-        process_file(&input_path_buf, &output_dir)?;
+        process_file(&input_path_buf, &output_dir, &target_extensions)?;
     } else if input_path_buf.is_dir() {
         if args.recursive {
             for entry in WalkDir::new(&input_path_buf).into_iter().filter_map(|e| e.ok()) {
@@ -102,7 +165,7 @@ fn main() -> Result<()> {
                         .extension()
                         .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
                 {
-                    if let Err(e) = process_file(path, &output_dir) {
+                    if let Err(e) = process_file(path, &output_dir, &target_extensions) {
                         eprintln!("Error processing {}: {}", path.display(), e);
                     }
                 }
@@ -116,7 +179,7 @@ fn main() -> Result<()> {
                         .extension()
                         .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
                 {
-                    if let Err(e) = process_file(&path, &output_dir) {
+                    if let Err(e) = process_file(&path, &output_dir, &target_extensions) {
                         eprintln!("Error processing {}: {}", path.display(), e);
                     }
                 }

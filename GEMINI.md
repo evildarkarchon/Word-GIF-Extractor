@@ -1,70 +1,74 @@
-# Word-GIF-Extractor
+# Word-GIF-Extractor (word-image-extractor)
+
+A Rust CLI utility designed to extract image files (including GIFs) directly from Microsoft Word (`.docx`) documents. It operates by treating the `.docx` file as a ZIP archive, allowing for efficient extraction without needing Microsoft Office installed.
 
 ## Project Overview
-This project is a Rust-based Command Line Interface (CLI) tool designed to extract `.gif` images from Microsoft Word (`.docx`) documents. It treats the `.docx` file as a ZIP archive, iterates through its contents, and extracts any files ending in `.gif`.
 
-## Key Features
-- **Extraction:** Isolates `.gif` files from the document structure.
-- **Renaming:** Renames extracted files based on the document name (e.g., `MyDoc_1.gif`, `MyDoc_2.gif`) to avoid conflicts and maintain context.
-- **Flexible Input:** Accepts the input file path as either a positional argument or a named flag (`--input`). Supports both single files and directories.
-- **Recursive Scan:** Optionally searches directories recursively for `.docx` files.
-- **Standalone:** Compiled as a static binary for easy distribution without runtime dependencies.
+*   **Language:** Rust
+*   **Main File:** `src/main.rs`
+*   **Key Dependencies:**
+    *   `zip`: For reading the internal structure of `.docx` files.
+    *   `clap`: For command-line argument parsing.
+    *   `walkdir`: For recursive directory traversal.
+    *   `anyhow`: For robust error handling.
 
-## Tech Stack
-- **Language:** Rust (Edition 2021)
-- **Dependencies:**
-    - `clap`: For robust command-line argument parsing.
-    - `zip`: For reading and traversing the `.docx` archive structure.
-    - `anyhow`: For flexible error handling.
-    - `walkdir`: For recursive directory traversal.
-
-## Building and Running
+## Getting Started
 
 ### Prerequisites
-- Rust toolchain installed (`cargo`, `rustc`).
 
-### Build Command
-To build the release binary (optimized):
+*   **Rust Toolchain:** Ensure you have Rust and Cargo installed.
+
+### Building the Project
+
+To build the project for release (optimized binary):
+
 ```bash
 cargo build --release
 ```
-The executable will be located at `target/release/word-gif-extractor.exe`.
 
-### Usage
-The tool can be run directly via `cargo` or by executing the compiled binary.
+The resulting binary will be located at `target/release/word-image-extractor.exe`.
 
-**Syntax:**
+### Running the Application
+
+You can run the tool directly using `cargo run`:
+
+**Basic Usage (Single File):**
 ```bash
-word-gif-extractor.exe [OPTIONS] [INPUT_POS]
+cargo run -- "path/to/document.docx"
 ```
 
-**Examples:**
-1. **Positional Input (File):**
-   ```bash
-   word-gif-extractor.exe "path/to/document.docx"
-   ```
+**Specify Output Directory:**
+```bash
+cargo run -- "document.docx" --output "extracted_images/"
+```
 
-2. **Positional Input (Directory):**
-   ```bash
-   word-gif-extractor.exe "path/to/documents_folder"
-   ```
+**Process a Directory of Files:**
+```bash
+cargo run -- "path/to/folder"
+```
 
-3. **Recursive Directory Scan:**
-   ```bash
-   word-gif-extractor.exe "path/to/documents_folder" --recursive
-   ```
+**Recursive Directory Scan:**
+```bash
+cargo run -- "path/to/folder" --recursive
+```
 
-4. **Named Input Flag:**
-   ```bash
-   word-gif-extractor.exe --input "path/to/document.docx"
-   ```
+**Filter by Image Format:**
+Only extract specific formats (e.g., only PNGs and GIFs):
+```bash
+cargo run -- "document.docx" --formats png,gif
+```
 
-5. **Specifying Output Directory:**
-   ```bash
-   word-gif-extractor.exe "path/to/document.docx" --output "path/to/output/folder"
-   ```
+### Testing
+
+Run the standard Rust test suite:
+
+```bash
+cargo test
+```
 
 ## Development Conventions
-- **Error Handling:** Uses `anyhow::Result` for main function return types to provide clean error output.
-- **Argument Parsing:** Uses `clap` with struct derivation (`#[derive(Parser)]`).
-- **File Operations:** Standard library `std::fs` and `std::path` are used for file system interactions.
+
+*   **Argument Parsing:** The project uses `clap` with the `derive` feature. All CLI arguments are defined in the `Args` struct in `src/main.rs`.
+*   **Error Handling:** `anyhow` is used for error propagation. Functions that interact with the filesystem or ZIP archives return `Result<()>`.
+*   **File Processing:** The core logic resides in `process_file`, which handles opening the ZIP, iterating through entries, checking extensions against a whitelist, and writing the output.
+*   **Extensions:** Supported extensions are defined in `get_supported_extensions()` and include: `jpg`, `jpeg`, `png`, `gif`, `bmp`, `tiff`, `tif`, `svg`, `wmf`, `emf`, `webp`, `ico`.

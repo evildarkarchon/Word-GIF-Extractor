@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Rust CLI tool that extracts GIF files from Microsoft Word (.docx) documents by treating them as ZIP archives.
+A Rust CLI tool that extracts image files from Microsoft Word (.docx) documents by treating them as ZIP archives. Supports multiple image formats: jpg, jpeg, png, gif, bmp, tiff, svg, wmf, emf, webp, ico.
 
 ## Build Commands
 
@@ -16,22 +16,33 @@ cargo build --release
 cargo run -- "path/to/document.docx"
 cargo run -- --input "path/to/document.docx" --output "output/folder"
 
-# Run tests (if any)
+# Process a directory of .docx files
+cargo run -- "path/to/folder"
+
+# Recursive directory processing
+cargo run -- "path/to/folder" -r
+
+# Filter by format (comma-separated)
+cargo run -- "document.docx" -f png,gif
+
+# Run tests
 cargo test
 ```
 
-The release binary is output to `target/release/word-gif-extractor.exe`.
+The release binary is output to `target/release/word-image-extractor.exe`.
 
 ## Architecture
 
 Single-file application (`src/main.rs`) with straightforward flow:
 1. Parse CLI arguments with `clap` (supports positional or `--input` flag)
-2. Open .docx file as a ZIP archive
-3. Scan for files ending in `.gif`
-4. Extract GIFs to output directory, renamed as `{docname}_{n}.gif`
+2. Determine target image extensions (all supported or user-filtered via `-f`)
+3. If input is a file: process it directly; if directory: iterate over .docx files (optionally recursive with `-r`)
+4. Open each .docx as a ZIP archive and scan for matching image extensions
+5. Extract images to output directory, renamed as `{docname}_{n}.{ext}` (or `{docname}.{ext}` if only one)
 
 ## Dependencies
 
 - **zip**: Archive traversal for .docx files
 - **clap**: CLI argument parsing with derive macros
 - **anyhow**: Error handling with context
+- **walkdir**: Recursive directory traversal
