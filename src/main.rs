@@ -177,7 +177,10 @@ fn main() -> Result<()> {
         process_file(&input_path_buf, &output_dir, &target_extensions)?;
     } else if input_path_buf.is_dir() {
         if args.recursive {
-            for entry in WalkDir::new(&input_path_buf).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(&input_path_buf)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
                 let path = entry.path();
                 if path.is_file()
                     && path
