@@ -115,7 +115,26 @@ fn process_file(
             format!("{}.{}", doc_name, image.extension)
         };
 
-        let output_path = output_base_dir.join(output_filename);
+        let mut output_path = output_base_dir.join(output_filename);
+
+        while output_path.exists() {
+            let stem = output_path
+                .file_stem()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default();
+            let ext = output_path
+                .extension()
+                .map(|s| s.to_string_lossy())
+                .unwrap_or_default();
+
+            let new_filename = if ext.is_empty() {
+                format!("{}_copy", stem)
+            } else {
+                format!("{}_copy.{}", stem, ext)
+            };
+
+            output_path.set_file_name(new_filename);
+        }
 
         println!("Extracting to: {}", output_path.display());
 
