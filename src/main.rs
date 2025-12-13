@@ -38,7 +38,8 @@ fn get_supported_extensions() -> HashSet<&'static str> {
 }
 
 fn normalize_format(fmt: &str) -> Vec<&'static str> {
-    match fmt.trim().to_lowercase().as_str() {
+    let fmt_lower = fmt.trim().to_lowercase();
+    match fmt_lower.as_str() {
         "jpg" | "jpeg" => vec!["jpg", "jpeg"],
         "png" => vec!["png"],
         "gif" => vec!["gif"],
@@ -49,15 +50,20 @@ fn normalize_format(fmt: &str) -> Vec<&'static str> {
         "emf" => vec!["emf"],
         "webp" => vec!["webp"],
         "ico" => vec!["ico"],
-        _ => vec![],
+        _ => {
+            eprintln!("Warning: Unrecognized format '{}' ignored", fmt.trim());
+            vec![]
+        }
     }
 }
 
+/// Processes a single .docx file, extracting images matching the allowed extensions.
+/// Returns the number of images extracted.
 fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
-) -> Result<()> {
+) -> Result<usize> {
     let doc_name = input_path
         .file_stem()
         .context("Invalid filename")?
@@ -79,6 +85,12 @@ fn process_file(
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
         let name = file.name();
+
+        // Defense-in-depth: skip entries with path traversal patterns
+        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
+            continue;
+        }
+
         // Check if file has an extension and if it's in our allowed list
         if let Some(ext) = Path::new(name).extension().and_then(|e| e.to_str()) {
             let ext_lower = ext.to_lowercase();
@@ -92,11 +104,11 @@ fn process_file(
     }
 
     if images.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     if !output_base_dir.exists() {
-        fs::create_dir_all(&output_base_dir).context("Failed to create output directory")?;
+        fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
     }
 
     let total_images = images.len();
@@ -117,34 +129,49 @@ fn process_file(
 
         let mut output_path = output_base_dir.join(output_filename);
 
-        while output_path.exists() {
-            let stem = output_path
+        // Counter-based approach to avoid infinite loops and produce cleaner filenames
+        if output_path.exists() {
+            let base_stem = output_path
                 .file_stem()
-                .map(|s| s.to_string_lossy())
+                .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let ext = output_path
+            let base_ext = output_path
                 .extension()
-                .map(|s| s.to_string_lossy())
+                .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            let new_filename = if ext.is_empty() {
-                format!("{}_copy", stem)
-            } else {
-                format!("{}_copy.{}", stem, ext)
-            };
+            let mut counter = 0u32;
+            const MAX_ATTEMPTS: u32 = 1000;
 
-            output_path.set_file_name(new_filename);
+            while output_path.exists() {
+                counter += 1;
+                if counter > MAX_ATTEMPTS {
+                    anyhow::bail!(
+                        "Could not find unique filename after {} attempts for {}",
+                        MAX_ATTEMPTS,
+                        base_stem
+                    );
+                }
+                let new_filename = if base_ext.is_empty() {
+                    format!("{}_{}", base_stem, counter)
+                } else {
+                    format!("{}_{}.{}", base_stem, counter, base_ext)
+                };
+                output_path.set_file_name(new_filename);
+            }
         }
 
         println!("Extracting to: {}", output_path.display());
 
-        let mut outfile = fs::File::create(&output_path)
+        let outfile = fs::File::create(&output_path)
             .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+        let mut outfile = io::BufWriter::new(outfile);
 
-        io::copy(&mut file, &mut outfile)?;
+        io::copy(&mut file, &mut outfile)
+            .with_context(|| format!("Failed to write image data to {}", output_path.display()))?;
     }
 
-    Ok(())
+    Ok(total_images)
 }
 
 fn main() -> Result<()> {
@@ -173,8 +200,19 @@ fn main() -> Result<()> {
         anyhow::bail!("Input path does not exist: {}", input_path_buf.display());
     }
 
+    let mut total_images = 0usize;
+    let mut total_documents = 0usize;
+
     if input_path_buf.is_file() {
-        process_file(&input_path_buf, &output_dir, &target_extensions)?;
+        match process_file(&input_path_buf, &output_dir, &target_extensions) {
+            Ok(count) => {
+                total_images += count;
+                if count > 0 {
+                    total_documents += 1;
+                }
+            }
+            Err(e) => return Err(e),
+        }
     } else if input_path_buf.is_dir() {
         if args.recursive {
             for entry in WalkDir::new(&input_path_buf)
@@ -185,10 +223,16 @@ fn main() -> Result<()> {
                 if path.is_file()
                     && path
                         .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("docx"))
                 {
-                    if let Err(e) = process_file(path, &output_dir, &target_extensions) {
-                        eprintln!("Error processing {}: {}", path.display(), e);
+                    match process_file(path, &output_dir, &target_extensions) {
+                        Ok(count) => {
+                            total_images += count;
+                            if count > 0 {
+                                total_documents += 1;
+                            }
+                        }
+                        Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
                     }
                 }
             }
@@ -199,17 +243,30 @@ fn main() -> Result<()> {
                 if path.is_file()
                     && path
                         .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("docx"))
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("docx"))
                 {
-                    if let Err(e) = process_file(&path, &output_dir, &target_extensions) {
-                        eprintln!("Error processing {}: {}", path.display(), e);
+                    match process_file(&path, &output_dir, &target_extensions) {
+                        Ok(count) => {
+                            total_images += count;
+                            if count > 0 {
+                                total_documents += 1;
+                            }
+                        }
+                        Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
                     }
                 }
             }
         }
     }
 
-    println!("Processing complete!");
+    if total_images > 0 {
+        println!(
+            "Processing complete! Extracted {} images from {} document(s).",
+            total_images, total_documents
+        );
+    } else {
+        println!("Processing complete! No images found.");
+    }
 
     Ok(())
 }
