@@ -107,12 +107,14 @@ pub fn get_unique_output_path(
 /// Writes image data to a file
 pub fn write_image_to_file(output_path: &Path, data: &[u8]) -> anyhow::Result<()> {
     use anyhow::Context;
+    use io::Write;
 
     let outfile = fs::File::create(output_path)
         .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
     let mut outfile = io::BufWriter::new(outfile);
 
-    io::copy(&mut data.as_ref(), &mut outfile)
+    outfile
+        .write_all(data)
         .with_context(|| format!("Failed to write image data to {}", output_path.display()))?;
 
     Ok(())
