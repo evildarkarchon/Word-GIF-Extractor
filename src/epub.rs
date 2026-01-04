@@ -32,11 +32,13 @@ struct EpubImage {
 
 /// Processes a single .epub file, extracting images matching the allowed extensions.
 /// Uses author and title metadata for naming, falling back to filename.
+/// If cover_only is true, only extracts the cover image.
 /// Returns the number of images extracted.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
+    cover_only: bool,
 ) -> Result<usize> {
     let fallback_name = input_path
         .file_stem()
@@ -52,6 +54,24 @@ pub fn process_file(
     let author = doc.mdata("creator").map(|m| m.value.clone()); // 'creator' is the Dublin Core element for author
 
     let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
+
+    // Print metadata info
+    if let Some(ref t) = title {
+        println!("EPUB Title: {}", t);
+    }
+    if let Some(ref a) = author {
+        println!("EPUB Author: {}", a);
+    }
+
+    if cover_only {
+        return extract_cover_only(
+            &mut doc,
+            output_base_dir,
+            &base_name,
+            allowed_extensions,
+            input_path,
+        );
+    }
 
     // Collect images from resources
     // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
@@ -98,13 +118,6 @@ pub fn process_file(
 
     let total_images = images.len();
 
-    // Print metadata info
-    if let Some(ref t) = title {
-        println!("EPUB Title: {}", t);
-    }
-    if let Some(ref a) = author {
-        println!("EPUB Author: {}", a);
-    }
     println!(
         "Found {} image files in {}.",
         total_images,
@@ -131,6 +144,57 @@ pub fn process_file(
     }
 
     Ok(total_images)
+}
+
+/// Extracts only the cover image from an EPUB file
+fn extract_cover_only(
+    doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
+    output_base_dir: &Path,
+    base_name: &str,
+    allowed_extensions: &HashSet<&str>,
+    input_path: &Path,
+) -> Result<usize> {
+    // Try to get the cover image using the epub crate's get_cover method
+    let cover = doc.get_cover();
+
+    match cover {
+        Some((data, mime)) => {
+            // Determine the extension from the MIME type
+            let extension = mime_to_extension(&mime).unwrap_or_else(|| "jpg".to_string());
+
+            // Check if this extension is in our allowed list
+            if !allowed_extensions.contains(extension.as_str()) {
+                println!(
+                    "Cover image format '{}' not in allowed formats, skipping.",
+                    extension
+                );
+                return Ok(0);
+            }
+
+            if !output_base_dir.exists() {
+                fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
+            }
+
+            // Use "_cover" suffix to distinguish from regular extraction
+            let cover_name = format!("{}_cover", base_name);
+            let output_path =
+                get_unique_output_path(output_base_dir, &cover_name, 0, 1, &extension)?;
+
+            println!(
+                "Extracting cover from {} to: {}",
+                input_path.display(),
+                output_path.display()
+            );
+
+            write_image_to_file(&output_path, &data)?;
+
+            Ok(1)
+        }
+        None => {
+            println!("No cover image found in {}", input_path.display());
+            Ok(0)
+        }
+    }
 }
 
 /// Converts a MIME type to a file extension

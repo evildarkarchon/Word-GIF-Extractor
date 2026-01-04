@@ -33,6 +33,10 @@ struct Args {
     /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
     #[arg(short, long, value_delimiter = ',', num_args = 0..)]
     formats: Option<Vec<String>>,
+
+    /// Extract only cover image from EPUB files
+    #[arg(short = 'c', long)]
+    cover_only: bool,
 }
 
 /// Supported document types
@@ -64,13 +68,14 @@ fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
+    cover_only: bool,
 ) -> Result<usize> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
             docx::process_file(input_path, output_base_dir, allowed_extensions)
         }
         Some(DocumentType::Epub) => {
-            epub::process_file(input_path, output_base_dir, allowed_extensions)
+            epub::process_file(input_path, output_base_dir, allowed_extensions, cover_only)
         }
         None => {
             anyhow::bail!(
@@ -111,7 +116,12 @@ fn main() -> Result<()> {
     let mut total_documents = 0usize;
 
     if input_path_buf.is_file() {
-        match process_file(&input_path_buf, &output_dir, &target_extensions) {
+        match process_file(
+            &input_path_buf,
+            &output_dir,
+            &target_extensions,
+            args.cover_only,
+        ) {
             Ok(count) => {
                 total_images += count;
                 if count > 0 {
@@ -128,7 +138,7 @@ fn main() -> Result<()> {
             {
                 let path = entry.path();
                 if path.is_file() && is_supported_document(path) {
-                    match process_file(path, &output_dir, &target_extensions) {
+                    match process_file(path, &output_dir, &target_extensions, args.cover_only) {
                         Ok(count) => {
                             total_images += count;
                             if count > 0 {
@@ -144,7 +154,7 @@ fn main() -> Result<()> {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_file() && is_supported_document(&path) {
-                    match process_file(&path, &output_dir, &target_extensions) {
+                    match process_file(&path, &output_dir, &target_extensions, args.cover_only) {
                         Ok(count) => {
                             total_images += count;
                             if count > 0 {

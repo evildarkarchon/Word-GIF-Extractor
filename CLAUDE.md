@@ -25,6 +25,10 @@ cargo run -- "path/to/folder" -r
 # Filter by format (comma-separated)
 cargo run -- "document.docx" -f png,gif
 
+# Extract only cover images from EPUB files
+cargo run -- "book.epub" -c
+cargo run -- "path/to/epubs" -r --cover-only
+
 # Run tests
 cargo test
 ```
