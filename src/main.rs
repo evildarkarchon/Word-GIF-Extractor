@@ -1,3 +1,8 @@
+//! Word Image Extractor - A CLI tool for extracting images from DOCX and EPUB files.
+//!
+//! This tool treats DOCX and EPUB files as ZIP archives and extracts image files
+//! matching specified formats.
+
 mod common;
 mod docx;
 mod epub;
@@ -132,10 +137,14 @@ fn main() -> Result<()> {
         }
     } else if input_path_buf.is_dir() {
         if args.recursive {
-            for entry in WalkDir::new(&input_path_buf)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            for entry in WalkDir::new(&input_path_buf) {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!("Warning: Could not access path: {}", e);
+                        continue;
+                    }
+                };
                 let path = entry.path();
                 if path.is_file() && is_supported_document(path) {
                     match process_file(path, &output_dir, &target_extensions, args.cover_only) {

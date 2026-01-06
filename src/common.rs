@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 /// Returns the set of supported image file extensions
@@ -33,6 +33,38 @@ pub fn normalize_format(fmt: &str) -> Vec<&'static str> {
     }
 }
 
+/// Validates that an archive entry path is safe (no path traversal attacks)
+///
+/// Returns `true` if the path is safe, `false` if it contains potentially malicious patterns.
+/// Checks for: null bytes, path traversal (..), absolute paths, Windows drive letters,
+/// and Windows alternate data streams.
+pub fn is_safe_archive_path(name: &str) -> bool {
+    // Reject null bytes
+    if name.contains('\0') {
+        return false;
+    }
+    // Reject path traversal
+    if name.contains("..") {
+        return false;
+    }
+    // Reject absolute paths (Unix-style)
+    if name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+    // Reject Windows drive letters (e.g., "C:\path")
+    if name.len() >= 2 {
+        let chars: Vec<char> = name.chars().take(2).collect();
+        if chars[0].is_ascii_alphabetic() && chars[1] == ':' {
+            return false;
+        }
+    }
+    // Reject Windows alternate data streams
+    if name.contains("::") {
+        return false;
+    }
+    true
+}
+
 /// Sanitizes a string to be safe for use as a filename
 /// Replaces invalid characters with underscores
 pub fn sanitize_filename(name: &str) -> String {
@@ -47,9 +79,12 @@ pub fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-/// Struct representing an image to be extracted
+/// Represents an image file found within an archive, pending extraction.
+#[derive(Debug, Clone)]
 pub struct ImageToExtract {
+    /// Index of the file within the archive
     pub index: usize,
+    /// Lowercase file extension (without the dot)
     pub extension: String,
 }
 
@@ -107,7 +142,6 @@ pub fn get_unique_output_path(
 /// Writes image data to a file
 pub fn write_image_to_file(output_path: &Path, data: &[u8]) -> anyhow::Result<()> {
     use anyhow::Context;
-    use io::Write;
 
     let outfile = fs::File::create(output_path)
         .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
@@ -116,6 +150,10 @@ pub fn write_image_to_file(output_path: &Path, data: &[u8]) -> anyhow::Result<()
     outfile
         .write_all(data)
         .with_context(|| format!("Failed to write image data to {}", output_path.display()))?;
+
+    outfile
+        .flush()
+        .with_context(|| format!("Failed to flush data to {}", output_path.display()))?;
 
     Ok(())
 }
@@ -150,5 +188,42 @@ mod tests {
         assert!(exts.contains("png"));
         assert!(exts.contains("gif"));
         assert!(!exts.contains("pdf"));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_valid() {
+        assert!(is_safe_archive_path("word/media/image1.png"));
+        assert!(is_safe_archive_path("image.jpg"));
+        assert!(is_safe_archive_path("nested/folder/file.gif"));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_traversal() {
+        assert!(!is_safe_archive_path("../etc/passwd"));
+        assert!(!is_safe_archive_path("foo/../bar"));
+        assert!(!is_safe_archive_path(".."));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_absolute() {
+        assert!(!is_safe_archive_path("/etc/passwd"));
+        assert!(!is_safe_archive_path("\\Windows\\System32"));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_windows_drive() {
+        assert!(!is_safe_archive_path("C:\\Windows\\System32\\calc.exe"));
+        assert!(!is_safe_archive_path("D:file.txt"));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_null_byte() {
+        assert!(!is_safe_archive_path("file\0.txt"));
+    }
+
+    #[test]
+    fn test_is_safe_archive_path_alternate_data_stream() {
+        assert!(!is_safe_archive_path("file.txt::$DATA"));
+        assert!(!is_safe_archive_path("file::stream"));
     }
 }

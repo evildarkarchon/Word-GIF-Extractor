@@ -3,11 +3,11 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
 
-use crate::common::{ImageToExtract, get_unique_output_path};
+use crate::common::{get_unique_output_path, is_safe_archive_path, write_image_to_file, ImageToExtract};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
 /// Returns the number of images extracted.
@@ -34,7 +34,7 @@ pub fn process_file(
         let name = file.name();
 
         // Defense-in-depth: skip entries with path traversal patterns
-        if name.contains("..") || name.starts_with('/') || name.starts_with('\\') {
+        if !is_safe_archive_path(name) {
             continue;
         }
 
@@ -54,9 +54,8 @@ pub fn process_file(
         return Ok(0);
     }
 
-    if !output_base_dir.exists() {
-        fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
-    }
+    // create_dir_all is idempotent - succeeds if directory exists
+    fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
 
     let total_images = images.len();
     println!(
@@ -78,12 +77,12 @@ pub fn process_file(
 
         println!("Extracting to: {}", output_path.display());
 
-        let outfile = fs::File::create(&output_path)
-            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
-        let mut outfile = io::BufWriter::new(outfile);
+        // Read archive entry into memory and use shared write function
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .context("Failed to read image from archive")?;
 
-        io::copy(&mut file, &mut outfile)
-            .with_context(|| format!("Failed to write image data to {}", output_path.display()))?;
+        write_image_to_file(&output_path, &data)?;
     }
 
     Ok(total_images)

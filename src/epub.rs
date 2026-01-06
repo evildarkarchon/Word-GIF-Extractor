@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use crate::common::{get_unique_output_path, sanitize_filename, write_image_to_file};
+use crate::common::{
+    get_unique_output_path, is_safe_archive_path, sanitize_filename, write_image_to_file,
+};
 
 /// Formats a filename based on EPUB metadata (author and title)
 /// Falls back to the provided fallback name if metadata is missing
@@ -81,7 +83,18 @@ pub fn process_file(
     let resources: Vec<(String, String)> = doc
         .resources
         .iter()
-        .map(|(id, item)| {
+        .filter_map(|(id, item)| {
+            // Defense-in-depth: validate resource paths
+            let path_str = item.path.to_string_lossy();
+            if !is_safe_archive_path(&path_str) {
+                return None;
+            }
+
+            // Only keep images
+            if !item.mime.starts_with("image/") {
+                return None;
+            }
+
             // Try to get extension from path first, then from mime
             let ext = item
                 .path
@@ -89,15 +102,8 @@ pub fn process_file(
                 .and_then(|e| e.to_str())
                 .map(|s| s.to_lowercase())
                 .or_else(|| mime_to_extension(&item.mime));
-            (id.clone(), item.mime.clone(), ext)
-        })
-        .filter_map(|(id, mime, ext)| {
-            // Only keep images
-            if mime.starts_with("image/") {
-                ext.map(|e| (id, e))
-            } else {
-                None
-            }
+
+            ext.map(|e| (id.clone(), e))
         })
         .collect::<Vec<(String, String)>>();
 
@@ -112,9 +118,8 @@ pub fn process_file(
         return Ok(0);
     }
 
-    if !output_base_dir.exists() {
-        fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
-    }
+    // create_dir_all is idempotent - succeeds if directory exists
+    fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
 
     let total_images = images.len();
 
@@ -171,14 +176,11 @@ fn extract_cover_only(
                 return Ok(0);
             }
 
-            if !output_base_dir.exists() {
-                fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
-            }
+            // create_dir_all is idempotent - succeeds if directory exists
+            fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
 
-            // Use "_cover" suffix to distinguish from regular extraction
-            let cover_name = format!("{}_cover", base_name);
-            let output_path =
-                get_unique_output_path(output_base_dir, &cover_name, 0, 1, &extension)?;
+            // Use just the base name (author/title) for cover-only mode
+            let output_path = get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
 
             println!(
                 "Extracting cover from {} to: {}",
