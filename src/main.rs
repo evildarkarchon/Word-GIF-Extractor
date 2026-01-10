@@ -19,13 +19,12 @@ use common::{get_supported_extensions, normalize_format};
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
 struct Args {
-    /// Path to the input .docx/.epub file or directory
-    #[arg(short, long, required_unless_present = "input_pos")]
-    input: Option<PathBuf>,
+    /// Paths to input .docx/.epub files or directories (positional)
+    inputs: Vec<PathBuf>,
 
-    /// Path to the input .docx/.epub file or directory
-    #[arg(required_unless_present = "input")]
-    input_pos: Option<PathBuf>,
+    /// Paths to input .docx/.epub files or directories (named)
+    #[arg(short = 'i', long = "input", num_args = 1..)]
+    named_inputs: Vec<PathBuf>,
 
     /// Optional output directory (defaults to current directory)
     #[arg(short, long)]
@@ -42,6 +41,10 @@ struct Args {
     /// Extract only cover image from EPUB files
     #[arg(short = 'c', long)]
     cover_only: bool,
+
+    /// Fallback to extracting all images if cover not found (EPUB only, requires --cover-only)
+    #[arg(long, requires = "cover_only")]
+    cover_fallback: bool,
 }
 
 /// Supported document types
@@ -74,13 +77,14 @@ fn process_file(
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
     cover_only: bool,
+    cover_fallback: bool,
 ) -> Result<usize> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
             docx::process_file(input_path, output_base_dir, allowed_extensions)
         }
         Some(DocumentType::Epub) => {
-            epub::process_file(input_path, output_base_dir, allowed_extensions, cover_only)
+            epub::process_file(input_path, output_base_dir, allowed_extensions, cover_only, cover_fallback)
         }
         None => {
             anyhow::bail!(
@@ -94,7 +98,13 @@ fn process_file(
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let input_path_buf = args.input.or(args.input_pos).unwrap();
+    // Combine positional and named inputs
+    let all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
+
+    if all_inputs.is_empty() {
+        anyhow::bail!("At least one input path is required");
+    }
+
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
 
     // Determine allowed extensions
@@ -113,64 +123,81 @@ fn main() -> Result<()> {
         target_extensions = get_supported_extensions();
     }
 
-    if !input_path_buf.exists() {
-        anyhow::bail!("Input path does not exist: {}", input_path_buf.display());
-    }
-
     let mut total_images = 0usize;
     let mut total_documents = 0usize;
 
-    if input_path_buf.is_file() {
-        match process_file(
-            &input_path_buf,
-            &output_dir,
-            &target_extensions,
-            args.cover_only,
-        ) {
-            Ok(count) => {
-                total_images += count;
-                if count > 0 {
-                    total_documents += 1;
-                }
-            }
-            Err(e) => return Err(e),
+    for input_path_buf in &all_inputs {
+        if !input_path_buf.exists() {
+            eprintln!("Warning: Input path does not exist: {}", input_path_buf.display());
+            continue;
         }
-    } else if input_path_buf.is_dir() {
-        if args.recursive {
-            for entry in WalkDir::new(&input_path_buf) {
-                let entry = match entry {
-                    Ok(e) => e,
+
+        if input_path_buf.is_file() {
+            match process_file(
+                input_path_buf,
+                &output_dir,
+                &target_extensions,
+                args.cover_only,
+                args.cover_fallback,
+            ) {
+                Ok(count) => {
+                    total_images += count;
+                    if count > 0 {
+                        total_documents += 1;
+                    }
+                }
+                Err(e) => eprintln!("Error processing {}: {}", input_path_buf.display(), e),
+            }
+        } else if input_path_buf.is_dir() {
+            if args.recursive {
+                for entry in WalkDir::new(input_path_buf) {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("Warning: Could not access path: {}", e);
+                            continue;
+                        }
+                    };
+                    let path = entry.path();
+                    if path.is_file() && is_supported_document(path) {
+                        match process_file(path, &output_dir, &target_extensions, args.cover_only, args.cover_fallback) {
+                            Ok(count) => {
+                                total_images += count;
+                                if count > 0 {
+                                    total_documents += 1;
+                                }
+                            }
+                            Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
+                        }
+                    }
+                }
+            } else {
+                let entries = match fs::read_dir(input_path_buf) {
+                    Ok(entries) => entries,
                     Err(e) => {
-                        eprintln!("Warning: Could not access path: {}", e);
+                        eprintln!("Warning: Could not read directory {}: {}", input_path_buf.display(), e);
                         continue;
                     }
                 };
-                let path = entry.path();
-                if path.is_file() && is_supported_document(path) {
-                    match process_file(path, &output_dir, &target_extensions, args.cover_only) {
-                        Ok(count) => {
-                            total_images += count;
-                            if count > 0 {
-                                total_documents += 1;
-                            }
+                for entry in entries {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("Warning: Could not access entry: {}", e);
+                            continue;
                         }
-                        Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
-                    }
-                }
-            }
-        } else {
-            for entry in fs::read_dir(&input_path_buf)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() && is_supported_document(&path) {
-                    match process_file(&path, &output_dir, &target_extensions, args.cover_only) {
-                        Ok(count) => {
-                            total_images += count;
-                            if count > 0 {
-                                total_documents += 1;
+                    };
+                    let path = entry.path();
+                    if path.is_file() && is_supported_document(&path) {
+                        match process_file(&path, &output_dir, &target_extensions, args.cover_only, args.cover_fallback) {
+                            Ok(count) => {
+                                total_images += count;
+                                if count > 0 {
+                                    total_documents += 1;
+                                }
                             }
+                            Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
                         }
-                        Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
                     }
                 }
             }

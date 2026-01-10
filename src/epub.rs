@@ -35,12 +35,14 @@ struct EpubImage {
 /// Processes a single .epub file, extracting images matching the allowed extensions.
 /// Uses author and title metadata for naming, falling back to filename.
 /// If cover_only is true, only extracts the cover image.
+/// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
 /// Returns the number of images extracted.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
     cover_only: bool,
+    cover_fallback: bool,
 ) -> Result<usize> {
     let fallback_name = input_path
         .file_stem()
@@ -72,9 +74,21 @@ pub fn process_file(
             &base_name,
             allowed_extensions,
             input_path,
+            cover_fallback,
         );
     }
 
+    extract_all_images(&mut doc, output_base_dir, &base_name, allowed_extensions, input_path)
+}
+
+/// Extracts all images from an EPUB file
+fn extract_all_images(
+    doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
+    output_base_dir: &Path,
+    base_name: &str,
+    allowed_extensions: &HashSet<&str>,
+    input_path: &Path,
+) -> Result<usize> {
     // Collect images from resources
     // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
     let mut images: Vec<EpubImage> = Vec::new();
@@ -137,7 +151,7 @@ pub fn process_file(
 
         let output_path = get_unique_output_path(
             output_base_dir,
-            &base_name,
+            base_name,
             seq_index,
             total_images,
             &image.extension,
@@ -152,12 +166,14 @@ pub fn process_file(
 }
 
 /// Extracts only the cover image from an EPUB file
+/// If cover_fallback is true and no cover is found, extracts all images instead
 fn extract_cover_only(
     doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
     output_base_dir: &Path,
     base_name: &str,
     allowed_extensions: &HashSet<&str>,
     input_path: &Path,
+    cover_fallback: bool,
 ) -> Result<usize> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
@@ -193,8 +209,13 @@ fn extract_cover_only(
             Ok(1)
         }
         None => {
-            println!("No cover image found in {}", input_path.display());
-            Ok(0)
+            if cover_fallback {
+                println!("No cover image found in {}, falling back to extracting all images.", input_path.display());
+                extract_all_images(doc, output_base_dir, base_name, allowed_extensions, input_path)
+            } else {
+                println!("No cover image found in {}", input_path.display());
+                Ok(0)
+            }
         }
     }
 }
