@@ -27,13 +27,15 @@ impl EpubFilter {
 /// Checks if EPUB metadata matches the filter (case-insensitive substring match)
 /// Returns (matches, title, author) - title/author are returned for skip messaging
 fn matches_filter(title: Option<&str>, author: Option<&str>, filter: &EpubFilter) -> bool {
-    let title_matches = filter.title.as_ref().is_none_or(|f| {
-        title.is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase()))
-    });
+    let title_matches = filter
+        .title
+        .as_ref()
+        .is_none_or(|f| title.is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase())));
 
-    let author_matches = filter.author.as_ref().is_none_or(|f| {
-        author.is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase()))
-    });
+    let author_matches = filter
+        .author
+        .as_ref()
+        .is_none_or(|f| author.is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase())));
 
     title_matches && author_matches
 }
@@ -87,14 +89,8 @@ pub fn process_file(
     let title = doc.mdata("title").map(|m| m.value.clone());
     let author = doc.mdata("creator").map(|m| m.value.clone()); // 'creator' is the Dublin Core element for author
 
-    // Check filter if any criteria are set
+    // Check filter if any criteria are set - silently skip non-matching files
     if !filter.is_empty() && !matches_filter(title.as_deref(), author.as_deref(), filter) {
-        println!(
-            "Skipping {}: title/author filter not matched (Title: {}, Author: {})",
-            input_path.display(),
-            title.as_deref().unwrap_or("<none>"),
-            author.as_deref().unwrap_or("<none>")
-        );
         return Ok(0);
     }
 
