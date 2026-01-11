@@ -10,6 +10,34 @@ use crate::common::{
     get_unique_output_path, is_safe_archive_path, sanitize_filename, write_image_to_file,
 };
 
+/// Filter criteria for EPUB files
+#[derive(Debug, Default)]
+pub struct EpubFilter {
+    pub title: Option<String>,
+    pub author: Option<String>,
+}
+
+impl EpubFilter {
+    /// Returns true if no filter criteria are set
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.author.is_none()
+    }
+}
+
+/// Checks if EPUB metadata matches the filter (case-insensitive substring match)
+/// Returns (matches, title, author) - title/author are returned for skip messaging
+fn matches_filter(title: Option<&str>, author: Option<&str>, filter: &EpubFilter) -> bool {
+    let title_matches = filter.title.as_ref().is_none_or(|f| {
+        title.is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase()))
+    });
+
+    let author_matches = filter.author.as_ref().is_none_or(|f| {
+        author.is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase()))
+    });
+
+    title_matches && author_matches
+}
+
 /// Formats a filename based on EPUB metadata (author and title)
 /// Falls back to the provided fallback name if metadata is missing
 fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &str) -> String {
@@ -36,6 +64,7 @@ struct EpubImage {
 /// Uses author and title metadata for naming, falling back to filename.
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
+/// If a filter is provided, only processes files matching the filter criteria.
 /// Returns the number of images extracted.
 pub fn process_file(
     input_path: &Path,
@@ -43,6 +72,7 @@ pub fn process_file(
     allowed_extensions: &HashSet<&str>,
     cover_only: bool,
     cover_fallback: bool,
+    filter: &EpubFilter,
 ) -> Result<usize> {
     let fallback_name = input_path
         .file_stem()
@@ -56,6 +86,17 @@ pub fn process_file(
     // Extract metadata - mdata() returns Option<MetadataItem> with .value field
     let title = doc.mdata("title").map(|m| m.value.clone());
     let author = doc.mdata("creator").map(|m| m.value.clone()); // 'creator' is the Dublin Core element for author
+
+    // Check filter if any criteria are set
+    if !filter.is_empty() && !matches_filter(title.as_deref(), author.as_deref(), filter) {
+        println!(
+            "Skipping {}: title/author filter not matched (Title: {}, Author: {})",
+            input_path.display(),
+            title.as_deref().unwrap_or("<none>"),
+            author.as_deref().unwrap_or("<none>")
+        );
+        return Ok(0);
+    }
 
     let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
 
@@ -78,7 +119,13 @@ pub fn process_file(
         );
     }
 
-    extract_all_images(&mut doc, output_base_dir, &base_name, allowed_extensions, input_path)
+    extract_all_images(
+        &mut doc,
+        output_base_dir,
+        &base_name,
+        allowed_extensions,
+        input_path,
+    )
 }
 
 /// Extracts all images from an EPUB file
@@ -210,8 +257,17 @@ fn extract_cover_only(
         }
         None => {
             if cover_fallback {
-                println!("No cover image found in {}, falling back to extracting all images.", input_path.display());
-                extract_all_images(doc, output_base_dir, base_name, allowed_extensions, input_path)
+                println!(
+                    "No cover image found in {}, falling back to extracting all images.",
+                    input_path.display()
+                );
+                extract_all_images(
+                    doc,
+                    output_base_dir,
+                    base_name,
+                    allowed_extensions,
+                    input_path,
+                )
             } else {
                 println!("No cover image found in {}", input_path.display());
                 Ok(0)

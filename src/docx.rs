@@ -7,7 +7,9 @@ use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
 
-use crate::common::{get_unique_output_path, is_safe_archive_path, write_image_to_file, ImageToExtract};
+use crate::common::{
+    ImageToExtract, get_unique_output_path, is_safe_archive_path, write_image_to_file,
+};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
 /// Returns the number of images extracted.

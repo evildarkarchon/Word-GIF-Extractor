@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use common::{get_supported_extensions, normalize_format};
+use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
@@ -45,6 +46,14 @@ struct Args {
     /// Fallback to extracting all images if cover not found (EPUB only, requires --cover-only)
     #[arg(long, requires = "cover_only")]
     cover_fallback: bool,
+
+    /// Filter EPUB files by title (case-insensitive substring match)
+    #[arg(long)]
+    title: Option<String>,
+
+    /// Filter EPUB files by author (case-insensitive substring match)
+    #[arg(long)]
+    author: Option<String>,
 }
 
 /// Supported document types
@@ -78,14 +87,20 @@ fn process_file(
     allowed_extensions: &HashSet<&str>,
     cover_only: bool,
     cover_fallback: bool,
+    epub_filter: &EpubFilter,
 ) -> Result<usize> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
             docx::process_file(input_path, output_base_dir, allowed_extensions)
         }
-        Some(DocumentType::Epub) => {
-            epub::process_file(input_path, output_base_dir, allowed_extensions, cover_only, cover_fallback)
-        }
+        Some(DocumentType::Epub) => epub::process_file(
+            input_path,
+            output_base_dir,
+            allowed_extensions,
+            cover_only,
+            cover_fallback,
+            epub_filter,
+        ),
         None => {
             anyhow::bail!(
                 "Unsupported file type: {}. Supported types: .docx, .epub",
@@ -123,12 +138,21 @@ fn main() -> Result<()> {
         target_extensions = get_supported_extensions();
     }
 
+    // Create EPUB filter from CLI args
+    let epub_filter = EpubFilter {
+        title: args.title,
+        author: args.author,
+    };
+
     let mut total_images = 0usize;
     let mut total_documents = 0usize;
 
     for input_path_buf in &all_inputs {
         if !input_path_buf.exists() {
-            eprintln!("Warning: Input path does not exist: {}", input_path_buf.display());
+            eprintln!(
+                "Warning: Input path does not exist: {}",
+                input_path_buf.display()
+            );
             continue;
         }
 
@@ -139,6 +163,7 @@ fn main() -> Result<()> {
                 &target_extensions,
                 args.cover_only,
                 args.cover_fallback,
+                &epub_filter,
             ) {
                 Ok(count) => {
                     total_images += count;
@@ -160,7 +185,14 @@ fn main() -> Result<()> {
                     };
                     let path = entry.path();
                     if path.is_file() && is_supported_document(path) {
-                        match process_file(path, &output_dir, &target_extensions, args.cover_only, args.cover_fallback) {
+                        match process_file(
+                            path,
+                            &output_dir,
+                            &target_extensions,
+                            args.cover_only,
+                            args.cover_fallback,
+                            &epub_filter,
+                        ) {
                             Ok(count) => {
                                 total_images += count;
                                 if count > 0 {
@@ -175,7 +207,11 @@ fn main() -> Result<()> {
                 let entries = match fs::read_dir(input_path_buf) {
                     Ok(entries) => entries,
                     Err(e) => {
-                        eprintln!("Warning: Could not read directory {}: {}", input_path_buf.display(), e);
+                        eprintln!(
+                            "Warning: Could not read directory {}: {}",
+                            input_path_buf.display(),
+                            e
+                        );
                         continue;
                     }
                 };
@@ -189,7 +225,14 @@ fn main() -> Result<()> {
                     };
                     let path = entry.path();
                     if path.is_file() && is_supported_document(&path) {
-                        match process_file(&path, &output_dir, &target_extensions, args.cover_only, args.cover_fallback) {
+                        match process_file(
+                            &path,
+                            &output_dir,
+                            &target_extensions,
+                            args.cover_only,
+                            args.cover_fallback,
+                            &epub_filter,
+                        ) {
                             Ok(count) => {
                                 total_images += count;
                                 if count > 0 {
