@@ -20,10 +20,10 @@ use epub::EpubFilter;
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
 struct Args {
-    /// Paths to input .docx/.epub files or directories (positional)
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
     inputs: Vec<PathBuf>,
 
-    /// Paths to input .docx/.epub files or directories (named)
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
     #[arg(short = 'i', long = "input", num_args = 1..)]
     named_inputs: Vec<PathBuf>,
 
@@ -113,11 +113,16 @@ fn process_file(
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Combine positional and named inputs
-    let all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
+    // Combine positional and named inputs, fallback to current directory if none specified
+    let mut all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
 
     if all_inputs.is_empty() {
-        anyhow::bail!("At least one input path is required");
+        let cwd = std::env::current_dir()?;
+        println!(
+            "No input path specified, using current directory: {}",
+            cwd.display()
+        );
+        all_inputs.push(cwd);
     }
 
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
