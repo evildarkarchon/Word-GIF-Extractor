@@ -22,10 +22,19 @@ impl EpubFilter {
     pub fn is_empty(&self) -> bool {
         self.title.is_none() && self.author.is_none()
     }
+
+    /// Returns a human-readable description of the filter for progress messages
+    pub fn description(&self) -> String {
+        match (&self.author, &self.title) {
+            (Some(author), Some(title)) => format!("author '{}' and title '{}'", author, title),
+            (Some(author), None) => format!("author '{}'", author),
+            (None, Some(title)) => format!("title '{}'", title),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// Checks if EPUB metadata matches the filter (case-insensitive substring match)
-/// Returns (matches, title, author) - title/author are returned for skip messaging
 fn matches_filter(title: Option<&str>, author: Option<&str>, filter: &EpubFilter) -> bool {
     let title_matches = filter
         .title
@@ -38,6 +47,19 @@ fn matches_filter(title: Option<&str>, author: Option<&str>, filter: &EpubFilter
         .is_none_or(|f| author.is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase())));
 
     title_matches && author_matches
+}
+
+/// Checks if an EPUB file matches the given filter without extracting any images.
+/// Returns true if the file matches, false otherwise.
+/// Returns an error if the file cannot be opened or read.
+pub fn check_filter_match(input_path: &Path, filter: &EpubFilter) -> Result<bool> {
+    let doc =
+        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
+
+    let title = doc.mdata("title").map(|m| m.value.clone());
+    let author = doc.mdata("creator").map(|m| m.value.clone());
+
+    Ok(matches_filter(title.as_deref(), author.as_deref(), filter))
 }
 
 /// Formats a filename based on EPUB metadata (author and title)
