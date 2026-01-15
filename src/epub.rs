@@ -10,6 +10,9 @@ use crate::common::{
     get_unique_output_path, is_safe_archive_path, sanitize_filename, write_image_to_file,
 };
 
+/// Common JPEG file extensions for cover image fallback detection
+const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
+
 /// Filter criteria for EPUB files
 #[derive(Debug, Default)]
 pub struct EpubFilter {
@@ -230,6 +233,37 @@ fn extract_all_images(
     Ok(total_images)
 }
 
+/// Searches for a cover image by filename when metadata-based detection fails.
+/// Looks for files named "cover" (case-insensitive) with common JPEG extensions.
+/// Returns the image data and MIME type if found.
+fn find_cover_by_filename(
+    doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
+) -> Option<(Vec<u8>, String)> {
+    // First, find the resource ID of a file named "cover" with a JPEG extension
+    let cover_id = doc.resources.iter().find_map(|(id, item)| {
+        let path = &item.path;
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+
+        if file_stem.as_deref() == Some("cover")
+            && let Some(ext) = &extension
+            && JPEG_EXTENSIONS.contains(&ext.as_str())
+        {
+            return Some(id.clone());
+        }
+        None
+    });
+
+    // If we found a matching resource, get its data
+    cover_id.and_then(|id| doc.get_resource(&id))
+}
+
 /// Extracts only the cover image from an EPUB file
 /// If cover_fallback is true and no cover is found, extracts all images instead
 fn extract_cover_only(
@@ -274,7 +308,34 @@ fn extract_cover_only(
             Ok(1)
         }
         None => {
-            if cover_fallback {
+            // Try fallback: look for a file named "cover" with JPEG extension
+            if let Some((data, mime)) = find_cover_by_filename(doc) {
+                let extension = mime_to_extension(&mime).unwrap_or_else(|| "jpg".to_string());
+
+                // Check if this extension is in our allowed list
+                if !allowed_extensions.contains(extension.as_str()) {
+                    println!(
+                        "Cover image format '{}' not in allowed formats, skipping.",
+                        extension
+                    );
+                    return Ok(0);
+                }
+
+                fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
+
+                let output_path =
+                    get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
+
+                println!(
+                    "Extracting cover (by filename) from {} to: {}",
+                    input_path.display(),
+                    output_path.display()
+                );
+
+                write_image_to_file(&output_path, &data)?;
+
+                Ok(1)
+            } else if cover_fallback {
                 println!(
                     "No cover image found in {}, falling back to extracting all images.",
                     input_path.display()
@@ -357,5 +418,21 @@ mod tests {
         assert_eq!(mime_to_extension("image/png"), Some("png".to_string()));
         assert_eq!(mime_to_extension("image/gif"), Some("gif".to_string()));
         assert_eq!(mime_to_extension("image/unknown"), None);
+    }
+
+    #[test]
+    fn test_jpeg_extensions_contains_common_extensions() {
+        assert!(JPEG_EXTENSIONS.contains(&"jpg"));
+        assert!(JPEG_EXTENSIONS.contains(&"jpeg"));
+        assert!(JPEG_EXTENSIONS.contains(&"jpe"));
+        assert!(JPEG_EXTENSIONS.contains(&"jfif"));
+    }
+
+    #[test]
+    fn test_jpeg_extensions_does_not_contain_other_formats() {
+        assert!(!JPEG_EXTENSIONS.contains(&"png"));
+        assert!(!JPEG_EXTENSIONS.contains(&"gif"));
+        assert!(!JPEG_EXTENSIONS.contains(&"webp"));
+        assert!(!JPEG_EXTENSIONS.contains(&"bmp"));
     }
 }
