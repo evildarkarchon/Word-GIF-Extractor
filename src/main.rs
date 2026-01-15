@@ -86,9 +86,36 @@ fn is_epub(path: &Path) -> bool {
     get_document_type(path) == Some(DocumentType::Epub)
 }
 
-/// Collects all document files from the input paths
+/// Creates a standard progress bar style for collection phases
+fn create_progress_style() -> ProgressStyle {
+    ProgressStyle::default_bar()
+        .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} - {msg}")
+        .expect("Invalid progress bar template")
+        .progress_chars("=>-")
+}
+
+/// Creates a spinner style for phases where total count is unknown
+fn create_spinner_style() -> ProgressStyle {
+    ProgressStyle::default_spinner()
+        .template("{spinner:.green} {msg}")
+        .expect("Invalid spinner template")
+}
+
+/// Collects all document files from the input paths with progress indication
 fn collect_document_files(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
     let mut files = Vec::new();
+
+    // Use spinner for recursive directory scanning since we don't know total count upfront
+    let use_spinner = recursive && inputs.iter().any(|p| p.is_dir());
+    let pb = if use_spinner {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(create_spinner_style());
+        pb.set_message("Scanning directories for documents...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        Some(pb)
+    } else {
+        None
+    };
 
     for input_path in inputs {
         if !input_path.exists() {
@@ -97,12 +124,18 @@ fn collect_document_files(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
 
         if input_path.is_file() && is_supported_document(input_path) {
             files.push(input_path.clone());
+            if let Some(ref pb) = pb {
+                pb.set_message(format!("Found {} document(s)...", files.len()));
+            }
         } else if input_path.is_dir() {
             if recursive {
                 for entry in WalkDir::new(input_path).into_iter().flatten() {
                     let path = entry.path();
                     if path.is_file() && is_supported_document(path) {
                         files.push(path.to_path_buf());
+                        if let Some(ref pb) = pb {
+                            pb.set_message(format!("Found {} document(s)...", files.len()));
+                        }
                     }
                 }
             } else if let Ok(entries) = fs::read_dir(input_path) {
@@ -114,6 +147,10 @@ fn collect_document_files(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
                 }
             }
         }
+    }
+
+    if let Some(pb) = pb {
+        pb.finish_with_message(format!("Found {} document(s)", files.len()));
     }
 
     files
@@ -130,16 +167,8 @@ fn filter_epub_files_with_progress(files: Vec<PathBuf>, filter: &EpubFilter) -> 
     }
 
     let pb = ProgressBar::new(epub_files.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} - {msg}")
-            .expect("Invalid progress bar template")
-            .progress_chars("=>-"),
-    );
-    pb.set_message(format!(
-        "Searching for epub files with {}",
-        filter.description()
-    ));
+    pb.set_style(create_progress_style());
+    pb.set_message(format!("Filtering EPUBs by {}", filter.description()));
 
     let mut matching_epubs = Vec::new();
     for path in epub_files {
@@ -156,10 +185,7 @@ fn filter_epub_files_with_progress(files: Vec<PathBuf>, filter: &EpubFilter) -> 
         }
     }
 
-    pb.finish_with_message(format!(
-        "Found {} matching epub file(s)",
-        matching_epubs.len()
-    ));
+    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching_epubs.len()));
 
     // Combine matching EPUBs with other document types
     let mut result = matching_epubs;
@@ -256,10 +282,43 @@ fn main() -> Result<()> {
         files
     };
 
+    if files_to_process.is_empty() {
+        println!("No documents found to process.");
+        return Ok(());
+    }
+
     let mut total_images = 0usize;
     let mut total_documents = 0usize;
+    let mut has_docx_images = false;
+
+    // Create progress bar for extraction phase with context-appropriate message
+    let pb = ProgressBar::new(files_to_process.len() as u64);
+    pb.set_style(create_progress_style());
+    let extraction_msg = if args.cover_only {
+        "Extracting cover images"
+    } else {
+        "Extracting images from documents"
+    };
+    pb.set_message(extraction_msg);
 
     for path in &files_to_process {
+        let is_docx = get_document_type(path) == Some(DocumentType::Docx);
+        // Update progress bar with appropriate name
+        // For EPUBs in cover-only mode, show the output filename (Author - Title)
+        // Otherwise show the input filename
+        let display_name = if args.cover_only && is_epub(path) {
+            epub::get_base_name(path).unwrap_or_else(|_| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string())
+            })
+        } else {
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string())
+        };
+        pb.set_message(display_name);
+
         match process_file(
             path,
             &output_dir,
@@ -272,19 +331,40 @@ fn main() -> Result<()> {
                 total_images += count;
                 if count > 0 {
                     total_documents += 1;
+                    if is_docx {
+                        has_docx_images = true;
+                    }
                 }
             }
-            Err(e) => eprintln!("Error processing {}: {}", path.display(), e),
+            Err(e) => {
+                pb.suspend(|| {
+                    eprintln!("Error processing {}: {}", path.display(), e);
+                });
+            }
         }
+        pb.inc(1);
     }
 
     if total_images > 0 {
-        println!(
-            "Processing complete! Extracted {} images from {} document(s).",
-            total_images, total_documents
-        );
+        // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
+        // (DOCX files always extract all images regardless of cover_only flag)
+        let item_name = if args.cover_only && !has_docx_images {
+            "cover(s)"
+        } else {
+            "image(s)"
+        };
+        pb.finish_with_message(format!(
+            "Extracted {} {} from {} document(s)",
+            total_images, item_name, total_documents
+        ));
     } else {
-        println!("Processing complete! No images found.");
+        // For the "not found" message, still use cover terminology if that was the intent
+        let not_found_msg = if args.cover_only && !has_docx_images {
+            "No cover images found"
+        } else {
+            "No images found"
+        };
+        pb.finish_with_message(not_found_msg);
     }
 
     Ok(())

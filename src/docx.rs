@@ -60,11 +60,6 @@ pub fn process_file(
     fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
 
     let total_images = images.len();
-    println!(
-        "Found {} image files in {}.",
-        total_images,
-        input_path.display()
-    );
 
     for (seq_index, image) in images.iter().enumerate() {
         let mut file = archive.by_index(image.index)?;
@@ -76,8 +71,6 @@ pub fn process_file(
             total_images,
             &image.extension,
         )?;
-
-        println!("Extracting to: {}", output_path.display());
 
         // Read archive entry into memory and use shared write function
         let mut data = Vec::new();

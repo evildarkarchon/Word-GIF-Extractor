@@ -65,6 +65,28 @@ pub fn check_filter_match(input_path: &Path, filter: &EpubFilter) -> Result<bool
     Ok(matches_filter(title.as_deref(), author.as_deref(), filter))
 }
 
+/// Gets the computed base name for an EPUB file based on its metadata.
+/// This is used for progress bar display in cover-only mode.
+/// Returns the sanitized "Author - Title" name, or falls back to the filename.
+pub fn get_base_name(input_path: &Path) -> Result<String> {
+    let fallback_name = input_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let doc =
+        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
+
+    let title = doc.mdata("title").map(|m| m.value.clone());
+    let author = doc.mdata("creator").map(|m| m.value.clone());
+
+    Ok(format_epub_base_name(
+        author.as_deref(),
+        title.as_deref(),
+        &fallback_name,
+    ))
+}
+
 /// Formats a filename based on EPUB metadata (author and title)
 /// Falls back to the provided fallback name if metadata is missing
 fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &str) -> String {
@@ -121,14 +143,6 @@ pub fn process_file(
 
     let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
 
-    // Print metadata info
-    if let Some(ref t) = title {
-        println!("EPUB Title: {}", t);
-    }
-    if let Some(ref a) = author {
-        println!("EPUB Author: {}", a);
-    }
-
     if cover_only {
         return extract_cover_only(
             &mut doc,
@@ -155,7 +169,7 @@ fn extract_all_images(
     output_base_dir: &Path,
     base_name: &str,
     allowed_extensions: &HashSet<&str>,
-    input_path: &Path,
+    _input_path: &Path,
 ) -> Result<usize> {
     // Collect images from resources
     // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
@@ -205,12 +219,6 @@ fn extract_all_images(
 
     let total_images = images.len();
 
-    println!(
-        "Found {} image files in {}.",
-        total_images,
-        input_path.display()
-    );
-
     for (seq_index, image) in images.iter().enumerate() {
         // Get the image data - get_resource returns Option<(Vec<u8>, String)>
         let (data, _mime) = doc
@@ -224,8 +232,6 @@ fn extract_all_images(
             total_images,
             &image.extension,
         )?;
-
-        println!("Extracting to: {}", output_path.display());
 
         write_image_to_file(&output_path, &data)?;
     }
@@ -284,8 +290,8 @@ fn extract_cover_only(
 
             // Check if this extension is in our allowed list
             if !allowed_extensions.contains(extension.as_str()) {
-                println!(
-                    "Cover image format '{}' not in allowed formats, skipping.",
+                eprintln!(
+                    "Warning: Cover image format '{}' not in allowed formats, skipping.",
                     extension
                 );
                 return Ok(0);
@@ -296,12 +302,6 @@ fn extract_cover_only(
 
             // Use just the base name (author/title) for cover-only mode
             let output_path = get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
-
-            println!(
-                "Extracting cover from {} to: {}",
-                input_path.display(),
-                output_path.display()
-            );
 
             write_image_to_file(&output_path, &data)?;
 
@@ -314,8 +314,8 @@ fn extract_cover_only(
 
                 // Check if this extension is in our allowed list
                 if !allowed_extensions.contains(extension.as_str()) {
-                    println!(
-                        "Cover image format '{}' not in allowed formats, skipping.",
+                    eprintln!(
+                        "Warning: Cover image format '{}' not in allowed formats, skipping.",
                         extension
                     );
                     return Ok(0);
@@ -326,20 +326,11 @@ fn extract_cover_only(
                 let output_path =
                     get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
 
-                println!(
-                    "Extracting cover (by filename) from {} to: {}",
-                    input_path.display(),
-                    output_path.display()
-                );
-
                 write_image_to_file(&output_path, &data)?;
 
                 Ok(1)
             } else if cover_fallback {
-                println!(
-                    "No cover image found in {}, falling back to extracting all images.",
-                    input_path.display()
-                );
+                // No cover found via metadata or filename, fall back to extracting all images
                 extract_all_images(
                     doc,
                     output_base_dir,
@@ -348,7 +339,7 @@ fn extract_cover_only(
                     input_path,
                 )
             } else {
-                println!("No cover image found in {}", input_path.display());
+                // No cover image found
                 Ok(0)
             }
         }
