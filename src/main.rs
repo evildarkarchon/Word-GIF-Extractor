@@ -10,7 +10,7 @@ mod epub;
 use anyhow::Result;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -193,6 +193,79 @@ fn filter_epub_files_with_progress(files: Vec<PathBuf>, filter: &EpubFilter) -> 
     result
 }
 
+/// Deduplicates EPUB files based on their metadata (author + title).
+/// Keeps the first occurrence of each unique (author, title) combination.
+/// Non-EPUB files are passed through unchanged.
+/// EPUBs without metadata are deduplicated by filename.
+fn deduplicate_by_metadata(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_epub(p));
+
+    if epub_files.is_empty() {
+        return other_files;
+    }
+
+    let pb = ProgressBar::new(epub_files.len() as u64);
+    pb.set_style(create_progress_style());
+    pb.set_message("Deduplicating EPUBs by metadata");
+
+    // Use a HashMap to track seen (author, title) combinations
+    // Key: (lowercase author, lowercase title) for case-insensitive deduplication
+    let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
+    let mut unique_epubs = Vec::new();
+    let mut duplicates_found = 0usize;
+
+    for path in epub_files {
+        pb.inc(1);
+
+        // Try to get metadata for deduplication
+        let key = match epub::get_metadata(&path) {
+            Ok((author, title)) if author.is_some() || title.is_some() => {
+                // Normalize: lowercase and trim, use empty string for None
+                let author_key = author
+                    .as_deref()
+                    .map(|s| s.trim().to_lowercase())
+                    .unwrap_or_default();
+                let title_key = title
+                    .as_deref()
+                    .map(|s| s.trim().to_lowercase())
+                    .unwrap_or_default();
+                (author_key, title_key)
+            }
+            _ => {
+                // Fallback to filename if we can't read metadata or if both author and title are missing
+                let filename = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                (String::new(), filename)
+            }
+        };
+
+        // Only add if we haven't seen this combination before
+        if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
+            e.insert(path.clone());
+            unique_epubs.push(path);
+        } else {
+            duplicates_found += 1;
+        }
+    }
+
+    if duplicates_found > 0 {
+        pb.finish_with_message(format!(
+            "Removed {} duplicate EPUB(s), {} unique remaining",
+            duplicates_found,
+            unique_epubs.len()
+        ));
+    } else {
+        pb.finish_and_clear();
+    }
+
+    // Combine unique EPUBs with other document types
+    let mut result = unique_epubs;
+    result.extend(other_files);
+    result
+}
+
 /// Processes a single file based on its type
 fn process_file(
     input_path: &Path,
@@ -276,11 +349,14 @@ fn main() -> Result<()> {
     let files = collect_document_files(&all_inputs, args.recursive);
 
     // If a filter is specified, search EPUB files with a progress bar
-    let files_to_process = if !epub_filter.is_empty() {
+    let filtered_files = if !epub_filter.is_empty() {
         filter_epub_files_with_progress(files, &epub_filter)
     } else {
         files
     };
+
+    // Deduplicate EPUBs by metadata (author + title) to avoid processing the same book twice
+    let files_to_process = deduplicate_by_metadata(filtered_files);
 
     if files_to_process.is_empty() {
         println!("No documents found to process.");

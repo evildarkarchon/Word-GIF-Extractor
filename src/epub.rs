@@ -65,6 +65,19 @@ pub fn check_filter_match(input_path: &Path, filter: &EpubFilter) -> Result<bool
     Ok(matches_filter(title.as_deref(), author.as_deref(), filter))
 }
 
+/// Gets the metadata (author, title) from an EPUB file.
+/// Returns a tuple of (author, title) where either may be None if not present.
+/// Used for deduplication and display purposes.
+pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>)> {
+    let doc =
+        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
+
+    let title = doc.mdata("title").map(|m| m.value.clone());
+    let author = doc.mdata("creator").map(|m| m.value.clone());
+
+    Ok((author, title))
+}
+
 /// Gets the computed base name for an EPUB file based on its metadata.
 /// This is used for progress bar display in cover-only mode.
 /// Returns the sanitized "Author - Title" name, or falls back to the filename.
@@ -74,11 +87,7 @@ pub fn get_base_name(input_path: &Path) -> Result<String> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let doc =
-        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
-
-    let title = doc.mdata("title").map(|m| m.value.clone());
-    let author = doc.mdata("creator").map(|m| m.value.clone());
+    let (author, title) = get_metadata(input_path)?;
 
     Ok(format_epub_base_name(
         author.as_deref(),
