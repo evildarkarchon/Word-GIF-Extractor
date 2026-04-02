@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::convert::OutputFormat;
-use common::{get_supported_extensions, normalize_format};
+use common::{ExtractionCounts, get_supported_extensions, normalize_format};
 use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
@@ -296,10 +296,11 @@ fn process_file(
     cover_only: bool,
     cover_fallback: bool,
     epub_filter: &EpubFilter,
-) -> Result<usize> {
+    gif_output: Option<&Path>,
+) -> Result<ExtractionCounts> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_extensions)
+            docx::process_file(input_path, output_base_dir, allowed_extensions, gif_output)
         }
         Some(DocumentType::Epub) => epub::process_file(
             input_path,
@@ -308,6 +309,7 @@ fn process_file(
             cover_only,
             cover_fallback,
             epub_filter,
+            gif_output,
         ),
         None => {
             anyhow::bail!(
@@ -405,7 +407,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut total_images = 0usize;
+    // --gif-only overrides format selection to extract only GIFs
+    if args.gif_only {
+        target_extensions.clear();
+        target_extensions.insert("gif");
+    }
+
+    let mut total_counts = ExtractionCounts::default();
     let mut total_documents = 0usize;
     let mut has_docx_images = false;
 
@@ -444,10 +452,12 @@ fn main() -> Result<()> {
             args.cover_only,
             args.cover_fallback,
             &epub_filter,
+            args.gif_output.as_deref(),
         ) {
-            Ok(count) => {
-                total_images += count;
-                if count > 0 {
+            Ok(counts) => {
+                total_counts.extracted += counts.extracted;
+                total_counts.gifs_routed += counts.gifs_routed;
+                if counts.extracted > 0 {
                     total_documents += 1;
                     if is_docx {
                         has_docx_images = true;
@@ -463,7 +473,7 @@ fn main() -> Result<()> {
         pb.inc(1);
     }
 
-    if total_images > 0 {
+    if total_counts.extracted > 0 {
         // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
         // (DOCX files always extract all images regardless of cover_only flag)
         let item_name = if args.cover_only && !has_docx_images {
@@ -471,10 +481,22 @@ fn main() -> Result<()> {
         } else {
             "image(s)"
         };
-        pb.finish_with_message(format!(
-            "Extracted {} {} from {} document(s)",
-            total_images, item_name, total_documents
-        ));
+        if total_counts.gifs_routed > 0 {
+            let gif_dir = args.gif_output.as_ref().unwrap();
+            pb.finish_with_message(format!(
+                "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
+                total_counts.extracted,
+                item_name,
+                total_counts.gifs_routed,
+                gif_dir.display(),
+                total_documents
+            ));
+        } else {
+            pb.finish_with_message(format!(
+                "Extracted {} {} from {} document(s)",
+                total_counts.extracted, item_name, total_documents
+            ));
+        }
     } else {
         // For the "not found" message, still use cover terminology if that was the intent
         let not_found_msg = if args.cover_only && !has_docx_images {
@@ -639,5 +661,64 @@ mod tests {
         assert!(args.recursive);
         assert!(args.cover_only);
         assert!(args.cover_fallback);
+    }
+
+    #[test]
+    fn test_gif_only_overrides_extensions() {
+        let mut target_extensions = get_supported_extensions();
+        assert!(target_extensions.len() > 1);
+        target_extensions.clear();
+        target_extensions.insert("gif");
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+        assert!(!target_extensions.contains("png"));
+        assert!(!target_extensions.contains("jpg"));
+    }
+
+    #[test]
+    fn test_gif_only_overrides_formats_flag() {
+        let mut target_extensions = HashSet::new();
+        target_extensions.insert("png");
+        target_extensions.insert("jpg");
+        target_extensions.clear();
+        target_extensions.insert("gif");
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+    }
+
+    #[test]
+    fn test_extraction_counts_split_message_logic() {
+        let counts = ExtractionCounts {
+            extracted: 5,
+            gifs_routed: 2,
+        };
+        assert!(counts.gifs_routed > 0);
+        let counts = ExtractionCounts {
+            extracted: 3,
+            gifs_routed: 0,
+        };
+        assert!(counts.gifs_routed == 0);
+    }
+
+    #[test]
+    fn test_gif_only_and_gif_output_both_set() {
+        let args =
+            Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_output_without_gif_only() {
+        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(!args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_only_without_gif_output() {
+        let args = Args::try_parse_from(["test", "--gif-only"]).unwrap();
+        assert!(args.gif_only);
+        assert!(args.gif_output.is_none());
     }
 }

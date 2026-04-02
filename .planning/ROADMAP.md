@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Conversion Module Core** - Build convert.rs with image decoding, format conversion, alpha compositing, and WebP lossy encoding (completed 2026-04-02)
 - [ ] **Phase 2: Format Handling and Output Naming** - Skip unsupported vector formats with warning, correct extension replacement on converted files
 - [ ] **Phase 3: CLI Arguments and Validation** - Add --convert, --gif-only, --gif-output, --quality flags with conflict rules
-- [ ] **Phase 4: GIF Extraction and Routing** - Implement GIF-only filtering and separate GIF output directory routing
+- [x] **Phase 4: GIF Extraction and Routing** - Implement GIF-only filtering and separate GIF output directory routing (completed 2026-04-02)
 - [ ] **Phase 5: DOCX Pipeline Integration** - Thread conversion and GIF features through DOCX processor for end-to-end operation
 - [ ] **Phase 6: EPUB Pipeline Integration** - Thread conversion and GIF features through EPUB processor including cover-only mode
 
@@ -70,7 +70,7 @@ Plans:
   3. `--gif-output` routes GIFs to the separate directory even without `--gif-only` (when extracting all formats, GIFs go to the GIF directory and non-GIFs go to the default directory)
 **Plans:** 1 plan
 Plans:
-- [ ] 04-01-PLAN.md -- Add ExtractionCounts struct, GIF routing in DOCX/EPUB processors, gif-only filter in main.rs, split finish message
+- [x] 04-01-PLAN.md -- Add ExtractionCounts struct, GIF routing in DOCX/EPUB processors, gif-only filter in main.rs, split finish message
 
 ### Phase 5: DOCX Pipeline Integration
 **Goal**: Users can convert images extracted from DOCX files end-to-end
@@ -104,6 +104,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Conversion Module Core | 1/1 | Complete   | 2026-04-02 |
 | 2. Format Handling and Output Naming | 0/1 | Not started | - |
 | 3. CLI Arguments and Validation | 0/1 | Not started | - |
-| 4. GIF Extraction and Routing | 0/1 | Not started | - |
+| 4. GIF Extraction and Routing | 1/1 | Complete | 2026-04-02 |
 | 5. DOCX Pipeline Integration | 0/0 | Not started | - |
 | 6. EPUB Pipeline Integration | 0/0 | Not started | - |

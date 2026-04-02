@@ -88,6 +88,19 @@ pub struct ImageToExtract {
     pub extension: String,
 }
 
+/// Counts of images extracted during a single file processing operation.
+///
+/// `extracted` counts ALL images written to disk (including GIFs routed
+/// to a separate directory). `gifs_routed` counts only those GIFs written
+/// to the `--gif-output` directory specifically.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ExtractionCounts {
+    /// Total number of images extracted (includes routed GIFs)
+    pub extracted: usize,
+    /// Number of GIF files routed to the GIF output directory
+    pub gifs_routed: usize,
+}
+
 /// Generates a unique output path, appending a counter if the file already exists
 pub fn get_unique_output_path(
     output_base_dir: &Path,
@@ -225,5 +238,31 @@ mod tests {
     fn test_is_safe_archive_path_alternate_data_stream() {
         assert!(!is_safe_archive_path("file.txt::$DATA"));
         assert!(!is_safe_archive_path("file::stream"));
+    }
+
+    #[test]
+    fn test_extraction_counts_default() {
+        let counts = ExtractionCounts::default();
+        assert_eq!(counts.extracted, 0);
+        assert_eq!(counts.gifs_routed, 0);
+    }
+
+    #[test]
+    fn test_extraction_counts_accumulation() {
+        let mut total = ExtractionCounts::default();
+        let file1 = ExtractionCounts {
+            extracted: 5,
+            gifs_routed: 2,
+        };
+        let file2 = ExtractionCounts {
+            extracted: 3,
+            gifs_routed: 0,
+        };
+        total.extracted += file1.extracted;
+        total.gifs_routed += file1.gifs_routed;
+        total.extracted += file2.extracted;
+        total.gifs_routed += file2.gifs_routed;
+        assert_eq!(total.extracted, 8);
+        assert_eq!(total.gifs_routed, 2);
     }
 }

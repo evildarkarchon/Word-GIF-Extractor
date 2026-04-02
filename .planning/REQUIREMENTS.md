@@ -19,9 +19,9 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### GIF Extraction
 
-- [ ] **GIF-01**: User can extract only GIF files via `--gif-only` flag (all non-GIF image formats are skipped)
-- [ ] **GIF-02**: User can route extracted GIF files to a separate directory via `--gif-output <path>`
-- [ ] **GIF-03**: `--gif-output` works independently of `--gif-only` — GIFs are routed to the GIF output directory even when extracting all formats
+- [x] **GIF-01**: User can extract only GIF files via `--gif-only` flag (all non-GIF image formats are skipped)
+- [x] **GIF-02**: User can route extracted GIF files to a separate directory via `--gif-output <path>`
+- [x] **GIF-03**: `--gif-output` works independently of `--gif-only` — GIFs are routed to the GIF output directory even when extracting all formats
 - [x] **GIF-04**: `--convert` and `--gif-only` are mutually exclusive (error if both specified)
 
 ## v2 Requirements
@@ -61,9 +61,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONV-05 | Phase 1 | Complete |
 | CONV-06 | Phase 3 | Complete |
 | CONV-07 | Phase 3 | Complete |
-| GIF-01 | Phase 4 | Pending |
-| GIF-02 | Phase 4 | Pending |
-| GIF-03 | Phase 4 | Pending |
+| GIF-01 | Phase 4 | Complete |
+| GIF-02 | Phase 4 | Complete |
+| GIF-03 | Phase 4 | Complete |
 | GIF-04 | Phase 3 | Complete |
 
 **Coverage:**
@@ -73,4 +73,4 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 ---
 *Requirements defined: 2026-04-02*
-*Last updated: 2026-04-02 after roadmap creation*
+*Last updated: 2026-04-02 after Phase 4 Plan 01 completion*

@@ -7,7 +7,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::common::{
-    get_unique_output_path, is_safe_archive_path, sanitize_filename, write_image_to_file,
+    ExtractionCounts, get_unique_output_path, is_safe_archive_path, sanitize_filename,
+    write_image_to_file,
 };
 
 /// Common JPEG file extensions for cover image fallback detection
@@ -123,7 +124,7 @@ struct EpubImage {
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
 /// If a filter is provided, only processes files matching the filter criteria.
-/// Returns the number of images extracted.
+/// Returns extraction counts including GIF routing information.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
@@ -131,7 +132,8 @@ pub fn process_file(
     cover_only: bool,
     cover_fallback: bool,
     filter: &EpubFilter,
-) -> Result<usize> {
+    gif_output: Option<&Path>,
+) -> Result<ExtractionCounts> {
     let fallback_name = input_path
         .file_stem()
         .context("Invalid filename")?
@@ -147,7 +149,7 @@ pub fn process_file(
 
     // Check filter if any criteria are set - silently skip non-matching files
     if !filter.is_empty() && !matches_filter(title.as_deref(), author.as_deref(), filter) {
-        return Ok(0);
+        return Ok(ExtractionCounts::default());
     }
 
     let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
@@ -160,6 +162,7 @@ pub fn process_file(
             allowed_extensions,
             input_path,
             cover_fallback,
+            gif_output,
         );
     }
 
@@ -169,6 +172,7 @@ pub fn process_file(
         &base_name,
         allowed_extensions,
         input_path,
+        gif_output,
     )
 }
 
@@ -179,7 +183,8 @@ fn extract_all_images(
     base_name: &str,
     allowed_extensions: &HashSet<&str>,
     _input_path: &Path,
-) -> Result<usize> {
+    gif_output: Option<&Path>,
+) -> Result<ExtractionCounts> {
     // Collect images from resources
     // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
     let mut images: Vec<EpubImage> = Vec::new();
@@ -220,13 +225,15 @@ fn extract_all_images(
     }
 
     if images.is_empty() {
-        return Ok(0);
+        return Ok(ExtractionCounts::default());
     }
 
     // create_dir_all is idempotent - succeeds if directory exists
     fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
 
     let total_images = images.len();
+    let mut counts = ExtractionCounts::default();
+    let mut gif_dir_created = false;
 
     for (seq_index, image) in images.iter().enumerate() {
         // Get the image data - get_resource returns Option<(Vec<u8>, String)>
@@ -234,8 +241,20 @@ fn extract_all_images(
             .get_resource(&image.id)
             .ok_or_else(|| anyhow::anyhow!("Failed to get resource '{}'", image.id))?;
 
+        // Determine output directory: route GIFs to gif_output if set
+        let is_gif = image.extension == "gif";
+        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+            if !gif_dir_created {
+                fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
+                gif_dir_created = true;
+            }
+            gif_dir
+        } else {
+            output_base_dir
+        };
+
         let output_path = get_unique_output_path(
-            output_base_dir,
+            effective_output_dir,
             base_name,
             seq_index,
             total_images,
@@ -243,9 +262,14 @@ fn extract_all_images(
         )?;
 
         write_image_to_file(&output_path, &data)?;
+
+        counts.extracted += 1;
+        if is_gif && gif_output.is_some() {
+            counts.gifs_routed += 1;
+        }
     }
 
-    Ok(total_images)
+    Ok(counts)
 }
 
 /// Searches for a cover image by filename when metadata-based detection fails.
@@ -288,7 +312,8 @@ fn extract_cover_only(
     allowed_extensions: &HashSet<&str>,
     input_path: &Path,
     cover_fallback: bool,
-) -> Result<usize> {
+    gif_output: Option<&Path>,
+) -> Result<ExtractionCounts> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
 
@@ -303,18 +328,36 @@ fn extract_cover_only(
                     "Warning: Cover image format '{}' not in allowed formats, skipping.",
                     extension
                 );
-                return Ok(0);
+                return Ok(ExtractionCounts::default());
             }
 
+            // Determine output directory: route GIF covers to gif_output if set
+            let is_gif = extension == "gif";
+            let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+                fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
+                gif_dir
+            } else {
+                output_base_dir
+            };
+
             // create_dir_all is idempotent - succeeds if directory exists
-            fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
+            fs::create_dir_all(effective_output_dir)
+                .context("Failed to create output directory")?;
 
             // Use just the base name (author/title) for cover-only mode
-            let output_path = get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
+            let output_path =
+                get_unique_output_path(effective_output_dir, base_name, 0, 1, &extension)?;
 
             write_image_to_file(&output_path, &data)?;
 
-            Ok(1)
+            let mut counts = ExtractionCounts {
+                extracted: 1,
+                gifs_routed: 0,
+            };
+            if is_gif && gif_output.is_some() {
+                counts.gifs_routed = 1;
+            }
+            Ok(counts)
         }
         None => {
             // Try fallback: look for a file named "cover" with JPEG extension
@@ -327,17 +370,35 @@ fn extract_cover_only(
                         "Warning: Cover image format '{}' not in allowed formats, skipping.",
                         extension
                     );
-                    return Ok(0);
+                    return Ok(ExtractionCounts::default());
                 }
 
-                fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
+                // Determine output directory: route GIF covers to gif_output if set
+                let is_gif = extension == "gif";
+                let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+                    fs::create_dir_all(gif_dir)
+                        .context("Failed to create GIF output directory")?;
+                    gif_dir
+                } else {
+                    output_base_dir
+                };
+
+                fs::create_dir_all(effective_output_dir)
+                    .context("Failed to create output directory")?;
 
                 let output_path =
-                    get_unique_output_path(output_base_dir, base_name, 0, 1, &extension)?;
+                    get_unique_output_path(effective_output_dir, base_name, 0, 1, &extension)?;
 
                 write_image_to_file(&output_path, &data)?;
 
-                Ok(1)
+                let mut counts = ExtractionCounts {
+                    extracted: 1,
+                    gifs_routed: 0,
+                };
+                if is_gif && gif_output.is_some() {
+                    counts.gifs_routed = 1;
+                }
+                Ok(counts)
             } else if cover_fallback {
                 // No cover found via metadata or filename, fall back to extracting all images
                 extract_all_images(
@@ -346,10 +407,11 @@ fn extract_cover_only(
                     base_name,
                     allowed_extensions,
                     input_path,
+                    gif_output,
                 )
             } else {
                 // No cover image found
-                Ok(0)
+                Ok(ExtractionCounts::default())
             }
         }
     }
