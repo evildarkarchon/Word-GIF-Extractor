@@ -64,7 +64,7 @@ Extracted images are consistently in the user's desired format — no manual con
 | JPEG quality 85 default | Higher than `image` crate default (75), better visual quality for typical photos | Validated in Phase 1 |
 | Alpha compositing on white | JPEG has no alpha; transparent pixels composite against white (not black) | Validated in Phase 1 |
 | `--gif-output <path>` for GIF separation | Explicit user-specified path gives full control | — Pending |
-| Skip unsupported formats during conversion | WMF/EMF/SVG can't be decoded by `image` crate; warn and extract as-is | — Pending |
+| Skip unsupported formats during conversion | WMF/EMF/SVG can't be decoded by `image` crate; warn and extract as-is | Validated in Phase 2 |
 
 ## Evolution
 
@@ -84,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 1 completion*
+*Last updated: 2026-04-02 after Phase 2 completion*
