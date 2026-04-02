@@ -21,13 +21,13 @@ Extracted images are consistently in the user's desired format — no manual con
 - ✓ EPUB deduplication by (author, title) pair — existing
 - ✓ Path traversal protection and filename sanitization — existing
 - ✓ Progress bars and spinners via indicatif — existing
+- ✓ GIF-only extraction mode via `--gif-only` flag — Validated in Phase 4
+- ✓ Separate GIF output directory via `--gif-output <path>` flag — Validated in Phase 4
+- ✓ `--convert` and `--gif-only` are mutually exclusive (error if both specified) — Validated in Phase 3
 
 ### Active
 
 - [ ] Convert extracted images to a single target format (jpg, png, or webp) via `--convert` flag
-- [ ] GIF-only extraction mode via `--gif-only` flag
-- [ ] Separate GIF output directory via `--gif-output <path>` flag
-- [ ] `--convert` and `--gif-only` are mutually exclusive (error if both specified)
 - [ ] Conversion outputs only the converted file (no original kept)
 
 ### Out of Scope
@@ -84,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 3 completion*
+*Last updated: 2026-04-02 after Phase 4 completion*
