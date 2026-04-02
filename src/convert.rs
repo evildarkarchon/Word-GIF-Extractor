@@ -7,7 +7,10 @@
 //!
 //! Note: Animated GIFs are decoded as their first frame only.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use image::codecs::jpeg::JpegEncoder;
+use image::codecs::png::PngEncoder;
+use image::{DynamicImage, ImageError, Rgb, RgbImage, Rgba};
 
 /// Target format for image conversion
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +28,11 @@ pub enum OutputFormat {
 /// Returns `true` for formats the `image` crate can decode: jpg, jpeg, png,
 /// gif, bmp, tiff, tif, webp, ico. Returns `false` for SVG, WMF, EMF, and
 /// other unsupported formats.
-pub fn can_convert(_extension: &str) -> bool {
-    todo!()
+pub fn can_convert(extension: &str) -> bool {
+    matches!(
+        extension.to_lowercase().as_str(),
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "tif" | "webp" | "ico"
+    )
 }
 
 /// Converts image bytes from one format to another.
@@ -37,8 +43,85 @@ pub fn can_convert(_extension: &str) -> bool {
 ///
 /// The `quality` parameter controls JPEG and lossy WebP output (1-100).
 /// It is ignored for PNG (lossless).
-pub fn convert_image(_data: &[u8], _format: OutputFormat, _quality: u8) -> Result<Option<Vec<u8>>> {
-    todo!()
+pub fn convert_image(data: &[u8], format: OutputFormat, quality: u8) -> Result<Option<Vec<u8>>> {
+    // Stage 1 - Decode: detect format from magic bytes and decode
+    let img = match image::load_from_memory(data) {
+        Ok(img) => img,
+        Err(ImageError::Unsupported(_)) => return Ok(None),
+        Err(e) => return Err(e).context("Failed to decode image"),
+    };
+
+    // Stage 2 & 3 - Alpha compositing (JPEG only) and Encode
+    let encoded = match format {
+        OutputFormat::Jpg => {
+            let img_for_encode = if img.color().has_alpha() {
+                composite_on_white(&img)
+            } else {
+                img
+            };
+            encode_jpeg(&img_for_encode, quality)?
+        }
+        OutputFormat::Png => encode_png(&img)?,
+        OutputFormat::Webp => encode_webp_lossy(&img, quality)?,
+    };
+
+    Ok(Some(encoded))
+}
+
+/// Composites an RGBA image onto a white background, producing an RGB image.
+///
+/// For each pixel, blends the source color against white (255, 255, 255)
+/// using the alpha channel value. Fully transparent pixels become white.
+fn composite_on_white(img: &DynamicImage) -> DynamicImage {
+    let rgba = img.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut rgb = RgbImage::new(width, height);
+
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        let Rgba([r, g, b, a]) = *pixel;
+        let alpha = a as f32 / 255.0;
+        let inv_alpha = 1.0 - alpha;
+
+        // Blend against white (255, 255, 255)
+        let out_r = (r as f32 * alpha + 255.0 * inv_alpha) as u8;
+        let out_g = (g as f32 * alpha + 255.0 * inv_alpha) as u8;
+        let out_b = (b as f32 * alpha + 255.0 * inv_alpha) as u8;
+
+        rgb.put_pixel(x, y, Rgb([out_r, out_g, out_b]));
+    }
+
+    DynamicImage::ImageRgb8(rgb)
+}
+
+/// Encodes a DynamicImage as JPEG with the specified quality.
+///
+/// Uses `JpegEncoder::new_with_quality` to control output quality (1-100).
+fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let encoder = JpegEncoder::new_with_quality(&mut buf, quality);
+    img.write_with_encoder(encoder)
+        .context("Failed to encode JPEG")?;
+    Ok(buf)
+}
+
+/// Encodes a DynamicImage as PNG (lossless, preserves alpha channel).
+fn encode_png(img: &DynamicImage) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let encoder = PngEncoder::new(&mut buf);
+    img.write_with_encoder(encoder)
+        .context("Failed to encode PNG")?;
+    Ok(buf)
+}
+
+/// Encodes a DynamicImage as lossy WebP using the `webp` crate.
+///
+/// Uses `webp::Encoder::from_image` for direct `DynamicImage` integration.
+/// The quality parameter controls lossy compression (1-100, where 100 is highest quality).
+fn encode_webp_lossy(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    let encoder = webp::Encoder::from_image(img)
+        .map_err(|e| anyhow::anyhow!("WebP encoder creation failed: {}", e))?;
+    let webp_data = encoder.encode(quality as f32);
+    Ok(webp_data.to_vec())
 }
 
 #[cfg(test)]
@@ -124,16 +207,13 @@ mod tests {
         buf.into_inner()
     }
 
-    /// Creates a 64x64 photographic-style test image with smooth gradients
+    /// Creates a 256x256 photographic-style test image with smooth gradients.
+    /// Larger size ensures lossy WebP is smaller than lossless for photographic content.
     fn create_photographic_test_image() -> Vec<u8> {
         use image::RgbImage;
-        let mut img = RgbImage::new(64, 64);
+        let mut img = RgbImage::new(256, 256);
         for (x, y, pixel) in img.enumerate_pixels_mut() {
-            *pixel = image::Rgb([
-                (x * 4) as u8,
-                (y * 4) as u8,
-                ((x + y) * 2) as u8,
-            ]);
+            *pixel = image::Rgb([x as u8, y as u8, ((x + y) / 2) as u8]);
         }
         let dynamic = DynamicImage::ImageRgb8(img);
         let mut buf = Cursor::new(Vec::new());
@@ -169,20 +249,37 @@ mod tests {
         assert!(can_convert("TIFF"));
     }
 
+    /// Creates a 16x16 RGBA PNG with a large transparent region for alpha compositing tests.
+    /// Uses a larger image to avoid JPEG cross-pixel color bleeding artifacts.
+    fn create_alpha_test_png() -> Vec<u8> {
+        let mut img = RgbaImage::new(16, 16);
+        // Fill entire image with fully transparent pixels
+        for (_, _, pixel) in img.enumerate_pixels_mut() {
+            *pixel = Rgba([0, 0, 255, 0]); // blue, fully transparent
+        }
+        // Put a small opaque red region in the top-left corner
+        img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+
+        let dynamic = DynamicImage::ImageRgba8(img);
+        let mut buf = Cursor::new(Vec::new());
+        dynamic.write_to(&mut buf, ImageFormat::Png).unwrap();
+        buf.into_inner()
+    }
+
     #[test]
     fn test_jpeg_alpha_compositing_white_background() {
-        let png_data = create_test_rgba_png();
-        let result = convert_image(&png_data, OutputFormat::Jpg, 85)
-            .expect("convert_image should succeed");
+        let png_data = create_alpha_test_png();
+        let result =
+            convert_image(&png_data, OutputFormat::Jpg, 85).expect("convert_image should succeed");
         let jpeg_bytes = result.expect("should return Some(bytes)");
 
         // Decode the JPEG result
-        let decoded = image::load_from_memory(&jpeg_bytes)
-            .expect("should decode JPEG output");
+        let decoded = image::load_from_memory(&jpeg_bytes).expect("should decode JPEG output");
         let rgb = decoded.to_rgb8();
 
-        // Check the fully transparent pixel (0,1) -- should be white, not black
-        let pixel = rgb.get_pixel(0, 1);
+        // Check a pixel in the center of the transparent region (8,8)
+        // should be white, not black -- far enough from edges to avoid JPEG bleed
+        let pixel = rgb.get_pixel(8, 8);
         assert!(
             pixel[0] >= 250 && pixel[1] >= 250 && pixel[2] >= 250,
             "Transparent pixel should be white (>= 250), got: {:?}",
@@ -193,8 +290,8 @@ mod tests {
     #[test]
     fn test_jpeg_opaque_no_compositing() {
         let jpeg_data = create_test_rgb_jpeg();
-        let result = convert_image(&jpeg_data, OutputFormat::Jpg, 85)
-            .expect("convert_image should succeed");
+        let result =
+            convert_image(&jpeg_data, OutputFormat::Jpg, 85).expect("convert_image should succeed");
         assert!(
             result.is_some(),
             "Opaque JPEG to JPEG should return Some(bytes)"
@@ -236,8 +333,8 @@ mod tests {
     #[test]
     fn test_png_preserves_alpha() {
         let png_data = create_test_rgba_png();
-        let result = convert_image(&png_data, OutputFormat::Png, 85)
-            .expect("convert_image should succeed");
+        let result =
+            convert_image(&png_data, OutputFormat::Png, 85).expect("convert_image should succeed");
         let output = result.expect("should return Some(bytes)");
 
         // Decode and check alpha is preserved
@@ -287,8 +384,8 @@ mod tests {
     #[test]
     fn test_webp_lossy_encoding() {
         let png_data = create_test_rgba_png();
-        let result = convert_image(&png_data, OutputFormat::Webp, 85)
-            .expect("convert_image should succeed");
+        let result =
+            convert_image(&png_data, OutputFormat::Webp, 85).expect("convert_image should succeed");
         let webp_bytes = result.expect("should return Some(bytes)");
         assert!(!webp_bytes.is_empty(), "WebP output should not be empty");
 
@@ -301,8 +398,8 @@ mod tests {
     fn test_unsupported_format_returns_none() {
         // SVG-like data that image crate cannot decode (unsupported format)
         let svg_data = b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let result = convert_image(svg_data, OutputFormat::Png, 85)
-            .expect("should return Ok, not Err");
+        let result =
+            convert_image(svg_data, OutputFormat::Png, 85).expect("should return Ok, not Err");
         assert!(
             result.is_none(),
             "Unsupported format should return Ok(None)"
@@ -343,8 +440,9 @@ mod tests {
         for (src_name, src_data) in &sources {
             for (tgt_name, tgt_format) in &targets {
                 let result = convert_image(src_data, *tgt_format, 85);
-                let output = result
-                    .unwrap_or_else(|e| panic!("{} -> {}: unexpected error: {}", src_name, tgt_name, e));
+                let output = result.unwrap_or_else(|e| {
+                    panic!("{} -> {}: unexpected error: {}", src_name, tgt_name, e)
+                });
                 let bytes = output
                     .unwrap_or_else(|| panic!("{} -> {}: unexpected None", src_name, tgt_name));
                 assert!(
@@ -360,8 +458,8 @@ mod tests {
     #[test]
     fn test_convert_returns_bytes() {
         let png_data = create_test_rgba_png();
-        let result = convert_image(&png_data, OutputFormat::Png, 85)
-            .expect("convert_image should succeed");
+        let result =
+            convert_image(&png_data, OutputFormat::Png, 85).expect("convert_image should succeed");
         let bytes = result.expect("should return Some(Vec<u8>)");
         assert!(!bytes.is_empty(), "Converted bytes should not be empty");
     }
