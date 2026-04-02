@@ -23,6 +23,32 @@ pub enum OutputFormat {
     Webp,
 }
 
+/// Result of attempting to convert an image to a target format.
+///
+/// Used by callers to determine whether to write converted bytes or
+/// extract the original image as-is. The extension string in each
+/// variant is ready to pass directly to `get_unique_output_path()`.
+#[derive(Debug)]
+pub enum ConversionResult {
+    /// Image was successfully converted. Contains the converted bytes
+    /// and the target format extension (e.g., "png", "jpg", "webp").
+    Converted(Vec<u8>, String),
+    /// Image was skipped (unsupported source format). Contains the
+    /// original file extension to preserve in the output filename.
+    Skipped(String),
+}
+
+impl OutputFormat {
+    /// Returns the file extension for this output format (without leading dot).
+    pub fn extension(&self) -> &'static str {
+        match self {
+            OutputFormat::Jpg => "jpg",
+            OutputFormat::Png => "png",
+            OutputFormat::Webp => "webp",
+        }
+    }
+}
+
 /// Checks whether a source image extension can be decoded for conversion.
 ///
 /// Returns `true` for formats the `image` crate can decode: jpg, jpeg, png,
@@ -66,6 +92,42 @@ pub fn convert_image(data: &[u8], format: OutputFormat, quality: u8) -> Result<O
     };
 
     Ok(Some(encoded))
+}
+
+/// Attempts to convert image data to the target format.
+///
+/// This is the primary conversion API for callers. It checks whether the
+/// source format is convertible, attempts conversion, and returns a
+/// `ConversionResult` indicating whether the image was converted or skipped.
+///
+/// Returns `Skipped` when:
+/// - `can_convert()` returns false for the source extension (pre-check)
+/// - `convert_image()` returns `Ok(None)` (unsupported at decode time)
+///
+/// Returns `Err` when:
+/// - The image data is corrupt or undecodable
+pub fn try_convert(
+    data: &[u8],
+    source_ext: &str,
+    format: OutputFormat,
+    quality: u8,
+) -> Result<ConversionResult> {
+    // Fast path: extension not in decodable set
+    if !can_convert(source_ext) {
+        return Ok(ConversionResult::Skipped(source_ext.to_lowercase()));
+    }
+
+    // Attempt conversion
+    match convert_image(data, format, quality)? {
+        Some(converted_bytes) => Ok(ConversionResult::Converted(
+            converted_bytes,
+            format.extension().to_string(),
+        )),
+        None => {
+            // Unsupported format detected at decode time (magic bytes don't match)
+            Ok(ConversionResult::Skipped(source_ext.to_lowercase()))
+        }
+    }
 }
 
 /// Composites an RGBA image onto a white background, producing an RGB image.
