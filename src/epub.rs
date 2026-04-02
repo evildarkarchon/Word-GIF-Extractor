@@ -353,6 +353,8 @@ fn extract_cover_only(
             let mut counts = ExtractionCounts {
                 extracted: 1,
                 gifs_routed: 0,
+                converted: 0,
+                skipped: 0,
             };
             if is_gif && gif_output.is_some() {
                 counts.gifs_routed = 1;
@@ -376,8 +378,7 @@ fn extract_cover_only(
                 // Determine output directory: route GIF covers to gif_output if set
                 let is_gif = extension == "gif";
                 let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
-                    fs::create_dir_all(gif_dir)
-                        .context("Failed to create GIF output directory")?;
+                    fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                     gif_dir
                 } else {
                     output_base_dir
@@ -394,6 +395,8 @@ fn extract_cover_only(
                 let mut counts = ExtractionCounts {
                     extracted: 1,
                     gifs_routed: 0,
+                    converted: 0,
+                    skipped: 0,
                 };
                 if is_gif && gif_output.is_some() {
                     counts.gifs_routed = 1;

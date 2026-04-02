@@ -691,11 +691,15 @@ mod tests {
         let counts = ExtractionCounts {
             extracted: 5,
             gifs_routed: 2,
+            converted: 0,
+            skipped: 0,
         };
         assert!(counts.gifs_routed > 0);
         let counts = ExtractionCounts {
             extracted: 3,
             gifs_routed: 0,
+            converted: 0,
+            skipped: 0,
         };
         assert!(counts.gifs_routed == 0);
     }

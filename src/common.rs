@@ -99,6 +99,10 @@ pub struct ExtractionCounts {
     pub extracted: usize,
     /// Number of GIF files routed to the GIF output directory
     pub gifs_routed: usize,
+    /// Number of images successfully converted to target format
+    pub converted: usize,
+    /// Number of images skipped during conversion (unsupported format or error)
+    pub skipped: usize,
 }
 
 /// Generates a unique output path, appending a counter if the file already exists
@@ -245,6 +249,8 @@ mod tests {
         let counts = ExtractionCounts::default();
         assert_eq!(counts.extracted, 0);
         assert_eq!(counts.gifs_routed, 0);
+        assert_eq!(counts.converted, 0);
+        assert_eq!(counts.skipped, 0);
     }
 
     #[test]
@@ -253,16 +259,26 @@ mod tests {
         let file1 = ExtractionCounts {
             extracted: 5,
             gifs_routed: 2,
+            converted: 3,
+            skipped: 1,
         };
         let file2 = ExtractionCounts {
             extracted: 3,
             gifs_routed: 0,
+            converted: 2,
+            skipped: 0,
         };
         total.extracted += file1.extracted;
         total.gifs_routed += file1.gifs_routed;
+        total.converted += file1.converted;
+        total.skipped += file1.skipped;
         total.extracted += file2.extracted;
         total.gifs_routed += file2.gifs_routed;
+        total.converted += file2.converted;
+        total.skipped += file2.skipped;
         assert_eq!(total.extracted, 8);
         assert_eq!(total.gifs_routed, 2);
+        assert_eq!(total.converted, 5);
+        assert_eq!(total.skipped, 1);
     }
 }
