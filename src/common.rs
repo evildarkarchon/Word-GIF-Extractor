@@ -5,6 +5,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::convert::OutputFormat;
+
 /// Returns the set of supported image file extensions
 pub fn get_supported_extensions() -> HashSet<&'static str> {
     HashSet::from([
@@ -103,6 +105,22 @@ pub struct ExtractionCounts {
     pub converted: usize,
     /// Number of images skipped during conversion (unsupported format or error)
     pub skipped: usize,
+}
+
+/// Configuration for image extraction and conversion behavior.
+///
+/// Bundles conversion-related parameters that are threaded through
+/// the dispatch chain from main.rs to format-specific processors.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractionConfig<'a> {
+    /// Target format for conversion (None = extract as-is)
+    pub convert: Option<OutputFormat>,
+    /// JPEG/WebP encoding quality (1-100)
+    pub quality: u8,
+    /// Use lossless WebP encoding
+    pub lossless: bool,
+    /// Separate output directory for GIF files
+    pub gif_output: Option<&'a Path>,
 }
 
 /// Generates a unique output path, appending a counter if the file already exists

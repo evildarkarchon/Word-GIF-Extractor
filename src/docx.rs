@@ -8,10 +8,10 @@ use std::path::Path;
 use zip::ZipArchive;
 
 use crate::common::{
-    ExtractionCounts, ImageToExtract, get_unique_output_path, is_safe_archive_path,
-    write_image_to_file,
+    ExtractionConfig, ExtractionCounts, ImageToExtract, get_unique_output_path,
+    is_safe_archive_path, write_image_to_file,
 };
-use crate::convert::{ConversionResult, OutputFormat, try_convert};
+use crate::convert::{ConversionResult, try_convert};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
 /// When `convert` is specified, images are converted to the target format before writing.
@@ -21,10 +21,7 @@ pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
-    gif_output: Option<&Path>,
-    convert: Option<OutputFormat>,
-    quality: u8,
-    lossless: bool,
+    config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     let doc_name = input_path
         .file_stem()
@@ -76,7 +73,7 @@ pub fn process_file(
 
         // Determine output directory: route GIFs to gif_output if set
         let is_gif = image.extension == "gif";
-        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output) {
             if !gif_dir_created {
                 fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                 gif_dir_created = true;
@@ -92,15 +89,15 @@ pub fn process_file(
             .context("Failed to read image from archive")?;
 
         // Determine if this GIF is being routed (GIF routing takes priority per D-10)
-        let is_routed_gif = is_gif && gif_output.is_some();
+        let is_routed_gif = is_gif && config.gif_output.is_some();
 
         // Attempt conversion if requested and not a routed GIF
-        let (final_data, final_ext) = if let Some(format) = convert {
+        let (final_data, final_ext) = if let Some(format) = config.convert {
             if is_routed_gif {
                 // GIF is being routed to gif_output -- write as-is, skip conversion
                 (data, image.extension.clone())
             } else {
-                match try_convert(&data, &image.extension, format, quality, lossless) {
+                match try_convert(&data, &image.extension, format, config.quality, config.lossless) {
                     Ok(ConversionResult::Converted(converted_bytes, ext)) => {
                         counts.converted += 1;
                         (converted_bytes, ext)

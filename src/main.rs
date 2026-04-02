@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::convert::OutputFormat;
-use common::{ExtractionCounts, get_supported_extensions, normalize_format};
+use common::{ExtractionConfig, ExtractionCounts, get_supported_extensions, normalize_format};
 use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
@@ -289,11 +289,6 @@ fn deduplicate_by_metadata(files: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 /// Processes a single file based on its type.
-///
-/// Parameter count is high due to format-specific options being threaded through
-/// a single dispatch point. A config struct refactor is planned for Phase 6
-/// when EPUB conversion params are also added.
-#[allow(clippy::too_many_arguments)]
 fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
@@ -301,21 +296,12 @@ fn process_file(
     cover_only: bool,
     cover_fallback: bool,
     epub_filter: &EpubFilter,
-    gif_output: Option<&Path>,
-    convert: Option<OutputFormat>,
-    quality: u8,
-    lossless: bool,
+    config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     match get_document_type(input_path) {
-        Some(DocumentType::Docx) => docx::process_file(
-            input_path,
-            output_base_dir,
-            allowed_extensions,
-            gif_output,
-            convert,
-            quality,
-            lossless,
-        ),
+        Some(DocumentType::Docx) => {
+            docx::process_file(input_path, output_base_dir, allowed_extensions, config)
+        }
         Some(DocumentType::Epub) => epub::process_file(
             input_path,
             output_base_dir,
@@ -323,7 +309,7 @@ fn process_file(
             cover_only,
             cover_fallback,
             epub_filter,
-            gif_output,
+            config.gif_output,
         ),
         None => {
             anyhow::bail!(
@@ -371,6 +357,13 @@ fn main() -> Result<()> {
 
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
     let quality = args.quality.unwrap_or(85);
+
+    let config = ExtractionConfig {
+        convert: args.convert,
+        quality,
+        lossless: args.lossless,
+        gif_output: args.gif_output.as_deref(),
+    };
 
     // Determine allowed extensions
     let mut target_extensions = HashSet::new();
@@ -467,10 +460,7 @@ fn main() -> Result<()> {
             args.cover_only,
             args.cover_fallback,
             &epub_filter,
-            args.gif_output.as_deref(),
-            args.convert,
-            quality,
-            args.lossless,
+            &config,
         ) {
             Ok(counts) => {
                 total_counts.extracted += counts.extracted;
