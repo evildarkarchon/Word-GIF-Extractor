@@ -4,6 +4,8 @@
 //! matching specified formats.
 
 mod common;
+#[allow(dead_code)] // Module built ahead of integration (Phase 5)
+mod convert;
 mod docx;
 mod epub;
 
