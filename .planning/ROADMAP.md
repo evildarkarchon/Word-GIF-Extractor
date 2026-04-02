@@ -68,7 +68,9 @@ Plans:
   1. Running with `--gif-only` extracts only GIF files and skips all other image formats
   2. Running with `--gif-output /path/to/gifs` writes GIF files to the specified directory while other formats go to the default output directory
   3. `--gif-output` routes GIFs to the separate directory even without `--gif-only` (when extracting all formats, GIFs go to the GIF directory and non-GIFs go to the default directory)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 04-01-PLAN.md -- Add ExtractionCounts struct, GIF routing in DOCX/EPUB processors, gif-only filter in main.rs, split finish message
 
 ### Phase 5: DOCX Pipeline Integration
 **Goal**: Users can convert images extracted from DOCX files end-to-end
@@ -102,6 +104,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Conversion Module Core | 1/1 | Complete   | 2026-04-02 |
 | 2. Format Handling and Output Naming | 0/1 | Not started | - |
 | 3. CLI Arguments and Validation | 0/1 | Not started | - |
-| 4. GIF Extraction and Routing | 0/0 | Not started | - |
+| 4. GIF Extraction and Routing | 0/1 | Not started | - |
 | 5. DOCX Pipeline Integration | 0/0 | Not started | - |
 | 6. EPUB Pipeline Integration | 0/0 | Not started | - |
