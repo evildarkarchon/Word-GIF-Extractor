@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Extracted images are consistently in the user's desired format -- no manual conversion step after extraction.
-**Current focus:** Phase 03 — cli-arguments-and-validation
+**Current focus:** Phase 05 — docx-pipeline-integration
 
 ## Current Position
 
 Phase: 5
 Plan: Not started
-Status: Plan 04-01 complete
+Status: Ready to plan
 Last activity: 2026-04-02
 
 Progress: [##########] 100%
@@ -76,11 +76,11 @@ None yet.
 ### Blockers/Concerns
 
 - Research gap: `webp` crate error handling with unusual color spaces (grayscale, palette-indexed) needs verification during Phase 1.
-- Research gap: `--gif-output` + `--convert` interaction -- GIFs routed to GIF output should be written as-is (unconverted). Confirm during Phase 3/4.
+- [Phase 4] `--gif-output` + `--convert` interaction -- GIFs routed to GIF output should be written as-is (unconverted). Needs enforcement in Phase 5/6.
 - EPUB parameter count growth: `epub::process_file` will have ~8 parameters after changes. May need config struct refactor in Phase 6.
 
 ## Session Continuity
 
-Last session: 2026-04-02T11:02:56Z
-Stopped at: Completed 04-01-PLAN.md
-Resume file: .planning/phases/04-gif-extraction-and-routing/04-01-SUMMARY.md
+Last session: 2026-04-02
+Stopped at: Phase 4 complete, ready to plan Phase 5
+Resume file: None
