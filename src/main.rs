@@ -4,6 +4,7 @@
 //! matching specified formats.
 
 mod common;
+mod convert;
 mod docx;
 mod epub;
 

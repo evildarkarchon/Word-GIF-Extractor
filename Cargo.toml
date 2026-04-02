@@ -10,6 +10,16 @@ anyhow = "1.0.82"
 walkdir = "2.5.0"
 epub = "2.1.4"
 indicatif = "0.18.3"
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "tiff",
+    "webp",
+    "ico",
+] }
+webp = "0.3"
 
 [profile.release]
 opt-level = 3
