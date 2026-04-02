@@ -12,7 +12,7 @@ This milestone adds image format conversion and GIF-specific extraction to an ex
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Conversion Module Core** - Build convert.rs with image decoding, format conversion, alpha compositing, and WebP lossy encoding
+- [x] **Phase 1: Conversion Module Core** - Build convert.rs with image decoding, format conversion, alpha compositing, and WebP lossy encoding (completed 2026-04-02)
 - [ ] **Phase 2: Format Handling and Output Naming** - Skip unsupported vector formats with warning, correct extension replacement on converted files
 - [ ] **Phase 3: CLI Arguments and Validation** - Add --convert, --gif-only, --gif-output, --quality flags with conflict rules
 - [ ] **Phase 4: GIF Extraction and Routing** - Implement GIF-only filtering and separate GIF output directory routing
@@ -31,9 +31,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. WebP output uses lossy encoding (converted file is smaller than lossless equivalent for photographic content)
   4. JPEG output uses quality 85 by default (not the image crate's default of 75)
   5. Unit tests pass for all supported source-to-target format combinations (JPEG, PNG, GIF, BMP, TIFF, WebP as sources; JPEG, PNG, WebP as targets)
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
-- [ ] 01-01-PLAN.md -- Build convert.rs module with OutputFormat enum, can_convert(), convert_image(), alpha compositing, and unit tests
+- [x] 01-01-PLAN.md -- Build convert.rs module with OutputFormat enum, can_convert(), convert_image(), alpha compositing, and unit tests
 
 ### Phase 2: Format Handling and Output Naming
 **Goal**: Conversion handles edge cases gracefully -- unsupported formats are skipped with clear feedback, and converted files have correct extensions
@@ -95,7 +95,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Conversion Module Core | 0/1 | Planning complete | - |
+| 1. Conversion Module Core | 1/1 | Complete   | 2026-04-02 |
 | 2. Format Handling and Output Naming | 0/0 | Not started | - |
 | 3. CLI Arguments and Validation | 0/0 | Not started | - |
 | 4. GIF Extraction and Routing | 0/0 | Not started | - |
