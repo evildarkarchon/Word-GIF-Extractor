@@ -71,7 +71,12 @@ pub fn can_convert(extension: &str) -> bool {
 ///
 /// The `quality` parameter controls JPEG and lossy WebP output (1-100).
 /// It is ignored for PNG (lossless).
-pub fn convert_image(data: &[u8], format: OutputFormat, quality: u8, lossless: bool) -> Result<Option<Vec<u8>>> {
+pub fn convert_image(
+    data: &[u8],
+    format: OutputFormat,
+    quality: u8,
+    lossless: bool,
+) -> Result<Option<Vec<u8>>> {
     // Stage 1 - Decode: detect format from magic bytes and decode
     let img = match image::load_from_memory(data) {
         Ok(img) => img,
@@ -186,8 +191,11 @@ fn encode_png(img: &DynamicImage) -> Result<Vec<u8>> {
 
 /// Encodes a DynamicImage as lossless WebP using the image crate's built-in encoder.
 fn encode_webp_lossless(img: &DynamicImage) -> Result<Vec<u8>> {
-    // TODO: implement lossless encoding
-    encode_webp_lossy(img, 85)
+    let mut buf = Vec::new();
+    let encoder = WebPEncoder::new_lossless(&mut buf);
+    img.write_with_encoder(encoder)
+        .context("Failed to encode lossless WebP")?;
+    Ok(buf)
 }
 
 /// Encodes a DynamicImage as lossy WebP using the `webp` crate.
@@ -346,8 +354,8 @@ mod tests {
     #[test]
     fn test_jpeg_alpha_compositing_white_background() {
         let png_data = create_alpha_test_png();
-        let result =
-            convert_image(&png_data, OutputFormat::Jpg, 85, false).expect("convert_image should succeed");
+        let result = convert_image(&png_data, OutputFormat::Jpg, 85, false)
+            .expect("convert_image should succeed");
         let jpeg_bytes = result.expect("should return Some(bytes)");
 
         // Decode the JPEG result
@@ -367,8 +375,8 @@ mod tests {
     #[test]
     fn test_jpeg_opaque_no_compositing() {
         let jpeg_data = create_test_rgb_jpeg();
-        let result =
-            convert_image(&jpeg_data, OutputFormat::Jpg, 85, false).expect("convert_image should succeed");
+        let result = convert_image(&jpeg_data, OutputFormat::Jpg, 85, false)
+            .expect("convert_image should succeed");
         assert!(
             result.is_some(),
             "Opaque JPEG to JPEG should return Some(bytes)"
@@ -410,8 +418,8 @@ mod tests {
     #[test]
     fn test_png_preserves_alpha() {
         let png_data = create_test_rgba_png();
-        let result =
-            convert_image(&png_data, OutputFormat::Png, 85, false).expect("convert_image should succeed");
+        let result = convert_image(&png_data, OutputFormat::Png, 85, false)
+            .expect("convert_image should succeed");
         let output = result.expect("should return Some(bytes)");
 
         // Decode and check alpha is preserved
@@ -461,8 +469,8 @@ mod tests {
     #[test]
     fn test_webp_lossy_encoding() {
         let png_data = create_test_rgba_png();
-        let result =
-            convert_image(&png_data, OutputFormat::Webp, 85, false).expect("convert_image should succeed");
+        let result = convert_image(&png_data, OutputFormat::Webp, 85, false)
+            .expect("convert_image should succeed");
         let webp_bytes = result.expect("should return Some(bytes)");
         assert!(!webp_bytes.is_empty(), "WebP output should not be empty");
 
@@ -475,8 +483,8 @@ mod tests {
     fn test_unsupported_format_returns_none() {
         // SVG-like data that image crate cannot decode (unsupported format)
         let svg_data = b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let result =
-            convert_image(svg_data, OutputFormat::Png, 85, false).expect("should return Ok, not Err");
+        let result = convert_image(svg_data, OutputFormat::Png, 85, false)
+            .expect("should return Ok, not Err");
         assert!(
             result.is_none(),
             "Unsupported format should return Ok(None)"
@@ -535,8 +543,8 @@ mod tests {
     #[test]
     fn test_convert_returns_bytes() {
         let png_data = create_test_rgba_png();
-        let result =
-            convert_image(&png_data, OutputFormat::Png, 85, false).expect("convert_image should succeed");
+        let result = convert_image(&png_data, OutputFormat::Png, 85, false)
+            .expect("convert_image should succeed");
         let bytes = result.expect("should return Some(Vec<u8>)");
         assert!(!bytes.is_empty(), "Converted bytes should not be empty");
     }
@@ -692,7 +700,8 @@ mod tests {
     fn test_encode_webp_lossless() {
         let photo_data = create_photographic_test_image();
         let img = image::load_from_memory(&photo_data).expect("should decode test image");
-        let lossless_bytes = encode_webp_lossless(&img).expect("encode_webp_lossless should succeed");
+        let lossless_bytes =
+            encode_webp_lossless(&img).expect("encode_webp_lossless should succeed");
         assert!(
             !lossless_bytes.is_empty(),
             "Lossless WebP output should not be empty"
