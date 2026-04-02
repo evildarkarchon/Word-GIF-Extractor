@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 3: CLI Arguments and Validation** - Add --convert, --gif-only, --gif-output, --quality flags with conflict rules
 - [x] **Phase 4: GIF Extraction and Routing** - Implement GIF-only filtering and separate GIF output directory routing (completed 2026-04-02)
 - [ ] **Phase 5: DOCX Pipeline Integration** - Thread conversion and GIF features through DOCX processor for end-to-end operation
-- [ ] **Phase 6: EPUB Pipeline Integration** - Thread conversion and GIF features through EPUB processor including cover-only mode
+- [x] **Phase 6: EPUB Pipeline Integration** - Thread conversion and GIF features through EPUB processor including cover-only mode (completed 2026-04-02)
 
 ## Phase Details
 
@@ -95,10 +95,10 @@ Plans:
   2. Cover-only mode (`-c`) combined with `--convert png` extracts and converts only the cover image
   3. GIF routing works for EPUB extraction -- `--gif-output` correctly separates GIF files
   4. All EPUB extraction modes (all images, cover only, metadata-filtered) work correctly with conversion enabled
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 06-01-PLAN.md -- Create ExtractionConfig struct, refactor docx.rs and main.rs to use it, remove #[allow(clippy::too_many_arguments)]
-- [ ] 06-02-PLAN.md -- Thread conversion into EPUB processor with cover-only skip-on-failure behavior
+- [x] 06-02-PLAN.md -- Thread conversion into EPUB processor with cover-only skip-on-failure behavior
 
 ## Progress
 
@@ -112,4 +112,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. CLI Arguments and Validation | 0/1 | Not started | - |
 | 4. GIF Extraction and Routing | 1/1 | Complete | 2026-04-02 |
 | 5. DOCX Pipeline Integration | 0/2 | Not started | - |
-| 6. EPUB Pipeline Integration | 1/2 | In progress | - |
+| 6. EPUB Pipeline Integration | 2/2 | Complete   | 2026-04-02 |

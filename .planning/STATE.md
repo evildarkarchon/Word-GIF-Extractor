@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-04-02T22:52:00.000Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-04-02T23:02:58.997Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
   percent: 87
 ---
 
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 6
-Plan: 1 of 2 complete
-Status: Executing phase 6
+Plan: 2 of 2 complete
+Status: Ready to execute
 Last activity: 2026-04-02
 
 Progress: [########--] 87%
@@ -58,6 +58,7 @@ Progress: [########--] 87%
 | Phase 05 P01 | 6min | 2 tasks | 4 files |
 | Phase 05 P02 | 4min | 2 tasks | 2 files |
 | Phase 06 P01 | 4min | 2 tasks | 3 files |
+| Phase 06 P02 | 5min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,7 @@ Recent decisions affecting current work:
 - [Phase 05]: Lossless flag silently ignored for JPEG/PNG -- only WebP uses it (per D-07). ExtractionCounts uses Default derive so new fields default to 0.
 - [Phase 05]: #[allow(clippy::too_many_arguments)] on dispatch -- config struct deferred to Phase 6. GIF routing priority via is_routed_gif variable.
 - [Phase 06]: ExtractionConfig<'a> with lifetime param for zero-copy &Path gif_output. Copy derive since all fields are Copy-compatible. EPUB refactor deferred to Plan 02.
+- [Phase 06]: Cover-only mode returns default counts (no file) on conversion failure; all-images mode writes raw bytes with warning
 
 ### Pending Todos
 
@@ -87,6 +89,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T22:52:00.000Z
-Stopped at: Completed 06-01-PLAN.md
-Resume file: .planning/phases/06-epub-pipeline-integration/06-02-PLAN.md
+Last session: 2026-04-02T23:02:58.993Z
+Stopped at: Completed 06-02-PLAN.md
+Resume file: None
