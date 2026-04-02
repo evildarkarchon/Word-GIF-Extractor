@@ -45,7 +45,7 @@ Plans:
   3. Unconverted files (skipped due to unsupported format) retain their original filename and extension
 **Plans:** 1 plan
 Plans:
-- [ ] 02-01-PLAN.md -- TDD: Add ConversionResult enum, OutputFormat::extension(), and try_convert() convenience API with 7 unit tests
+- [x] 02-01-PLAN.md -- TDD: Add ConversionResult enum, OutputFormat::extension(), and try_convert() convenience API with 7 unit tests
 
 ### Phase 3: CLI Arguments and Validation
 **Goal**: Users can configure conversion and GIF features via well-validated command-line flags
