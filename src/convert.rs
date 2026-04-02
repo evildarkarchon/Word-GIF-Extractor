@@ -8,12 +8,13 @@
 //! Note: Animated GIFs are decoded as their first frame only.
 
 use anyhow::{Context, Result};
+use clap::ValueEnum;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{DynamicImage, ImageError, Rgb, RgbImage, Rgba};
 
 /// Target format for image conversion
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     /// JPEG output (lossy, quality 1-100)
     Jpg,

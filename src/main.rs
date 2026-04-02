@@ -4,7 +4,6 @@
 //! matching specified formats.
 
 mod common;
-#[allow(dead_code)] // Module built ahead of integration (Phase 5)
 mod convert;
 mod docx;
 mod epub;
@@ -17,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+use crate::convert::OutputFormat;
 use common::{get_supported_extensions, normalize_format};
 use epub::EpubFilter;
 
@@ -57,6 +57,26 @@ struct Args {
     /// Filter EPUB files by author (case-insensitive substring match)
     #[arg(long)]
     author: Option<String>,
+
+    /// Convert extracted images to specified format (jpg, png, webp)
+    #[arg(short = 'C', long, conflicts_with = "gif_only")]
+    convert: Option<OutputFormat>,
+
+    /// JPEG/WebP encoding quality override (1-100, default: 85)
+    #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
+    quality: Option<u8>,
+
+    /// Use lossless WebP encoding instead of lossy
+    #[arg(short = 'L', long, requires = "convert", conflicts_with = "quality")]
+    lossless: bool,
+
+    /// Extract only GIF files (skip all other image formats)
+    #[arg(short = 'g', long, conflicts_with = "convert")]
+    gif_only: bool,
+
+    /// Separate output directory for GIF files
+    #[arg(short = 'G', long)]
+    gif_output: Option<PathBuf>,
 }
 
 /// Supported document types
@@ -298,8 +318,28 @@ fn process_file(
     }
 }
 
+/// Validates argument combinations that clap cannot check declaratively.
+///
+/// Clap's `requires` and `conflicts_with` attributes operate on argument
+/// presence/absence only. These checks validate against another argument's
+/// *value*:
+/// - `--quality` with `--convert png` (PNG is lossless, quality is meaningless)
+/// - `--lossless` with `--convert jpg` or `--convert png` (lossless only applies to WebP)
+fn validate_args(args: &Args) -> Result<()> {
+    if let Some(format) = &args.convert {
+        if args.quality.is_some() && *format == OutputFormat::Png {
+            anyhow::bail!("--quality cannot be used with --convert png (PNG is a lossless format)");
+        }
+        if args.lossless && *format != OutputFormat::Webp {
+            anyhow::bail!("--lossless can only be used with --convert webp");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    validate_args(&args)?;
 
     // Combine positional and named inputs, fallback to current directory if none specified
     let mut all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
@@ -446,4 +486,158 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_flag_parses_all_formats() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+        let args = Args::try_parse_from(["test", "--convert", "png"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Png));
+        let args = Args::try_parse_from(["test", "--convert", "webp"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Webp));
+    }
+
+    #[test]
+    fn test_convert_short_flag() {
+        let args = Args::try_parse_from(["test", "-C", "jpg"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+    }
+
+    #[test]
+    fn test_quality_with_convert_jpg() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
+        assert_eq!(args.quality, Some(90));
+    }
+
+    #[test]
+    fn test_quality_with_convert_webp() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--quality", "90"]).unwrap();
+        assert_eq!(args.quality, Some(90));
+    }
+
+    #[test]
+    fn test_quality_range_validation() {
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "0"]).is_err());
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "101"]).is_err());
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "1"]).unwrap();
+        assert_eq!(args.quality, Some(1));
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "100"]).unwrap();
+        assert_eq!(args.quality, Some(100));
+    }
+
+    #[test]
+    fn test_quality_requires_convert() {
+        assert!(Args::try_parse_from(["test", "--quality", "90"]).is_err());
+    }
+
+    #[test]
+    fn test_quality_with_png_error() {
+        let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--quality cannot be used with --convert png"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_convert_and_gif_only_conflict() {
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--gif-only"]).is_err());
+    }
+
+    #[test]
+    fn test_gif_only_short_flag() {
+        let args = Args::try_parse_from(["test", "-g"]).unwrap();
+        assert!(args.gif_only);
+    }
+
+    #[test]
+    fn test_gif_output_independent() {
+        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_output_short_flag() {
+        let args = Args::try_parse_from(["test", "-G", "/tmp/gifs"]).unwrap();
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_lossless_with_convert_webp() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
+        assert!(args.lossless);
+    }
+
+    #[test]
+    fn test_lossless_requires_convert() {
+        assert!(Args::try_parse_from(["test", "--lossless"]).is_err());
+    }
+
+    #[test]
+    fn test_lossless_conflicts_with_quality() {
+        assert!(
+            Args::try_parse_from(["test", "--convert", "webp", "--lossless", "--quality", "90"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_lossless_with_jpg_error() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--lossless can only be used with --convert webp"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lossless_with_png_error() {
+        let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--lossless can only be used with --convert webp"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lossless_short_flag() {
+        let args = Args::try_parse_from(["test", "-L", "--convert", "webp"]).unwrap();
+        assert!(args.lossless);
+    }
+
+    #[test]
+    fn test_existing_flags_unchanged() {
+        let args = Args::try_parse_from([
+            "test",
+            "-o",
+            "/tmp",
+            "-r",
+            "-f",
+            "png,jpg",
+            "-c",
+            "--cover-fallback",
+        ])
+        .unwrap();
+        assert_eq!(args.output, Some(PathBuf::from("/tmp")));
+        assert!(args.recursive);
+        assert!(args.cover_only);
+        assert!(args.cover_fallback);
+    }
 }
