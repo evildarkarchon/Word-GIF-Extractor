@@ -24,11 +24,11 @@ Extracted images are consistently in the user's desired format — no manual con
 - ✓ GIF-only extraction mode via `--gif-only` flag — Validated in Phase 4
 - ✓ Separate GIF output directory via `--gif-output <path>` flag — Validated in Phase 4
 - ✓ `--convert` and `--gif-only` are mutually exclusive (error if both specified) — Validated in Phase 3
+- ✓ Convert extracted images to a single target format (jpg, png, or webp) via `--convert` flag for DOCX — Validated in Phase 5
 
 ### Active
 
-- [ ] Convert extracted images to a single target format (jpg, png, or webp) via `--convert` flag
-- [ ] Conversion outputs only the converted file (no original kept)
+- [ ] Conversion outputs only the converted file (no original kept) — extends to EPUB in Phase 6
 
 ### Out of Scope
 
@@ -56,10 +56,10 @@ Extracted images are consistently in the user's desired format — no manual con
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| One target format per `--convert` run | Simpler CLI, user can run twice for two formats | — Pending |
+| One target format per `--convert` run | Simpler CLI, user can run twice for two formats | Validated in Phase 5 |
 | `image` crate for conversion | Standard Rust image processing, supports all target formats | Validated in Phase 1 |
 | `--convert` and `--gif-only` mutually exclusive | They conflict logically — one converts away from formats, the other filters to GIF | Validated in Phase 3 |
-| Converted-only output (no originals) | Cleaner output directory, matches user intent | — Pending |
+| Converted-only output (no originals) | Cleaner output directory, matches user intent | Validated in Phase 5 |
 | `webp` crate for lossy WebP | `image` crate's built-in WebP encoder is lossless-only; `webp` wraps libwebp for lossy | Validated in Phase 1 |
 | JPEG quality 85 default | Higher than `image` crate default (75), better visual quality for typical photos | Validated in Phase 1 |
 | Alpha compositing on white | JPEG has no alpha; transparent pixels composite against white (not black) | Validated in Phase 1 |
@@ -84,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 4 completion*
+*Last updated: 2026-04-02 after Phase 5 completion*
