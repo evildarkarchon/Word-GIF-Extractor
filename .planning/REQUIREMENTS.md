@@ -14,15 +14,15 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **CONV-03**: Unsupported source formats (SVG, WMF, EMF) are skipped during conversion with a warning to stderr, and extracted as raw bytes with their original extension
 - [x] **CONV-04**: Converted output strips the original file extension and uses only the target format extension (e.g., `document_1.bmp` becomes `document_1.png`, not `document_1.bmp.png`)
 - [x] **CONV-05**: JPEG conversion uses quality 85 by default
-- [ ] **CONV-06**: User can override JPEG quality via `--quality <1-100>`
-- [ ] **CONV-07**: `--quality` is only valid with `--convert jpg` (produces an error if used with png or webp)
+- [x] **CONV-06**: User can override JPEG quality via `--quality <1-100>`
+- [x] **CONV-07**: `--quality` is only valid with `--convert jpg` (produces an error if used with png or webp)
 
 ### GIF Extraction
 
 - [ ] **GIF-01**: User can extract only GIF files via `--gif-only` flag (all non-GIF image formats are skipped)
 - [ ] **GIF-02**: User can route extracted GIF files to a separate directory via `--gif-output <path>`
 - [ ] **GIF-03**: `--gif-output` works independently of `--gif-only` — GIFs are routed to the GIF output directory even when extracting all formats
-- [ ] **GIF-04**: `--convert` and `--gif-only` are mutually exclusive (error if both specified)
+- [x] **GIF-04**: `--convert` and `--gif-only` are mutually exclusive (error if both specified)
 
 ## v2 Requirements
 
@@ -59,12 +59,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CONV-03 | Phase 2 | Complete |
 | CONV-04 | Phase 2 | Complete |
 | CONV-05 | Phase 1 | Complete |
-| CONV-06 | Phase 3 | Pending |
-| CONV-07 | Phase 3 | Pending |
+| CONV-06 | Phase 3 | Complete |
+| CONV-07 | Phase 3 | Complete |
 | GIF-01 | Phase 4 | Pending |
 | GIF-02 | Phase 4 | Pending |
 | GIF-03 | Phase 4 | Pending |
-| GIF-04 | Phase 3 | Pending |
+| GIF-04 | Phase 3 | Complete |
 
 **Coverage:**
 - v1 requirements: 11 total

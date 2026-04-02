@@ -58,7 +58,7 @@ Plans:
   4. Running with `--help` shows all new flags (--convert, --quality, --gif-only, --gif-output) with descriptions
 **Plans:** 1 plan
 Plans:
-- [ ] 03-01-PLAN.md -- Add ValueEnum derive to OutputFormat, 5 new CLI flags to Args, validate_args() for cross-value checks, and 18 unit tests
+- [x] 03-01-PLAN.md -- Add ValueEnum derive to OutputFormat, 5 new CLI flags to Args, validate_args() for cross-value checks, and 18 unit tests
 
 ### Phase 4: GIF Extraction and Routing
 **Goal**: Users can extract only GIFs and route GIF files to a dedicated output directory
