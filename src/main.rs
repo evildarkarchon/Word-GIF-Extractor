@@ -777,4 +777,77 @@ mod tests {
         assert!(args.gif_only);
         assert!(args.gif_output.is_none());
     }
+
+    #[test]
+    fn test_extraction_counts_conversion_fields() {
+        let mut total = ExtractionCounts::default();
+        let counts = ExtractionCounts {
+            extracted: 10,
+            gifs_routed: 2,
+            converted: 7,
+            skipped: 1,
+        };
+        total.extracted += counts.extracted;
+        total.gifs_routed += counts.gifs_routed;
+        total.converted += counts.converted;
+        total.skipped += counts.skipped;
+        assert_eq!(total.extracted, 10);
+        assert_eq!(total.gifs_routed, 2);
+        assert_eq!(total.converted, 7);
+        assert_eq!(total.skipped, 1);
+    }
+
+    #[test]
+    fn test_quality_default_85() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 85);
+    }
+
+    #[test]
+    fn test_quality_override() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 90);
+    }
+
+    #[test]
+    fn test_conversion_message_format() {
+        let msg = format!(
+            "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+            10, "image(s)", 7, 1, 3
+        );
+        assert!(msg.contains("converted 7"));
+        assert!(msg.contains("skipped 1"));
+        assert!(msg.contains("Extracted 10 image(s)"));
+        assert!(msg.contains("from 3 document(s)"));
+    }
+
+    #[test]
+    fn test_combined_conversion_gif_message_format() {
+        let gif_dir = std::path::PathBuf::from("/tmp/gifs");
+        let msg = format!(
+            "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+            10,
+            "image(s)",
+            5,
+            2,
+            3,
+            gif_dir.display(),
+            4
+        );
+        assert!(msg.contains("converted 5"));
+        assert!(msg.contains("skipped 2"));
+        assert!(msg.contains("routed 3 GIF(s)"));
+        assert!(msg.contains("/tmp/gifs"));
+    }
+
+    #[test]
+    fn test_convert_and_lossless_args_threaded() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Webp));
+        assert!(args.lossless);
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 85);
+    }
 }
