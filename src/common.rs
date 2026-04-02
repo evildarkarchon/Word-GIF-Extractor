@@ -299,4 +299,52 @@ mod tests {
         assert_eq!(total.converted, 5);
         assert_eq!(total.skipped, 1);
     }
+
+    #[test]
+    fn test_extraction_config_construction() {
+        use crate::convert::OutputFormat;
+        use std::path::Path;
+
+        // With conversion enabled
+        let gif_dir = Path::new("/tmp/gifs");
+        let config = ExtractionConfig {
+            convert: Some(OutputFormat::Png),
+            quality: 90,
+            lossless: false,
+            gif_output: Some(gif_dir),
+        };
+        assert!(config.convert.is_some());
+        assert_eq!(config.quality, 90);
+        assert!(!config.lossless);
+        assert!(config.gif_output.is_some());
+
+        // Without conversion (defaults)
+        let config_none = ExtractionConfig {
+            convert: None,
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+        assert!(config_none.convert.is_none());
+        assert_eq!(config_none.quality, 85);
+        assert!(config_none.gif_output.is_none());
+
+        // Verify Debug derive works
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("ExtractionConfig"));
+    }
+
+    #[test]
+    fn test_extraction_config_copy() {
+        use crate::convert::OutputFormat;
+
+        let config = ExtractionConfig {
+            convert: Some(OutputFormat::Jpg),
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+        let config_copy = config; // Copy, not move
+        assert_eq!(config.quality, config_copy.quality); // Both still usable
+    }
 }
