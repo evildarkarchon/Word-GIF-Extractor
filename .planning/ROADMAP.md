@@ -81,7 +81,10 @@ Plans:
   2. A DOCX containing mixed formats (PNG, JPEG, GIF, BMP, WMF) produces converted files for supported formats and raw extractions for unsupported formats, with warnings
   3. GIF routing works for DOCX extraction -- `--gif-output` correctly separates GIF files from converted non-GIF files
   4. Conversion errors on individual images do not abort the batch -- remaining images are still processed
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 05-01-PLAN.md -- Add lossless WebP encoding to convert.rs, expand ExtractionCounts with conversion tracking fields
+- [ ] 05-02-PLAN.md -- Thread conversion into DOCX processor, update main.rs dispatch and conversion-aware summary messages
 
 ### Phase 6: EPUB Pipeline Integration
 **Goal**: Users can convert images extracted from EPUB files end-to-end, including cover-only mode
@@ -105,5 +108,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 2. Format Handling and Output Naming | 0/1 | Not started | - |
 | 3. CLI Arguments and Validation | 0/1 | Not started | - |
 | 4. GIF Extraction and Routing | 1/1 | Complete | 2026-04-02 |
-| 5. DOCX Pipeline Integration | 0/0 | Not started | - |
+| 5. DOCX Pipeline Integration | 0/2 | Not started | - |
 | 6. EPUB Pipeline Integration | 0/0 | Not started | - |
