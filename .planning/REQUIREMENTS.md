@@ -9,7 +9,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Conversion
 
-- [ ] **CONV-01**: User can convert all extracted images to a single target format via `--convert <jpg|png|webp>`
+- [x] **CONV-01**: User can convert all extracted images to a single target format via `--convert <jpg|png|webp>`
 - [x] **CONV-02**: JPEG conversion composites alpha channels against a white background (transparent regions must not render as black)
 - [x] **CONV-03**: Unsupported source formats (SVG, WMF, EMF) are skipped during conversion with a warning to stderr, and extracted as raw bytes with their original extension
 - [x] **CONV-04**: Converted output strips the original file extension and uses only the target format extension (e.g., `document_1.bmp` becomes `document_1.png`, not `document_1.bmp.png`)
@@ -54,7 +54,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONV-01 | Phase 5 | Pending |
+| CONV-01 | Phase 5 | Complete |
 | CONV-02 | Phase 1 | Complete |
 | CONV-03 | Phase 2 | Complete |
 | CONV-04 | Phase 2 | Complete |

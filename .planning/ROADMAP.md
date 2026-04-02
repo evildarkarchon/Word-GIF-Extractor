@@ -83,7 +83,7 @@ Plans:
   4. Conversion errors on individual images do not abort the batch -- remaining images are still processed
 **Plans:** 2 plans
 Plans:
-- [ ] 05-01-PLAN.md -- Add lossless WebP encoding to convert.rs, expand ExtractionCounts with conversion tracking fields
+- [x] 05-01-PLAN.md -- Add lossless WebP encoding to convert.rs, expand ExtractionCounts with conversion tracking fields
 - [ ] 05-02-PLAN.md -- Thread conversion into DOCX processor, update main.rs dispatch and conversion-aware summary messages
 
 ### Phase 6: EPUB Pipeline Integration
