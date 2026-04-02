@@ -31,7 +31,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. WebP output uses lossy encoding (converted file is smaller than lossless equivalent for photographic content)
   4. JPEG output uses quality 85 by default (not the image crate's default of 75)
   5. Unit tests pass for all supported source-to-target format combinations (JPEG, PNG, GIF, BMP, TIFF, WebP as sources; JPEG, PNG, WebP as targets)
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 01-01-PLAN.md -- Build convert.rs module with OutputFormat enum, can_convert(), convert_image(), alpha compositing, and unit tests
 
 ### Phase 2: Format Handling and Output Naming
 **Goal**: Conversion handles edge cases gracefully -- unsupported formats are skipped with clear feedback, and converted files have correct extensions
@@ -93,7 +95,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Conversion Module Core | 0/0 | Not started | - |
+| 1. Conversion Module Core | 0/1 | Planning complete | - |
 | 2. Format Handling and Output Naming | 0/0 | Not started | - |
 | 3. CLI Arguments and Validation | 0/0 | Not started | - |
 | 4. GIF Extraction and Routing | 0/0 | Not started | - |
