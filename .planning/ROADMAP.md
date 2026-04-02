@@ -56,7 +56,9 @@ Plans:
   2. Running with `--quality 90 --convert png` produces an error message explaining that --quality is only valid with --convert jpg
   3. Running with `--convert jpg --gif-only` produces an error message explaining the flags are mutually exclusive
   4. Running with `--help` shows all new flags (--convert, --quality, --gif-only, --gif-output) with descriptions
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 03-01-PLAN.md -- Add ValueEnum derive to OutputFormat, 5 new CLI flags to Args, validate_args() for cross-value checks, and 18 unit tests
 
 ### Phase 4: GIF Extraction and Routing
 **Goal**: Users can extract only GIFs and route GIF files to a dedicated output directory
@@ -99,7 +101,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Conversion Module Core | 1/1 | Complete   | 2026-04-02 |
 | 2. Format Handling and Output Naming | 0/1 | Not started | - |
-| 3. CLI Arguments and Validation | 0/0 | Not started | - |
+| 3. CLI Arguments and Validation | 0/1 | Not started | - |
 | 4. GIF Extraction and Routing | 0/0 | Not started | - |
 | 5. DOCX Pipeline Integration | 0/0 | Not started | - |
 | 6. EPUB Pipeline Integration | 0/0 | Not started | - |
