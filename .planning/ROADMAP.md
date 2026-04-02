@@ -84,7 +84,7 @@ Plans:
 **Plans:** 2 plans
 Plans:
 - [x] 05-01-PLAN.md -- Add lossless WebP encoding to convert.rs, expand ExtractionCounts with conversion tracking fields
-- [ ] 05-02-PLAN.md -- Thread conversion into DOCX processor, update main.rs dispatch and conversion-aware summary messages
+- [x] 05-02-PLAN.md -- Thread conversion into DOCX processor, update main.rs dispatch and conversion-aware summary messages
 
 ### Phase 6: EPUB Pipeline Integration
 **Goal**: Users can convert images extracted from EPUB files end-to-end, including cover-only mode
