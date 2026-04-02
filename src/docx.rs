@@ -11,14 +11,20 @@ use crate::common::{
     ExtractionCounts, ImageToExtract, get_unique_output_path, is_safe_archive_path,
     write_image_to_file,
 };
+use crate::convert::{ConversionResult, OutputFormat, try_convert};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
-/// Returns extraction counts including GIF routing information.
+/// When `convert` is specified, images are converted to the target format before writing.
+/// GIF routing takes priority over conversion: GIFs routed to `gif_output` are written as-is.
+/// Returns extraction counts including conversion and GIF routing information.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     allowed_extensions: &HashSet<&str>,
     gif_output: Option<&Path>,
+    convert: Option<OutputFormat>,
+    quality: u8,
+    lossless: bool,
 ) -> Result<ExtractionCounts> {
     let doc_name = input_path
         .file_stem()
@@ -80,23 +86,59 @@ pub fn process_file(
             output_base_dir
         };
 
+        // Read archive entry into memory
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .context("Failed to read image from archive")?;
+
+        // Determine if this GIF is being routed (GIF routing takes priority per D-10)
+        let is_routed_gif = is_gif && gif_output.is_some();
+
+        // Attempt conversion if requested and not a routed GIF
+        let (final_data, final_ext) = if let Some(format) = convert {
+            if is_routed_gif {
+                // GIF is being routed to gif_output -- write as-is, skip conversion
+                (data, image.extension.clone())
+            } else {
+                match try_convert(&data, &image.extension, format, quality, lossless) {
+                    Ok(ConversionResult::Converted(converted_bytes, ext)) => {
+                        counts.converted += 1;
+                        (converted_bytes, ext)
+                    }
+                    Ok(ConversionResult::Skipped(original_ext)) => {
+                        eprintln!(
+                            "Warning: Skipping conversion for {} ({} format not supported for conversion)",
+                            doc_name, original_ext
+                        );
+                        counts.skipped += 1;
+                        (data, original_ext)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Conversion failed for image in {}: {}",
+                            doc_name, e
+                        );
+                        counts.skipped += 1;
+                        (data, image.extension.clone())
+                    }
+                }
+            }
+        } else {
+            (data, image.extension.clone())
+        };
+
         let output_path = get_unique_output_path(
             effective_output_dir,
             &doc_name,
             seq_index,
             total_images,
-            &image.extension,
+            &final_ext,
         )?;
 
-        // Read archive entry into memory and use shared write function
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)
-            .context("Failed to read image from archive")?;
-
-        write_image_to_file(&output_path, &data)?;
+        write_image_to_file(&output_path, &final_data)?;
 
         counts.extracted += 1;
-        if is_gif && gif_output.is_some() {
+        if is_routed_gif {
             counts.gifs_routed += 1;
         }
     }

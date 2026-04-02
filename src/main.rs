@@ -288,7 +288,12 @@ fn deduplicate_by_metadata(files: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
-/// Processes a single file based on its type
+/// Processes a single file based on its type.
+///
+/// Parameter count is high due to format-specific options being threaded through
+/// a single dispatch point. A config struct refactor is planned for Phase 6
+/// when EPUB conversion params are also added.
+#[allow(clippy::too_many_arguments)]
 fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
@@ -297,11 +302,20 @@ fn process_file(
     cover_fallback: bool,
     epub_filter: &EpubFilter,
     gif_output: Option<&Path>,
+    convert: Option<OutputFormat>,
+    quality: u8,
+    lossless: bool,
 ) -> Result<ExtractionCounts> {
     match get_document_type(input_path) {
-        Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_extensions, gif_output)
-        }
+        Some(DocumentType::Docx) => docx::process_file(
+            input_path,
+            output_base_dir,
+            allowed_extensions,
+            gif_output,
+            convert,
+            quality,
+            lossless,
+        ),
         Some(DocumentType::Epub) => epub::process_file(
             input_path,
             output_base_dir,
@@ -356,6 +370,7 @@ fn main() -> Result<()> {
     }
 
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
+    let quality = args.quality.unwrap_or(85);
 
     // Determine allowed extensions
     let mut target_extensions = HashSet::new();
@@ -453,10 +468,15 @@ fn main() -> Result<()> {
             args.cover_fallback,
             &epub_filter,
             args.gif_output.as_deref(),
+            args.convert,
+            quality,
+            args.lossless,
         ) {
             Ok(counts) => {
                 total_counts.extracted += counts.extracted;
                 total_counts.gifs_routed += counts.gifs_routed;
+                total_counts.converted += counts.converted;
+                total_counts.skipped += counts.skipped;
                 if counts.extracted > 0 {
                     total_documents += 1;
                     if is_docx {
@@ -481,24 +501,56 @@ fn main() -> Result<()> {
         } else {
             "image(s)"
         };
-        if total_counts.gifs_routed > 0 {
-            let gif_dir = args.gif_output.as_ref().unwrap();
-            pb.finish_with_message(format!(
-                "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
-                total_counts.extracted,
-                item_name,
-                total_counts.gifs_routed,
-                gif_dir.display(),
-                total_documents
-            ));
-        } else {
-            pb.finish_with_message(format!(
-                "Extracted {} {} from {} document(s)",
-                total_counts.extracted, item_name, total_documents
-            ));
+        let has_convert = args.convert.is_some();
+        let has_gif_routing = total_counts.gifs_routed > 0;
+
+        match (has_convert, has_gif_routing) {
+            (true, true) => {
+                // D-04: Combined conversion + GIF routing message
+                let gif_dir = args.gif_output.as_ref().unwrap();
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.converted,
+                    total_counts.skipped,
+                    total_counts.gifs_routed,
+                    gif_dir.display(),
+                    total_documents
+                ));
+            }
+            (true, false) => {
+                // D-01: Conversion stats only
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.converted,
+                    total_counts.skipped,
+                    total_documents
+                ));
+            }
+            (false, true) => {
+                // Existing GIF routing message (no conversion) -- unchanged
+                let gif_dir = args.gif_output.as_ref().unwrap();
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.gifs_routed,
+                    gif_dir.display(),
+                    total_documents
+                ));
+            }
+            (false, false) => {
+                // Existing default message -- unchanged
+                pb.finish_with_message(format!(
+                    "Extracted {} {} from {} document(s)",
+                    total_counts.extracted, item_name, total_documents
+                ));
+            }
         }
     } else {
-        // For the "not found" message, still use cover terminology if that was the intent
         let not_found_msg = if args.cover_only && !has_docx_images {
             "No cover images found"
         } else {
