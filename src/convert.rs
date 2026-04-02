@@ -463,4 +463,151 @@ mod tests {
         let bytes = result.expect("should return Some(Vec<u8>)");
         assert!(!bytes.is_empty(), "Converted bytes should not be empty");
     }
+
+    #[test]
+    fn test_output_format_extension() {
+        assert_eq!(OutputFormat::Jpg.extension(), "jpg");
+        assert_eq!(OutputFormat::Png.extension(), "png");
+        assert_eq!(OutputFormat::Webp.extension(), "webp");
+    }
+
+    #[test]
+    fn test_try_convert_supported() {
+        let png_data = create_test_rgba_png();
+        let result = try_convert(&png_data, "png", OutputFormat::Jpg, 85)
+            .expect("try_convert should succeed");
+        match result {
+            ConversionResult::Converted(bytes, ext) => {
+                assert!(!bytes.is_empty(), "Converted bytes should not be empty");
+                assert_eq!(ext, "jpg", "Extension should be target format");
+            }
+            ConversionResult::Skipped(_) => {
+                panic!("Expected Converted, got Skipped");
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_convert_unsupported_extension() {
+        // SVG
+        let result = try_convert(&[1, 2, 3], "svg", OutputFormat::Png, 85)
+            .expect("try_convert should succeed for unsupported extension");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "svg", "Skipped extension should be 'svg'");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for SVG, got Converted");
+            }
+        }
+
+        // WMF
+        let result = try_convert(&[1, 2, 3], "wmf", OutputFormat::Png, 85)
+            .expect("try_convert should succeed for unsupported extension");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "wmf", "Skipped extension should be 'wmf'");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for WMF, got Converted");
+            }
+        }
+
+        // EMF
+        let result = try_convert(&[1, 2, 3], "emf", OutputFormat::Png, 85)
+            .expect("try_convert should succeed for unsupported extension");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "emf", "Skipped extension should be 'emf'");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for EMF, got Converted");
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_convert_unsupported_at_decode() {
+        // Extension says "png" but data is actually SVG -- convert_image returns Ok(None)
+        let fake_svg_data =
+            b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+        let result = try_convert(fake_svg_data, "png", OutputFormat::Jpg, 85)
+            .expect("try_convert should succeed (Skipped, not Err)");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "png", "Skipped extension should preserve source ext");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for undecodable data, got Converted");
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_convert_correct_extension() {
+        // BMP -> PNG: extension should be "png", not "bmp" or "bmp.png"
+        let bmp_data = create_test_bmp();
+        let result = try_convert(&bmp_data, "bmp", OutputFormat::Png, 85)
+            .expect("try_convert should succeed");
+        match result {
+            ConversionResult::Converted(_, ext) => {
+                assert_eq!(ext, "png", "Extension should be target format 'png'");
+            }
+            ConversionResult::Skipped(_) => {
+                panic!("Expected Converted for BMP->PNG, got Skipped");
+            }
+        }
+
+        // PNG -> WebP: extension should be "webp"
+        let png_data = create_test_rgba_png();
+        let result = try_convert(&png_data, "png", OutputFormat::Webp, 85)
+            .expect("try_convert should succeed");
+        match result {
+            ConversionResult::Converted(_, ext) => {
+                assert_eq!(ext, "webp", "Extension should be target format 'webp'");
+            }
+            ConversionResult::Skipped(_) => {
+                panic!("Expected Converted for PNG->WebP, got Skipped");
+            }
+        }
+    }
+
+    #[test]
+    fn test_try_convert_corrupt_data() {
+        // Corrupt PNG: has PNG magic bytes but is invalid
+        let corrupt_data = b"\x89PNG\r\n\x1a\nnot an image at all!!!";
+        let result = try_convert(corrupt_data, "png", OutputFormat::Png, 85);
+        assert!(
+            result.is_err(),
+            "Corrupt data should return Err, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_try_convert_case_normalization() {
+        // Uppercase "SVG" should become lowercase "svg" in Skipped
+        let result = try_convert(&[1, 2, 3], "SVG", OutputFormat::Png, 85)
+            .expect("try_convert should succeed for unsupported extension");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "svg", "Extension should be lowercase 'svg', not 'SVG'");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for SVG, got Converted");
+            }
+        }
+
+        // Uppercase "WMF" should become lowercase "wmf" in Skipped
+        let result = try_convert(&[1, 2, 3], "WMF", OutputFormat::Png, 85)
+            .expect("try_convert should succeed for unsupported extension");
+        match result {
+            ConversionResult::Skipped(ext) => {
+                assert_eq!(ext, "wmf", "Extension should be lowercase 'wmf', not 'WMF'");
+            }
+            ConversionResult::Converted(_, _) => {
+                panic!("Expected Skipped for WMF, got Converted");
+            }
+        }
+    }
 }
