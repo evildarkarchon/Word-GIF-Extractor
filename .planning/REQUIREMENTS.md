@@ -54,23 +54,23 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CONV-01 | — | Pending |
-| CONV-02 | — | Pending |
-| CONV-03 | — | Pending |
-| CONV-04 | — | Pending |
-| CONV-05 | — | Pending |
-| CONV-06 | — | Pending |
-| CONV-07 | — | Pending |
-| GIF-01 | — | Pending |
-| GIF-02 | — | Pending |
-| GIF-03 | — | Pending |
-| GIF-04 | — | Pending |
+| CONV-01 | Phase 5 | Pending |
+| CONV-02 | Phase 1 | Pending |
+| CONV-03 | Phase 2 | Pending |
+| CONV-04 | Phase 2 | Pending |
+| CONV-05 | Phase 1 | Pending |
+| CONV-06 | Phase 3 | Pending |
+| CONV-07 | Phase 3 | Pending |
+| GIF-01 | Phase 4 | Pending |
+| GIF-02 | Phase 4 | Pending |
+| GIF-03 | Phase 4 | Pending |
+| GIF-04 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 11 total
-- Mapped to phases: 0
-- Unmapped: 11
+- Mapped to phases: 11
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-02*
-*Last updated: 2026-04-02 after initial definition*
+*Last updated: 2026-04-02 after roadmap creation*
