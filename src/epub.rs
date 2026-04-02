@@ -7,9 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use crate::common::{
-    ExtractionCounts, get_unique_output_path, is_safe_archive_path, sanitize_filename,
-    write_image_to_file,
+    ExtractionConfig, ExtractionCounts, get_unique_output_path, is_safe_archive_path,
+    sanitize_filename, write_image_to_file,
 };
+use crate::convert::{ConversionResult, try_convert};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -132,7 +133,7 @@ pub fn process_file(
     cover_only: bool,
     cover_fallback: bool,
     filter: &EpubFilter,
-    gif_output: Option<&Path>,
+    config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     let fallback_name = input_path
         .file_stem()
@@ -162,7 +163,7 @@ pub fn process_file(
             allowed_extensions,
             input_path,
             cover_fallback,
-            gif_output,
+            config,
         );
     }
 
@@ -172,7 +173,7 @@ pub fn process_file(
         &base_name,
         allowed_extensions,
         input_path,
-        gif_output,
+        config,
     )
 }
 
@@ -183,7 +184,7 @@ fn extract_all_images(
     base_name: &str,
     allowed_extensions: &HashSet<&str>,
     _input_path: &Path,
-    gif_output: Option<&Path>,
+    config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     // Collect images from resources
     // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
@@ -243,7 +244,7 @@ fn extract_all_images(
 
         // Determine output directory: route GIFs to gif_output if set
         let is_gif = image.extension == "gif";
-        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output) {
             if !gif_dir_created {
                 fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                 gif_dir_created = true;
@@ -253,18 +254,60 @@ fn extract_all_images(
             output_base_dir
         };
 
+        // Determine if this GIF is being routed (GIF routing takes priority per D-11)
+        let is_routed_gif = is_gif && config.gif_output.is_some();
+
+        // Attempt conversion if requested and not a routed GIF (per D-05: warn + write raw on failure)
+        let (final_data, final_ext) = if let Some(format) = config.convert {
+            if is_routed_gif {
+                // GIF is being routed to gif_output -- write as-is, skip conversion
+                (data, image.extension.clone())
+            } else {
+                match try_convert(
+                    &data,
+                    &image.extension,
+                    format,
+                    config.quality,
+                    config.lossless,
+                ) {
+                    Ok(ConversionResult::Converted(converted_bytes, ext)) => {
+                        counts.converted += 1;
+                        (converted_bytes, ext)
+                    }
+                    Ok(ConversionResult::Skipped(original_ext)) => {
+                        eprintln!(
+                            "Warning: Skipping conversion for {} ({} format not supported for conversion)",
+                            base_name, original_ext
+                        );
+                        counts.skipped += 1;
+                        (data, original_ext)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: Conversion failed for image in {}: {}",
+                            base_name, e
+                        );
+                        counts.skipped += 1;
+                        (data, image.extension.clone())
+                    }
+                }
+            }
+        } else {
+            (data, image.extension.clone())
+        };
+
         let output_path = get_unique_output_path(
             effective_output_dir,
             base_name,
             seq_index,
             total_images,
-            &image.extension,
+            &final_ext,
         )?;
 
-        write_image_to_file(&output_path, &data)?;
+        write_image_to_file(&output_path, &final_data)?;
 
         counts.extracted += 1;
-        if is_gif && gif_output.is_some() {
+        if is_routed_gif {
             counts.gifs_routed += 1;
         }
     }
@@ -312,7 +355,7 @@ fn extract_cover_only(
     allowed_extensions: &HashSet<&str>,
     input_path: &Path,
     cover_fallback: bool,
-    gif_output: Option<&Path>,
+    config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
@@ -333,7 +376,7 @@ fn extract_cover_only(
 
             // Determine output directory: route GIF covers to gif_output if set
             let is_gif = extension == "gif";
-            let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+            let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output) {
                 fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                 gif_dir
             } else {
@@ -356,7 +399,7 @@ fn extract_cover_only(
                 converted: 0,
                 skipped: 0,
             };
-            if is_gif && gif_output.is_some() {
+            if is_gif && config.gif_output.is_some() {
                 counts.gifs_routed = 1;
             }
             Ok(counts)
@@ -377,7 +420,8 @@ fn extract_cover_only(
 
                 // Determine output directory: route GIF covers to gif_output if set
                 let is_gif = extension == "gif";
-                let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, gif_output) {
+                let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output)
+                {
                     fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                     gif_dir
                 } else {
@@ -398,7 +442,7 @@ fn extract_cover_only(
                     converted: 0,
                     skipped: 0,
                 };
-                if is_gif && gif_output.is_some() {
+                if is_gif && config.gif_output.is_some() {
                     counts.gifs_routed = 1;
                 }
                 Ok(counts)
@@ -410,7 +454,7 @@ fn extract_cover_only(
                     base_name,
                     allowed_extensions,
                     input_path,
-                    gif_output,
+                    config,
                 )
             } else {
                 // No cover image found

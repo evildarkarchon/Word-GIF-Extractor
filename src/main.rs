@@ -309,7 +309,7 @@ fn process_file(
             cover_only,
             cover_fallback,
             epub_filter,
-            config.gif_output,
+            config,
         ),
         None => {
             anyhow::bail!(
