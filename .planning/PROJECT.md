@@ -58,12 +58,12 @@ Extracted images are consistently in the user's desired format — no manual con
 |----------|-----------|---------|
 | One target format per `--convert` run | Simpler CLI, user can run twice for two formats | — Pending |
 | `image` crate for conversion | Standard Rust image processing, supports all target formats | Validated in Phase 1 |
-| `--convert` and `--gif-only` mutually exclusive | They conflict logically — one converts away from formats, the other filters to GIF | — Pending |
+| `--convert` and `--gif-only` mutually exclusive | They conflict logically — one converts away from formats, the other filters to GIF | Validated in Phase 3 |
 | Converted-only output (no originals) | Cleaner output directory, matches user intent | — Pending |
 | `webp` crate for lossy WebP | `image` crate's built-in WebP encoder is lossless-only; `webp` wraps libwebp for lossy | Validated in Phase 1 |
 | JPEG quality 85 default | Higher than `image` crate default (75), better visual quality for typical photos | Validated in Phase 1 |
 | Alpha compositing on white | JPEG has no alpha; transparent pixels composite against white (not black) | Validated in Phase 1 |
-| `--gif-output <path>` for GIF separation | Explicit user-specified path gives full control | — Pending |
+| `--gif-output <path>` for GIF separation | Explicit user-specified path gives full control | Validated in Phase 3 |
 | Skip unsupported formats during conversion | WMF/EMF/SVG can't be decoded by `image` crate; warn and extract as-is | Validated in Phase 2 |
 
 ## Evolution
@@ -84,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 2 completion*
+*Last updated: 2026-04-02 after Phase 3 completion*
