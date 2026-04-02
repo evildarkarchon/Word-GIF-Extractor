@@ -12,7 +12,7 @@ This milestone adds image format conversion and GIF-specific extraction to an ex
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Conversion Module Core** - Build convert.rs with image decoding, format conversion, alpha compositing, and WebP lossy encoding (completed 2026-04-02)
+- [x] **Phase 1: Conversion Module Core** - Build convert.rs with image decoding, format conversion, alpha compositing, and WebP lossy encoding (completed 2026-04-02)
 - [ ] **Phase 2: Format Handling and Output Naming** - Skip unsupported vector formats with warning, correct extension replacement on converted files
 - [ ] **Phase 3: CLI Arguments and Validation** - Add --convert, --gif-only, --gif-output, --quality flags with conflict rules
 - [ ] **Phase 4: GIF Extraction and Routing** - Implement GIF-only filtering and separate GIF output directory routing
@@ -43,7 +43,9 @@ Plans:
   1. When conversion encounters an SVG, WMF, or EMF file, a warning is printed to stderr and the file is extracted with its original extension and raw bytes
   2. A converted file uses only the target format extension (e.g., an original `document_1.bmp` becomes `document_1.png`, not `document_1.bmp.png`)
   3. Unconverted files (skipped due to unsupported format) retain their original filename and extension
-**Plans**: TBD
+**Plans:** 1 plan
+Plans:
+- [ ] 02-01-PLAN.md -- TDD: Add ConversionResult enum, OutputFormat::extension(), and try_convert() convenience API with 7 unit tests
 
 ### Phase 3: CLI Arguments and Validation
 **Goal**: Users can configure conversion and GIF features via well-validated command-line flags
@@ -96,7 +98,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Conversion Module Core | 1/1 | Complete   | 2026-04-02 |
-| 2. Format Handling and Output Naming | 0/0 | Not started | - |
+| 2. Format Handling and Output Naming | 0/1 | Not started | - |
 | 3. CLI Arguments and Validation | 0/0 | Not started | - |
 | 4. GIF Extraction and Routing | 0/0 | Not started | - |
 | 5. DOCX Pipeline Integration | 0/0 | Not started | - |
