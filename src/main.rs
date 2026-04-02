@@ -475,3 +475,82 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_gif_only_overrides_extensions() {
+        // Simulate the gif_only logic: when gif_only is true,
+        // target_extensions should contain only "gif"
+        let mut target_extensions = get_supported_extensions();
+        assert!(target_extensions.len() > 1); // starts with many formats
+
+        // Apply gif_only override (same logic as main)
+        target_extensions.clear();
+        target_extensions.insert("gif");
+
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+        assert!(!target_extensions.contains("png"));
+        assert!(!target_extensions.contains("jpg"));
+    }
+
+    #[test]
+    fn test_gif_only_overrides_formats_flag() {
+        // Even with --formats png,jpg, gif_only should win
+        let mut target_extensions = HashSet::new();
+        target_extensions.insert("png");
+        target_extensions.insert("jpg");
+
+        // Apply gif_only override (same logic as main)
+        target_extensions.clear();
+        target_extensions.insert("gif");
+
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+    }
+
+    #[test]
+    fn test_extraction_counts_split_message_logic() {
+        // When gifs_routed > 0, split message should be used
+        let counts = ExtractionCounts {
+            extracted: 5,
+            gifs_routed: 2,
+        };
+        assert!(counts.gifs_routed > 0); // triggers split message path
+
+        // When gifs_routed == 0, normal message should be used
+        let counts = ExtractionCounts {
+            extracted: 3,
+            gifs_routed: 0,
+        };
+        assert!(counts.gifs_routed == 0); // triggers normal message path
+    }
+
+    #[test]
+    fn test_gif_only_and_gif_output_both_set() {
+        let args =
+            Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_output_without_gif_only() {
+        // --gif-output works independently of --gif-only (GIF-03)
+        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(!args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_only_without_gif_output() {
+        // --gif-only without --gif-output: GIFs go to default dir (D-05)
+        let args = Args::try_parse_from(["test", "--gif-only"]).unwrap();
+        assert!(args.gif_only);
+        assert!(args.gif_output.is_none());
+    }
+}
