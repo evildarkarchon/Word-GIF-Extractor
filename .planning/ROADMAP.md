@@ -95,7 +95,10 @@ Plans:
   2. Cover-only mode (`-c`) combined with `--convert png` extracts and converts only the cover image
   3. GIF routing works for EPUB extraction -- `--gif-output` correctly separates GIF files
   4. All EPUB extraction modes (all images, cover only, metadata-filtered) work correctly with conversion enabled
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 06-01-PLAN.md -- Create ExtractionConfig struct, refactor docx.rs and main.rs to use it, remove #[allow(clippy::too_many_arguments)]
+- [ ] 06-02-PLAN.md -- Thread conversion into EPUB processor with cover-only skip-on-failure behavior
 
 ## Progress
 
@@ -109,4 +112,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 3. CLI Arguments and Validation | 0/1 | Not started | - |
 | 4. GIF Extraction and Routing | 1/1 | Complete | 2026-04-02 |
 | 5. DOCX Pipeline Integration | 0/2 | Not started | - |
-| 6. EPUB Pipeline Integration | 0/0 | Not started | - |
+| 6. EPUB Pipeline Integration | 0/2 | Not started | - |
