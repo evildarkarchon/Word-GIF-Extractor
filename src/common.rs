@@ -5,6 +5,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+use crate::convert::OutputFormat;
+
 /// Returns the set of supported image file extensions
 pub fn get_supported_extensions() -> HashSet<&'static str> {
     HashSet::from([
@@ -86,6 +88,39 @@ pub struct ImageToExtract {
     pub index: usize,
     /// Lowercase file extension (without the dot)
     pub extension: String,
+}
+
+/// Counts of images extracted during a single file processing operation.
+///
+/// `extracted` counts ALL images written to disk (including GIFs routed
+/// to a separate directory). `gifs_routed` counts only those GIFs written
+/// to the `--gif-output` directory specifically.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ExtractionCounts {
+    /// Total number of images extracted (includes routed GIFs)
+    pub extracted: usize,
+    /// Number of GIF files routed to the GIF output directory
+    pub gifs_routed: usize,
+    /// Number of images successfully converted to target format
+    pub converted: usize,
+    /// Number of images skipped during conversion (unsupported format or error)
+    pub skipped: usize,
+}
+
+/// Configuration for image extraction and conversion behavior.
+///
+/// Bundles conversion-related parameters that are threaded through
+/// the dispatch chain from main.rs to format-specific processors.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtractionConfig<'a> {
+    /// Target format for conversion (None = extract as-is)
+    pub convert: Option<OutputFormat>,
+    /// JPEG/WebP encoding quality (1-100)
+    pub quality: u8,
+    /// Use lossless WebP encoding
+    pub lossless: bool,
+    /// Separate output directory for GIF files
+    pub gif_output: Option<&'a Path>,
 }
 
 /// Generates a unique output path, appending a counter if the file already exists
@@ -225,5 +260,91 @@ mod tests {
     fn test_is_safe_archive_path_alternate_data_stream() {
         assert!(!is_safe_archive_path("file.txt::$DATA"));
         assert!(!is_safe_archive_path("file::stream"));
+    }
+
+    #[test]
+    fn test_extraction_counts_default() {
+        let counts = ExtractionCounts::default();
+        assert_eq!(counts.extracted, 0);
+        assert_eq!(counts.gifs_routed, 0);
+        assert_eq!(counts.converted, 0);
+        assert_eq!(counts.skipped, 0);
+    }
+
+    #[test]
+    fn test_extraction_counts_accumulation() {
+        let mut total = ExtractionCounts::default();
+        let file1 = ExtractionCounts {
+            extracted: 5,
+            gifs_routed: 2,
+            converted: 3,
+            skipped: 1,
+        };
+        let file2 = ExtractionCounts {
+            extracted: 3,
+            gifs_routed: 0,
+            converted: 2,
+            skipped: 0,
+        };
+        total.extracted += file1.extracted;
+        total.gifs_routed += file1.gifs_routed;
+        total.converted += file1.converted;
+        total.skipped += file1.skipped;
+        total.extracted += file2.extracted;
+        total.gifs_routed += file2.gifs_routed;
+        total.converted += file2.converted;
+        total.skipped += file2.skipped;
+        assert_eq!(total.extracted, 8);
+        assert_eq!(total.gifs_routed, 2);
+        assert_eq!(total.converted, 5);
+        assert_eq!(total.skipped, 1);
+    }
+
+    #[test]
+    fn test_extraction_config_construction() {
+        use crate::convert::OutputFormat;
+        use std::path::Path;
+
+        // With conversion enabled
+        let gif_dir = Path::new("/tmp/gifs");
+        let config = ExtractionConfig {
+            convert: Some(OutputFormat::Png),
+            quality: 90,
+            lossless: false,
+            gif_output: Some(gif_dir),
+        };
+        assert!(config.convert.is_some());
+        assert_eq!(config.quality, 90);
+        assert!(!config.lossless);
+        assert!(config.gif_output.is_some());
+
+        // Without conversion (defaults)
+        let config_none = ExtractionConfig {
+            convert: None,
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+        assert!(config_none.convert.is_none());
+        assert_eq!(config_none.quality, 85);
+        assert!(config_none.gif_output.is_none());
+
+        // Verify Debug derive works
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("ExtractionConfig"));
+    }
+
+    #[test]
+    fn test_extraction_config_copy() {
+        use crate::convert::OutputFormat;
+
+        let config = ExtractionConfig {
+            convert: Some(OutputFormat::Jpg),
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+        let config_copy = config; // Copy, not move
+        assert_eq!(config.quality, config_copy.quality); // Both still usable
     }
 }

@@ -4,6 +4,7 @@
 //! matching specified formats.
 
 mod common;
+mod convert;
 mod docx;
 mod epub;
 
@@ -15,7 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use common::{get_supported_extensions, normalize_format};
+use crate::convert::OutputFormat;
+use common::{ExtractionConfig, ExtractionCounts, get_supported_extensions, normalize_format};
 use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
@@ -55,6 +57,26 @@ struct Args {
     /// Filter EPUB files by author (case-insensitive substring match)
     #[arg(long)]
     author: Option<String>,
+
+    /// Convert extracted images to specified format (jpg, png, webp)
+    #[arg(short = 'C', long, conflicts_with = "gif_only")]
+    convert: Option<OutputFormat>,
+
+    /// JPEG/WebP encoding quality override (1-100, default: 85)
+    #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
+    quality: Option<u8>,
+
+    /// Use lossless WebP encoding instead of lossy
+    #[arg(short = 'L', long, requires = "convert", conflicts_with = "quality")]
+    lossless: bool,
+
+    /// Extract only GIF files (skip all other image formats)
+    #[arg(short = 'g', long, conflicts_with = "convert")]
+    gif_only: bool,
+
+    /// Separate output directory for GIF files
+    #[arg(short = 'G', long)]
+    gif_output: Option<PathBuf>,
 }
 
 /// Supported document types
@@ -266,7 +288,7 @@ fn deduplicate_by_metadata(files: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
-/// Processes a single file based on its type
+/// Processes a single file based on its type.
 fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
@@ -274,10 +296,11 @@ fn process_file(
     cover_only: bool,
     cover_fallback: bool,
     epub_filter: &EpubFilter,
-) -> Result<usize> {
+    config: &ExtractionConfig,
+) -> Result<ExtractionCounts> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_extensions)
+            docx::process_file(input_path, output_base_dir, allowed_extensions, config)
         }
         Some(DocumentType::Epub) => epub::process_file(
             input_path,
@@ -286,6 +309,7 @@ fn process_file(
             cover_only,
             cover_fallback,
             epub_filter,
+            config,
         ),
         None => {
             anyhow::bail!(
@@ -296,8 +320,28 @@ fn process_file(
     }
 }
 
+/// Validates argument combinations that clap cannot check declaratively.
+///
+/// Clap's `requires` and `conflicts_with` attributes operate on argument
+/// presence/absence only. These checks validate against another argument's
+/// *value*:
+/// - `--quality` with `--convert png` (PNG is lossless, quality is meaningless)
+/// - `--lossless` with `--convert jpg` or `--convert png` (lossless only applies to WebP)
+fn validate_args(args: &Args) -> Result<()> {
+    if let Some(format) = &args.convert {
+        if args.quality.is_some() && *format == OutputFormat::Png {
+            anyhow::bail!("--quality cannot be used with --convert png (PNG is a lossless format)");
+        }
+        if args.lossless && *format != OutputFormat::Webp {
+            anyhow::bail!("--lossless can only be used with --convert webp");
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    validate_args(&args)?;
 
     // Combine positional and named inputs, fallback to current directory if none specified
     let mut all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
@@ -312,6 +356,14 @@ fn main() -> Result<()> {
     }
 
     let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
+    let quality = args.quality.unwrap_or(85);
+
+    let config = ExtractionConfig {
+        convert: args.convert,
+        quality,
+        lossless: args.lossless,
+        gif_output: args.gif_output.as_deref(),
+    };
 
     // Determine allowed extensions
     let mut target_extensions = HashSet::new();
@@ -363,7 +415,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut total_images = 0usize;
+    // --gif-only overrides format selection to extract only GIFs
+    if args.gif_only {
+        target_extensions.clear();
+        target_extensions.insert("gif");
+    }
+
+    let mut total_counts = ExtractionCounts::default();
     let mut total_documents = 0usize;
     let mut has_docx_images = false;
 
@@ -402,10 +460,14 @@ fn main() -> Result<()> {
             args.cover_only,
             args.cover_fallback,
             &epub_filter,
+            &config,
         ) {
-            Ok(count) => {
-                total_images += count;
-                if count > 0 {
+            Ok(counts) => {
+                total_counts.extracted += counts.extracted;
+                total_counts.gifs_routed += counts.gifs_routed;
+                total_counts.converted += counts.converted;
+                total_counts.skipped += counts.skipped;
+                if counts.extracted > 0 {
                     total_documents += 1;
                     if is_docx {
                         has_docx_images = true;
@@ -421,7 +483,7 @@ fn main() -> Result<()> {
         pb.inc(1);
     }
 
-    if total_images > 0 {
+    if total_counts.extracted > 0 {
         // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
         // (DOCX files always extract all images regardless of cover_only flag)
         let item_name = if args.cover_only && !has_docx_images {
@@ -429,12 +491,56 @@ fn main() -> Result<()> {
         } else {
             "image(s)"
         };
-        pb.finish_with_message(format!(
-            "Extracted {} {} from {} document(s)",
-            total_images, item_name, total_documents
-        ));
+        let has_convert = args.convert.is_some();
+        let has_gif_routing = total_counts.gifs_routed > 0;
+
+        match (has_convert, has_gif_routing) {
+            (true, true) => {
+                // D-04: Combined conversion + GIF routing message
+                let gif_dir = args.gif_output.as_ref().unwrap();
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.converted,
+                    total_counts.skipped,
+                    total_counts.gifs_routed,
+                    gif_dir.display(),
+                    total_documents
+                ));
+            }
+            (true, false) => {
+                // D-01: Conversion stats only
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.converted,
+                    total_counts.skipped,
+                    total_documents
+                ));
+            }
+            (false, true) => {
+                // Existing GIF routing message (no conversion) -- unchanged
+                let gif_dir = args.gif_output.as_ref().unwrap();
+                pb.finish_with_message(format!(
+                    "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
+                    total_counts.extracted,
+                    item_name,
+                    total_counts.gifs_routed,
+                    gif_dir.display(),
+                    total_documents
+                ));
+            }
+            (false, false) => {
+                // Existing default message -- unchanged
+                pb.finish_with_message(format!(
+                    "Extracted {} {} from {} document(s)",
+                    total_counts.extracted, item_name, total_documents
+                ));
+            }
+        }
     } else {
-        // For the "not found" message, still use cover terminology if that was the intent
         let not_found_msg = if args.cover_only && !has_docx_images {
             "No cover images found"
         } else {
@@ -444,4 +550,294 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_flag_parses_all_formats() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+        let args = Args::try_parse_from(["test", "--convert", "png"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Png));
+        let args = Args::try_parse_from(["test", "--convert", "webp"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Webp));
+    }
+
+    #[test]
+    fn test_convert_short_flag() {
+        let args = Args::try_parse_from(["test", "-C", "jpg"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+    }
+
+    #[test]
+    fn test_quality_with_convert_jpg() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
+        assert_eq!(args.quality, Some(90));
+    }
+
+    #[test]
+    fn test_quality_with_convert_webp() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--quality", "90"]).unwrap();
+        assert_eq!(args.quality, Some(90));
+    }
+
+    #[test]
+    fn test_quality_range_validation() {
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "0"]).is_err());
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "101"]).is_err());
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "1"]).unwrap();
+        assert_eq!(args.quality, Some(1));
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "100"]).unwrap();
+        assert_eq!(args.quality, Some(100));
+    }
+
+    #[test]
+    fn test_quality_requires_convert() {
+        assert!(Args::try_parse_from(["test", "--quality", "90"]).is_err());
+    }
+
+    #[test]
+    fn test_quality_with_png_error() {
+        let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--quality cannot be used with --convert png"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_convert_and_gif_only_conflict() {
+        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--gif-only"]).is_err());
+    }
+
+    #[test]
+    fn test_gif_only_short_flag() {
+        let args = Args::try_parse_from(["test", "-g"]).unwrap();
+        assert!(args.gif_only);
+    }
+
+    #[test]
+    fn test_gif_output_independent() {
+        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_output_short_flag() {
+        let args = Args::try_parse_from(["test", "-G", "/tmp/gifs"]).unwrap();
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_lossless_with_convert_webp() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
+        assert!(args.lossless);
+    }
+
+    #[test]
+    fn test_lossless_requires_convert() {
+        assert!(Args::try_parse_from(["test", "--lossless"]).is_err());
+    }
+
+    #[test]
+    fn test_lossless_conflicts_with_quality() {
+        assert!(
+            Args::try_parse_from(["test", "--convert", "webp", "--lossless", "--quality", "90"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_lossless_with_jpg_error() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--lossless can only be used with --convert webp"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lossless_with_png_error() {
+        let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
+        let result = validate_args(&args);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("--lossless can only be used with --convert webp"),
+            "Error was: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_lossless_short_flag() {
+        let args = Args::try_parse_from(["test", "-L", "--convert", "webp"]).unwrap();
+        assert!(args.lossless);
+    }
+
+    #[test]
+    fn test_existing_flags_unchanged() {
+        let args = Args::try_parse_from([
+            "test",
+            "-o",
+            "/tmp",
+            "-r",
+            "-f",
+            "png,jpg",
+            "-c",
+            "--cover-fallback",
+        ])
+        .unwrap();
+        assert_eq!(args.output, Some(PathBuf::from("/tmp")));
+        assert!(args.recursive);
+        assert!(args.cover_only);
+        assert!(args.cover_fallback);
+    }
+
+    #[test]
+    fn test_gif_only_overrides_extensions() {
+        let mut target_extensions = get_supported_extensions();
+        assert!(target_extensions.len() > 1);
+        target_extensions.clear();
+        target_extensions.insert("gif");
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+        assert!(!target_extensions.contains("png"));
+        assert!(!target_extensions.contains("jpg"));
+    }
+
+    #[test]
+    fn test_gif_only_overrides_formats_flag() {
+        let mut target_extensions = HashSet::new();
+        target_extensions.insert("png");
+        target_extensions.insert("jpg");
+        target_extensions.clear();
+        target_extensions.insert("gif");
+        assert_eq!(target_extensions.len(), 1);
+        assert!(target_extensions.contains("gif"));
+    }
+
+    #[test]
+    fn test_extraction_counts_split_message_logic() {
+        let counts = ExtractionCounts {
+            extracted: 5,
+            gifs_routed: 2,
+            converted: 0,
+            skipped: 0,
+        };
+        assert!(counts.gifs_routed > 0);
+        let counts = ExtractionCounts {
+            extracted: 3,
+            gifs_routed: 0,
+            converted: 0,
+            skipped: 0,
+        };
+        assert!(counts.gifs_routed == 0);
+    }
+
+    #[test]
+    fn test_gif_only_and_gif_output_both_set() {
+        let args =
+            Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_output_without_gif_only() {
+        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
+        assert!(!args.gif_only);
+        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
+    }
+
+    #[test]
+    fn test_gif_only_without_gif_output() {
+        let args = Args::try_parse_from(["test", "--gif-only"]).unwrap();
+        assert!(args.gif_only);
+        assert!(args.gif_output.is_none());
+    }
+
+    #[test]
+    fn test_extraction_counts_conversion_fields() {
+        let mut total = ExtractionCounts::default();
+        let counts = ExtractionCounts {
+            extracted: 10,
+            gifs_routed: 2,
+            converted: 7,
+            skipped: 1,
+        };
+        total.extracted += counts.extracted;
+        total.gifs_routed += counts.gifs_routed;
+        total.converted += counts.converted;
+        total.skipped += counts.skipped;
+        assert_eq!(total.extracted, 10);
+        assert_eq!(total.gifs_routed, 2);
+        assert_eq!(total.converted, 7);
+        assert_eq!(total.skipped, 1);
+    }
+
+    #[test]
+    fn test_quality_default_85() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 85);
+    }
+
+    #[test]
+    fn test_quality_override() {
+        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 90);
+    }
+
+    #[test]
+    fn test_conversion_message_format() {
+        let msg = format!(
+            "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+            10, "image(s)", 7, 1, 3
+        );
+        assert!(msg.contains("converted 7"));
+        assert!(msg.contains("skipped 1"));
+        assert!(msg.contains("Extracted 10 image(s)"));
+        assert!(msg.contains("from 3 document(s)"));
+    }
+
+    #[test]
+    fn test_combined_conversion_gif_message_format() {
+        let gif_dir = std::path::PathBuf::from("/tmp/gifs");
+        let msg = format!(
+            "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+            10,
+            "image(s)",
+            5,
+            2,
+            3,
+            gif_dir.display(),
+            4
+        );
+        assert!(msg.contains("converted 5"));
+        assert!(msg.contains("skipped 2"));
+        assert!(msg.contains("routed 3 GIF(s)"));
+        assert!(msg.contains("/tmp/gifs"));
+    }
+
+    #[test]
+    fn test_convert_and_lossless_args_threaded() {
+        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
+        assert_eq!(args.convert, Some(OutputFormat::Webp));
+        assert!(args.lossless);
+        let quality = args.quality.unwrap_or(85);
+        assert_eq!(quality, 85);
+    }
 }
