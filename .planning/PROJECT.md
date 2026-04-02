@@ -1,8 +1,8 @@
-# Word/EPUB Image Extractor — Conversion & GIF Features
+# Word/EPUB Image Extractor
 
 ## What This Is
 
-A Rust CLI tool that extracts images from Microsoft Word (.docx) and EPUB documents. The tool treats these files as ZIP archives, scans for image entries, and writes them to disk with intelligent naming. This milestone adds image format conversion and GIF-specific extraction workflows.
+A Rust CLI tool that extracts images from Microsoft Word (.docx) and EPUB documents with optional format conversion. The tool treats these files as ZIP archives, scans for image entries, optionally converts them to a target format (JPEG, PNG, or WebP), and writes them to disk with intelligent naming. Supports GIF-specific routing and extraction modes.
 
 ## Core Value
 
@@ -41,11 +41,12 @@ Extracted images are consistently in the user's desired format — no manual con
 
 ## Context
 
-- Brownfield: existing ~1,200-line Rust CLI with 4 source files
-- Two format processors (DOCX, EPUB) behind a simple match dispatch — no trait abstraction
-- The `image` crate will be added for format conversion (supports jpg, png, webp natively)
-- Current architecture: extract raw bytes from archive → write to disk. Conversion inserts a decode→encode step before writing.
-- GIF separation is a routing concern (which output directory), not a conversion concern
+- Shipped v1.0 with 2,445 LOC Rust across 5 source files (main.rs, common.rs, convert.rs, docx.rs, epub.rs)
+- Two format processors (DOCX, EPUB) behind match dispatch with ExtractionConfig parameter threading
+- `image` crate handles decoding/encoding; `webp` crate provides lossy WebP via libwebp
+- Architecture: extract bytes from archive → optionally convert (decode→encode) → write to disk
+- GIF separation is a routing concern (which output directory), independent of conversion
+- 77 unit tests covering conversion, CLI validation, and data structures
 
 ## Constraints
 
@@ -88,4 +89,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 6 completion (all phases complete)*
+*Last updated: 2026-04-02 after v1.0 milestone completion*
