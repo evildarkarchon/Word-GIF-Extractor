@@ -25,10 +25,12 @@ Extracted images are consistently in the user's desired format — no manual con
 - ✓ Separate GIF output directory via `--gif-output <path>` flag — Validated in Phase 4
 - ✓ `--convert` and `--gif-only` are mutually exclusive (error if both specified) — Validated in Phase 3
 - ✓ Convert extracted images to a single target format (jpg, png, or webp) via `--convert` flag for DOCX — Validated in Phase 5
+- ✓ Convert extracted images to a single target format via `--convert` flag for EPUB (all modes: all images, cover-only, metadata-filtered) — Validated in Phase 6
+- ✓ Conversion outputs only the converted file (no original kept) — Validated in Phase 6
 
 ### Active
 
-- [ ] Conversion outputs only the converted file (no original kept) — extends to EPUB in Phase 6
+(none — all milestone requirements validated)
 
 ### Out of Scope
 
@@ -60,6 +62,8 @@ Extracted images are consistently in the user's desired format — no manual con
 | `image` crate for conversion | Standard Rust image processing, supports all target formats | Validated in Phase 1 |
 | `--convert` and `--gif-only` mutually exclusive | They conflict logically — one converts away from formats, the other filters to GIF | Validated in Phase 3 |
 | Converted-only output (no originals) | Cleaner output directory, matches user intent | Validated in Phase 5 |
+| ExtractionConfig struct for parameter threading | Bundles convert/quality/lossless/gif_output; removes clippy::too_many_arguments | Validated in Phase 6 |
+| Cover-only skip-on-failure for conversion | Cover extraction should produce nothing rather than an unconverted cover | Validated in Phase 6 |
 | `webp` crate for lossy WebP | `image` crate's built-in WebP encoder is lossless-only; `webp` wraps libwebp for lossy | Validated in Phase 1 |
 | JPEG quality 85 default | Higher than `image` crate default (75), better visual quality for typical photos | Validated in Phase 1 |
 | Alpha compositing on white | JPEG has no alpha; transparent pixels composite against white (not black) | Validated in Phase 1 |
@@ -84,4 +88,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 5 completion*
+*Last updated: 2026-04-02 after Phase 6 completion (all phases complete)*
