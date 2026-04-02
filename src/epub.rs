@@ -376,6 +376,7 @@ fn extract_cover_only(
 
             // Determine output directory: route GIF covers to gif_output if set
             let is_gif = extension == "gif";
+            let is_routed_gif = is_gif && config.gif_output.is_some();
             let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output) {
                 fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                 gif_dir
@@ -383,15 +384,46 @@ fn extract_cover_only(
                 output_base_dir
             };
 
+            // Attempt conversion if requested and not a routed GIF (per D-04: skip entirely on failure)
+            let (final_data, final_ext, was_converted) = if let Some(format) = config.convert {
+                if is_routed_gif {
+                    (data, extension.clone(), false)
+                } else {
+                    match try_convert(
+                        &data,
+                        &extension,
+                        format,
+                        config.quality,
+                        config.lossless,
+                    ) {
+                        Ok(ConversionResult::Converted(converted_bytes, ext)) => {
+                            (converted_bytes, ext, true)
+                        }
+                        Ok(ConversionResult::Skipped(original_ext)) => {
+                            eprintln!(
+                                "Warning: Cover image format '{}' not supported for conversion, skipping cover.",
+                                original_ext
+                            );
+                            return Ok(ExtractionCounts::default());
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Cover conversion failed: {}", e);
+                            return Ok(ExtractionCounts::default());
+                        }
+                    }
+                }
+            } else {
+                (data, extension, false)
+            };
+
             // create_dir_all is idempotent - succeeds if directory exists
             fs::create_dir_all(effective_output_dir)
                 .context("Failed to create output directory")?;
 
-            // Use just the base name (author/title) for cover-only mode
             let output_path =
-                get_unique_output_path(effective_output_dir, base_name, 0, 1, &extension)?;
+                get_unique_output_path(effective_output_dir, base_name, 0, 1, &final_ext)?;
 
-            write_image_to_file(&output_path, &data)?;
+            write_image_to_file(&output_path, &final_data)?;
 
             let mut counts = ExtractionCounts {
                 extracted: 1,
@@ -399,8 +431,11 @@ fn extract_cover_only(
                 converted: 0,
                 skipped: 0,
             };
-            if is_gif && config.gif_output.is_some() {
+            if is_routed_gif {
                 counts.gifs_routed = 1;
+            }
+            if was_converted {
+                counts.converted = 1;
             }
             Ok(counts)
         }
@@ -420,6 +455,7 @@ fn extract_cover_only(
 
                 // Determine output directory: route GIF covers to gif_output if set
                 let is_gif = extension == "gif";
+                let is_routed_gif = is_gif && config.gif_output.is_some();
                 let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output)
                 {
                     fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
@@ -428,13 +464,45 @@ fn extract_cover_only(
                     output_base_dir
                 };
 
+                // Attempt conversion if requested and not a routed GIF (per D-04: skip entirely on failure)
+                let (final_data, final_ext, was_converted) = if let Some(format) = config.convert {
+                    if is_routed_gif {
+                        (data, extension.clone(), false)
+                    } else {
+                        match try_convert(
+                            &data,
+                            &extension,
+                            format,
+                            config.quality,
+                            config.lossless,
+                        ) {
+                            Ok(ConversionResult::Converted(converted_bytes, ext)) => {
+                                (converted_bytes, ext, true)
+                            }
+                            Ok(ConversionResult::Skipped(original_ext)) => {
+                                eprintln!(
+                                    "Warning: Cover image format '{}' not supported for conversion, skipping cover.",
+                                    original_ext
+                                );
+                                return Ok(ExtractionCounts::default());
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: Cover conversion failed: {}", e);
+                                return Ok(ExtractionCounts::default());
+                            }
+                        }
+                    }
+                } else {
+                    (data, extension, false)
+                };
+
                 fs::create_dir_all(effective_output_dir)
                     .context("Failed to create output directory")?;
 
                 let output_path =
-                    get_unique_output_path(effective_output_dir, base_name, 0, 1, &extension)?;
+                    get_unique_output_path(effective_output_dir, base_name, 0, 1, &final_ext)?;
 
-                write_image_to_file(&output_path, &data)?;
+                write_image_to_file(&output_path, &final_data)?;
 
                 let mut counts = ExtractionCounts {
                     extracted: 1,
@@ -442,8 +510,11 @@ fn extract_cover_only(
                     converted: 0,
                     skipped: 0,
                 };
-                if is_gif && config.gif_output.is_some() {
+                if is_routed_gif {
                     counts.gifs_routed = 1;
+                }
+                if was_converted {
+                    counts.converted = 1;
                 }
                 Ok(counts)
             } else if cover_fallback {
