@@ -7,11 +7,18 @@ use std::path::Path;
 
 use crate::convert::OutputFormat;
 
+const SUPPORTED_EXTENSIONS: [&str; 12] = [
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "svg", "wmf", "emf", "webp", "ico",
+];
+
 /// Returns the set of supported image file extensions
 pub fn get_supported_extensions() -> HashSet<&'static str> {
-    HashSet::from([
-        "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "svg", "wmf", "emf", "webp", "ico",
-    ])
+    HashSet::from(SUPPORTED_EXTENSIONS)
+}
+
+/// Returns whether an already-normalized extension is supported for extraction.
+pub fn is_supported_extension(extension: &str) -> bool {
+    SUPPORTED_EXTENSIONS.contains(&extension)
 }
 
 /// Normalizes a format string to actual file extensions
@@ -53,15 +60,8 @@ pub fn is_safe_archive_path(name: &str) -> bool {
     if name.starts_with('/') || name.starts_with('\\') {
         return false;
     }
-    // Reject Windows drive letters (e.g., "C:\path")
-    if name.len() >= 2 {
-        let chars: Vec<char> = name.chars().take(2).collect();
-        if chars[0].is_ascii_alphabetic() && chars[1] == ':' {
-            return false;
-        }
-    }
-    // Reject Windows alternate data streams
-    if name.contains("::") {
+    // Reject colons because they are invalid in Windows filenames and enable drive/ADS syntax.
+    if name.contains(':') {
         return false;
     }
     true
@@ -79,15 +79,6 @@ pub fn sanitize_filename(name: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
-}
-
-/// Represents an image file found within an archive, pending extraction.
-#[derive(Debug, Clone)]
-pub struct ImageToExtract {
-    /// Index of the file within the archive
-    pub index: usize,
-    /// Lowercase file extension (without the dot)
-    pub extension: String,
 }
 
 /// Counts of images extracted during a single file processing operation.
@@ -248,7 +239,10 @@ mod tests {
     #[test]
     fn test_is_safe_archive_path_windows_drive() {
         assert!(!is_safe_archive_path("C:\\Windows\\System32\\calc.exe"));
+        assert!(!is_safe_archive_path("D:/file.txt"));
         assert!(!is_safe_archive_path("D:file.txt"));
+        assert!(!is_safe_archive_path("E:"));
+        assert!(!is_safe_archive_path("a:config.json"));
     }
 
     #[test]

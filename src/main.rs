@@ -7,6 +7,7 @@ mod common;
 mod convert;
 mod docx;
 mod epub;
+mod magic;
 
 use anyhow::Result;
 use clap::Parser;

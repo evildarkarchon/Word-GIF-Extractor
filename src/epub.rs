@@ -389,13 +389,7 @@ fn extract_cover_only(
                 if is_routed_gif {
                     (data, extension.clone(), false)
                 } else {
-                    match try_convert(
-                        &data,
-                        &extension,
-                        format,
-                        config.quality,
-                        config.lossless,
-                    ) {
+                    match try_convert(&data, &extension, format, config.quality, config.lossless) {
                         Ok(ConversionResult::Converted(converted_bytes, ext)) => {
                             (converted_bytes, ext, true)
                         }
@@ -456,7 +450,8 @@ fn extract_cover_only(
                 // Determine output directory: route GIF covers to gif_output if set
                 let is_gif = extension == "gif";
                 let is_routed_gif = is_gif && config.gif_output.is_some();
-                let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output)
+                let effective_output_dir = if let (true, Some(gif_dir)) =
+                    (is_gif, config.gif_output)
                 {
                     fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                     gif_dir
