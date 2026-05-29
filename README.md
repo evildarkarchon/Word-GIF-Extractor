@@ -48,7 +48,7 @@ word-image-extractor book.epub -f png,jpg
 | Option                | Description                                                       |
 | --------------------- | ----------------------------------------------------------------- |
 | `-i, --input <PATH>`  | Input .docx/.epub file or directory (also accepts positional arg) |
-| `-o, --output <DIR>`  | Output directory (defaults to current directory)                  |
+| `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
 

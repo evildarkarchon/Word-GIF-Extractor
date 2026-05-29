@@ -42,7 +42,7 @@ Rust CLI application with document-specific processing modules and straightforwa
 2. Determine target image extensions (all supported or user-filtered via `-f`)
 3. If input is a file: process it directly; if directory: iterate over .docx files (optionally recursive with `-r`)
 4. Open each .docx as a ZIP archive, read safe entries, and detect image formats by magic bytes with extension fallback
-5. Extract images to output directory using the detected format extension, renamed as `{docname}_{n}.{ext}` (or `{docname}.{ext}` if only one)
+5. Extract images to the output directory (explicit `-o`, or each source file's directory by default) using the detected format extension, renamed as `{docname}_{n}.{ext}` (or `{docname}.{ext}` if only one)
 
 ## Dependencies
 

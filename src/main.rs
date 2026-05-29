@@ -31,7 +31,7 @@ struct Args {
     #[arg(short = 'i', long = "input", num_args = 1..)]
     named_inputs: Vec<PathBuf>,
 
-    /// Optional output directory (defaults to current directory)
+    /// Optional output directory (defaults to each input file's directory)
     #[arg(short, long)]
     output: Option<PathBuf>,
 
@@ -340,6 +340,21 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Resolves the output directory for a single input file.
+///
+/// When `global_output` is set, all files use that directory. Otherwise images
+/// are written beside the source file (its parent directory).
+fn resolve_output_dir(input_path: &Path, global_output: Option<&Path>) -> PathBuf {
+    match global_output {
+        Some(dir) => dir.to_path_buf(),
+        None => input_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
@@ -356,7 +371,6 @@ fn main() -> Result<()> {
         all_inputs.push(cwd);
     }
 
-    let output_dir = args.output.unwrap_or_else(|| PathBuf::from("."));
     let quality = args.quality.unwrap_or(85);
 
     let config = ExtractionConfig {
@@ -454,9 +468,10 @@ fn main() -> Result<()> {
         };
         pb.set_message(display_name);
 
+        let effective_output = resolve_output_dir(path, args.output.as_deref());
         match process_file(
             path,
-            &output_dir,
+            &effective_output,
             &target_extensions,
             args.cover_only,
             args.cover_fallback,
@@ -840,5 +855,31 @@ mod tests {
         assert!(args.lossless);
         let quality = args.quality.unwrap_or(85);
         assert_eq!(quality, 85);
+    }
+
+    #[test]
+    fn test_resolve_output_dir_uses_global_when_set() {
+        let global = Path::new("/out");
+        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), Some(global));
+        assert_eq!(resolved, PathBuf::from("/out"));
+    }
+
+    #[test]
+    fn test_resolve_output_dir_beside_file_in_subdir() {
+        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), None);
+        assert_eq!(resolved, PathBuf::from("subdir"));
+    }
+
+    #[test]
+    fn test_resolve_output_dir_bare_filename_defaults_to_dot() {
+        let resolved = resolve_output_dir(Path::new("doc.docx"), None);
+        assert_eq!(resolved, PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_resolve_output_dir_absolute_input() {
+        let input = Path::new("/books/sample.epub");
+        let resolved = resolve_output_dir(input, None);
+        assert_eq!(resolved, Path::new("/books"));
     }
 }

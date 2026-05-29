@@ -106,7 +106,7 @@ A Rust CLI tool that extracts images from Microsoft Word (.docx) and EPUB docume
 - Release profile (`[profile.release]`):
 - `inputs` (positional) - Input file/directory paths
 - `-i / --input` - Named input paths (alternative to positional)
-- `-o / --output` - Output directory (defaults to `.`)
+- `-o / --output` - Output directory (defaults to each input file's directory)
 - `-r / --recursive` - Recursive directory scanning
 - `-f / --formats` - Comma-delimited format filter (e.g., `png,jpg`)
 - `-c / --cover-only` - Extract only EPUB cover images
