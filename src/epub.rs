@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::common::{ExtractionConfig, ExtractionCounts, is_safe_archive_path, sanitize_filename};
-use crate::image_format::ImageFormat;
+use crate::image_format::{FormatConfidence, FormatFallbackPolicy, ImageFormat, ImageFormatSource};
 use crate::image_writer::{ImageToWrite, WriteMode, write_images};
 
 /// Common JPEG file extensions for cover image fallback detection
@@ -111,10 +111,9 @@ fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &s
     sanitize_filename(&raw_name)
 }
 
-/// Struct to hold image data extracted from EPUB
-struct EpubImage {
+struct EpubResourceCandidate {
     id: String,
-    format: ImageFormat,
+    source_name: String,
 }
 
 /// Processes a single .epub file, extracting images matching the allowed extensions.
@@ -180,12 +179,8 @@ fn extract_all_images(
     allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
-    // Collect images from resources
-    // resources is HashMap<String, ResourceItem> where ResourceItem has path and mime fields
-    let mut images: Vec<EpubImage> = Vec::new();
-
     // Clone the resource keys and extract info to avoid borrow issues
-    let resources: Vec<(String, ImageFormat)> = doc
+    let resources: Vec<EpubResourceCandidate> = doc
         .resources
         .iter()
         .filter_map(|(id, item)| {
@@ -195,47 +190,49 @@ fn extract_all_images(
                 return None;
             }
 
-            // Only keep images
-            if !item.mime.starts_with("image/") {
+            // Candidate selection stays metadata-based; the user's format
+            // filter is applied after byte-first Image format identification.
+            if !is_declared_epub_image(&path_str, &item.mime) {
                 return None;
             }
 
-            // Try to get image format from path first, then from MIME.
-            let format = item
-                .path
-                .extension()
-                .and_then(|e| e.to_str())
-                .and_then(ImageFormat::from_extension)
-                .or_else(|| {
-                    ImageFormat::identify_mime(&item.mime).map(|identified| identified.format)
-                });
-
-            format.map(|format| (id.clone(), format))
+            Some(EpubResourceCandidate {
+                id: id.clone(),
+                source_name: path_str.to_string(),
+            })
         })
-        .collect::<Vec<(String, ImageFormat)>>();
+        .collect();
 
-    for (id, format) in resources {
-        // Check if this format is in our allowed list.
-        if allowed_formats.contains(&format) {
-            images.push(EpubImage { id, format });
-        }
-    }
-
-    if images.is_empty() {
-        return Ok(ExtractionCounts::default());
-    }
-
-    let mut images_to_write = Vec::with_capacity(images.len());
-    for image in images {
+    let mut images_to_write = Vec::new();
+    for candidate in resources {
         // Get the image data - get_resource returns Option<(Vec<u8>, String)>
-        let (data, _mime) = doc
-            .get_resource(&image.id)
-            .ok_or_else(|| anyhow::anyhow!("Failed to get resource '{}'", image.id))?;
+        let (data, mime) = doc
+            .get_resource(&candidate.id)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get resource '{}'", candidate.id))?;
 
-        images_to_write.push(ImageToWrite {
-            data,
-            format: image.format,
-        });
+        let Some(identified) = ImageFormat::identify_source(ImageFormatSource {
+            data: &data,
+            source_name: Some(&candidate.source_name),
+            mime: Some(&mime),
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
+        }) else {
+            continue;
+        };
+        let format = identified.format;
+
+        if identified.confidence == FormatConfidence::ExtensionFallback {
+            eprintln!(
+                "Warning: Magic detection failed for {}; falling back to .{} extension",
+                candidate.source_name,
+                format.extension()
+            );
+        }
+
+        if !allowed_formats.contains(&format) {
+            continue;
+        }
+
+        images_to_write.push(ImageToWrite { data, format });
     }
 
     write_images(
@@ -245,6 +242,15 @@ fn extract_all_images(
         config,
         WriteMode::BatchImages,
     )
+}
+
+fn is_declared_epub_image(source_name: &str, mime: &str) -> bool {
+    mime.starts_with("image/")
+        || Path::new(source_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(ImageFormat::from_extension)
+            .is_some()
 }
 
 /// Searches for a cover image by filename when metadata-based detection fails.
@@ -331,10 +337,21 @@ fn write_cover_image(
     allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
-    // Preserve the existing cover behavior: unknown cover MIME defaults to JPEG.
-    let format = ImageFormat::identify_mime(mime)
-        .map(|identified| identified.format)
-        .unwrap_or(ImageFormat::Jpg);
+    let identified = ImageFormat::identify_source(ImageFormatSource {
+        data: &data,
+        source_name: None,
+        mime: Some(mime),
+        fallback_policy: FormatFallbackPolicy::DefaultCoverToJpeg,
+    })
+    .expect("cover fallback policy should always identify a format");
+    let format = identified.format;
+
+    if identified.confidence == FormatConfidence::CoverDefault {
+        eprintln!(
+            "Warning: Cover image MIME '{}' could not be identified; defaulting to .jpg extension.",
+            mime
+        );
+    }
 
     // Check if this format is in our allowed list.
     if !allowed_formats.contains(&format) {
@@ -357,6 +374,83 @@ fn write_cover_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
+
+    const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+
+    fn temp_test_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "word-image-extractor-epub-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn write_minimal_epub(path: &Path, image_href: &str, image_mime: &str, image_data: &[u8]) {
+        let file = fs::File::create(path).expect("test EPUB should be creatable");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+
+        zip.start_file("mimetype", options)
+            .expect("mimetype entry should start");
+        zip.write_all(b"application/epub+zip")
+            .expect("mimetype should be writable");
+
+        zip.start_file("META-INF/container.xml", options)
+            .expect("container entry should start");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+        )
+        .expect("container should be writable");
+
+        zip.start_file("OEBPS/content.opf", options)
+            .expect("OPF entry should start");
+        let opf = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>Magic Test</dc:title>
+    <dc:creator>Tester</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="img" href="{image_href}" media-type="{image_mime}"/>
+  </manifest>
+  <spine>
+    <itemref idref="nav"/>
+  </spine>
+</package>"#
+        );
+        zip.write_all(opf.as_bytes())
+            .expect("OPF should be writable");
+
+        zip.start_file("OEBPS/nav.xhtml", options)
+            .expect("nav entry should start");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><body><nav></nav></body></html>"#,
+        )
+        .expect("nav should be writable");
+
+        zip.start_file(format!("OEBPS/{image_href}"), options)
+            .expect("image entry should start");
+        zip.write_all(image_data)
+            .expect("image data should be writable");
+        zip.finish().expect("EPUB archive should finish");
+    }
 
     #[test]
     fn test_format_epub_base_name_both() {
@@ -408,5 +502,46 @@ mod tests {
         assert!(!JPEG_EXTENSIONS.contains(&"gif"));
         assert!(!JPEG_EXTENSIONS.contains(&"webp"));
         assert!(!JPEG_EXTENSIONS.contains(&"bmp"));
+    }
+
+    #[test]
+    fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
+        let temp_dir = temp_test_dir("magic-before-labels");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+
+        write_minimal_epub(
+            &input_path,
+            "images/mislabeled.jpg",
+            "image/jpeg",
+            MINIMAL_PNG,
+        );
+
+        let allowed_formats = HashSet::from([ImageFormat::Png]);
+        let config = ExtractionConfig {
+            convert: None,
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+
+        let counts = process_file(
+            &input_path,
+            &output_dir,
+            &allowed_formats,
+            false,
+            false,
+            &EpubFilter::default(),
+            &config,
+        )
+        .expect("EPUB extraction should succeed");
+
+        assert_eq!(counts.extracted, 1);
+        assert!(output_dir.join("Tester - Magic Test.png").exists());
+        assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 }

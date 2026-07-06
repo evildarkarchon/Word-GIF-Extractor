@@ -70,6 +70,8 @@ pub enum FormatConfidence {
     ExtensionFallback,
     /// The format was identified from a MIME type.
     MimeFallback,
+    /// The format used the EPUB cover compatibility default.
+    CoverDefault,
 }
 
 /// The result of identifying an image format and the source of that decision.
@@ -79,6 +81,32 @@ pub struct IdentifiedFormat {
     pub format: ImageFormat,
     /// Source used to identify the image format.
     pub confidence: FormatConfidence,
+}
+
+/// Compatibility policy used when bytes, source name, and MIME cannot identify an image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatFallbackPolicy {
+    /// Unknown sources are skipped when no supported format can be identified.
+    SkipUnknown,
+    /// Unknown EPUB cover images default to JPEG to preserve legacy cover extraction.
+    DefaultCoverToJpeg,
+}
+
+/// Source facts used to identify an image format.
+///
+/// Magic bytes always win. If magic detection fails, `source_name` is checked
+/// before `mime`, preserving existing non-cover EPUB precedence while allowing
+/// covers to pass only bytes and MIME before applying their cover fallback.
+#[derive(Debug, Clone, Copy)]
+pub struct ImageFormatSource<'a> {
+    /// Raw image bytes to inspect for magic values.
+    pub data: &'a [u8],
+    /// Optional document/archive source name used for extension fallback.
+    pub source_name: Option<&'a str>,
+    /// Optional MIME type used when magic and extension identification fail.
+    pub mime: Option<&'a str>,
+    /// Final compatibility behavior when no source fact identifies a format.
+    pub fallback_policy: FormatFallbackPolicy,
 }
 
 impl ImageFormat {
@@ -160,31 +188,68 @@ impl ImageFormat {
     }
 
     /// Identifies a supported image format from a MIME type.
+    // Retained for low-churn call sites even when all current extraction paths use identify_source.
+    #[allow(dead_code)]
     pub fn identify_mime(mime: &str) -> Option<IdentifiedFormat> {
-        ImageFormat::from_mime(mime).map(|format| IdentifiedFormat {
-            format,
-            confidence: FormatConfidence::MimeFallback,
+        ImageFormat::identify_source(ImageFormatSource {
+            data: &[],
+            source_name: None,
+            mime: Some(mime),
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
         })
     }
 
     /// Identifies a supported image format from bytes, falling back to a path extension.
     pub fn identify(data: &[u8], source_name: &str) -> Option<IdentifiedFormat> {
-        if let Some(format) = ImageFormat::from_magic(data) {
+        ImageFormat::identify_source(ImageFormatSource {
+            data,
+            source_name: Some(source_name),
+            mime: None,
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
+        })
+    }
+
+    /// Identifies a supported image format from source facts using project precedence.
+    ///
+    /// The interface is intentionally request-shaped so DOCX and EPUB callers
+    /// cross the same seam. It returns `None` only when the supplied facts and
+    /// fallback policy cannot identify an extractable image format.
+    pub fn identify_source(source: ImageFormatSource<'_>) -> Option<IdentifiedFormat> {
+        if let Some(format) = ImageFormat::from_magic(source.data) {
             return Some(IdentifiedFormat {
                 format,
                 confidence: FormatConfidence::Magic,
             });
         }
 
-        let format = Path::new(source_name)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .and_then(ImageFormat::from_extension)?;
+        if let Some(source_name) = source.source_name
+            && let Some(format) = Path::new(source_name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .and_then(ImageFormat::from_extension)
+        {
+            return Some(IdentifiedFormat {
+                format,
+                confidence: FormatConfidence::ExtensionFallback,
+            });
+        }
 
-        Some(IdentifiedFormat {
-            format,
-            confidence: FormatConfidence::ExtensionFallback,
-        })
+        if let Some(mime) = source.mime
+            && let Some(format) = ImageFormat::from_mime(mime)
+        {
+            return Some(IdentifiedFormat {
+                format,
+                confidence: FormatConfidence::MimeFallback,
+            });
+        }
+
+        match source.fallback_policy {
+            FormatFallbackPolicy::SkipUnknown => None,
+            FormatFallbackPolicy::DefaultCoverToJpeg => Some(IdentifiedFormat {
+                format: ImageFormat::Jpg,
+                confidence: FormatConfidence::CoverDefault,
+            }),
+        }
     }
 
     /// Detects a supported image format from header/content bytes.
@@ -338,6 +403,78 @@ mod tests {
         assert_eq!(
             ImageFormat::identify(b"unknown", "word/media/image.bin"),
             None
+        );
+    }
+
+    #[test]
+    fn identifies_source_with_magic_before_extension_and_mime() {
+        let identified = ImageFormat::identify_source(ImageFormatSource {
+            data: b"\x89PNG\r\n\x1A\n",
+            source_name: Some("OEBPS/images/cover.jpg"),
+            mime: Some("image/jpeg"),
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
+        });
+
+        assert_eq!(
+            identified,
+            Some(IdentifiedFormat {
+                format: ImageFormat::Png,
+                confidence: FormatConfidence::Magic
+            })
+        );
+    }
+
+    #[test]
+    fn identifies_source_with_extension_before_mime_when_magic_fails() {
+        let identified = ImageFormat::identify_source(ImageFormatSource {
+            data: b"unknown image bytes",
+            source_name: Some("OEBPS/images/cover.png"),
+            mime: Some("image/jpeg"),
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
+        });
+
+        assert_eq!(
+            identified,
+            Some(IdentifiedFormat {
+                format: ImageFormat::Png,
+                confidence: FormatConfidence::ExtensionFallback
+            })
+        );
+    }
+
+    #[test]
+    fn identifies_source_with_mime_when_magic_and_extension_fail() {
+        let identified = ImageFormat::identify_source(ImageFormatSource {
+            data: b"unknown image bytes",
+            source_name: Some("OEBPS/images/cover.bin"),
+            mime: Some("image/webp; charset=binary"),
+            fallback_policy: FormatFallbackPolicy::SkipUnknown,
+        });
+
+        assert_eq!(
+            identified,
+            Some(IdentifiedFormat {
+                format: ImageFormat::Webp,
+                confidence: FormatConfidence::MimeFallback
+            })
+        );
+    }
+
+    #[test]
+    fn identifies_source_with_cover_default_only_after_other_sources_fail() {
+        let identified = ImageFormat::identify_source(ImageFormatSource {
+            data: b"unknown cover bytes",
+            source_name: None,
+            mime: Some("application/octet-stream"),
+            fallback_policy: FormatFallbackPolicy::DefaultCoverToJpeg,
+        });
+
+        assert_eq!(
+            identified,
+            Some(IdentifiedFormat {
+                format: ImageFormat::Jpg,
+                confidence: FormatConfidence::CoverDefault
+            })
         );
     }
 
