@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::convert::OutputFormat;
 
@@ -65,9 +65,9 @@ pub struct ExtractionCounts {
 /// Configuration for image extraction and conversion behavior.
 ///
 /// Bundles conversion-related parameters that are threaded through
-/// the dispatch chain from main.rs to format-specific processors.
-#[derive(Debug, Clone, Copy)]
-pub struct ExtractionConfig<'a> {
+/// the dispatch chain from extraction run intake to format-specific processors.
+#[derive(Debug, Clone)]
+pub struct ExtractionConfig {
     /// Target format for conversion (None = extract as-is)
     pub convert: Option<OutputFormat>,
     /// JPEG/WebP encoding quality (1-100)
@@ -75,7 +75,7 @@ pub struct ExtractionConfig<'a> {
     /// Use lossless WebP encoding
     pub lossless: bool,
     /// Separate output directory for GIF files
-    pub gif_output: Option<&'a Path>,
+    pub gif_output: Option<PathBuf>,
 }
 
 /// Generates a unique output path, appending a counter if the file already exists
@@ -252,7 +252,7 @@ mod tests {
             convert: Some(OutputFormat::Png),
             quality: 90,
             lossless: false,
-            gif_output: Some(gif_dir),
+            gif_output: Some(gif_dir.to_path_buf()),
         };
         assert!(config.convert.is_some());
         assert_eq!(config.quality, 90);
@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_config_copy() {
+    fn test_extraction_config_clone() {
         use crate::convert::OutputFormat;
 
         let config = ExtractionConfig {
@@ -285,7 +285,7 @@ mod tests {
             lossless: false,
             gif_output: None,
         };
-        let config_copy = config; // Copy, not move
-        assert_eq!(config.quality, config_copy.quality); // Both still usable
+        let config_copy = config.clone();
+        assert_eq!(config.quality, config_copy.quality);
     }
 }

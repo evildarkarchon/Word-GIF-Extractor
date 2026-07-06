@@ -23,7 +23,7 @@ enum DocumentType {
 /// The CLI adapter owns parsing and validation. This module receives only the
 /// workflow facts it needs to discover documents, dispatch them, and aggregate
 /// the final outcome.
-pub struct RunOptions<'a> {
+pub struct RunOptions {
     /// Input files or directories to scan.
     pub inputs: Vec<PathBuf>,
     /// Whether directory inputs should be scanned recursively.
@@ -39,7 +39,7 @@ pub struct RunOptions<'a> {
     /// EPUB metadata filter criteria.
     pub epub_filter: EpubFilter,
     /// Image extraction and conversion behavior.
-    pub extraction: ExtractionConfig<'a>,
+    pub extraction: ExtractionConfig,
 }
 
 /// Aggregated outcome from an extraction run.
@@ -111,7 +111,7 @@ pub trait RunObserver {
 ///
 /// Per-document failures are emitted as events and do not abort the run. Setup
 /// failures that prevent the run from starting are returned as errors.
-pub fn run(options: RunOptions<'_>, observer: &mut impl RunObserver) -> Result<RunReport> {
+pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunReport> {
     for input_path in &options.inputs {
         if !input_path.exists() {
             observer.on_event(RunEvent::InputWarning {

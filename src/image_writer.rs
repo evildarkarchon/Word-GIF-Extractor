@@ -48,7 +48,7 @@ pub fn write_images(
     output_base_dir: &Path,
     base_name: &str,
     images: Vec<ImageToWrite>,
-    config: &ExtractionConfig<'_>,
+    config: &ExtractionConfig,
     mode: WriteMode,
 ) -> Result<ExtractionCounts> {
     if images.is_empty() {
@@ -73,16 +73,16 @@ pub fn write_images(
             continue;
         };
 
-        let effective_output_dir = if let (true, Some(gif_dir)) = (is_routed_gif, config.gif_output)
-        {
-            if !gif_dir_created {
-                fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
-                gif_dir_created = true;
-            }
-            gif_dir
-        } else {
-            output_base_dir
-        };
+        let effective_output_dir =
+            if let (true, Some(gif_dir)) = (is_routed_gif, config.gif_output.as_deref()) {
+                if !gif_dir_created {
+                    fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
+                    gif_dir_created = true;
+                }
+                gif_dir
+            } else {
+                output_base_dir
+            };
 
         fs::create_dir_all(effective_output_dir).context("Failed to create output directory")?;
 
@@ -115,7 +115,7 @@ pub fn write_images(
 fn prepare_image_for_write(
     image: ImageToWrite,
     base_name: &str,
-    config: &ExtractionConfig<'_>,
+    config: &ExtractionConfig,
     mode: WriteMode,
 ) -> Result<Option<PreparedImage>> {
     let is_routed_gif = image.format == ImageFormat::Gif && config.gif_output.is_some();
@@ -276,7 +276,7 @@ mod tests {
             convert: Some(OutputFormat::Png),
             quality: 85,
             lossless: false,
-            gif_output: Some(&gif_dir),
+            gif_output: Some(gif_dir.clone()),
         };
         let images = vec![ImageToWrite {
             data: b"not a real gif but routed as-is".to_vec(),

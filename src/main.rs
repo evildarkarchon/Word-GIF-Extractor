@@ -8,6 +8,7 @@ mod convert;
 mod docx;
 mod epub;
 mod extraction_run;
+mod extraction_run_intake;
 mod image_format;
 mod image_writer;
 
@@ -17,10 +18,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
 use crate::convert::OutputFormat;
-use crate::extraction_run::{RunEvent, RunObserver, RunOptions, RunReport};
-use crate::image_format::ImageFormat;
-use common::ExtractionConfig;
-use epub::EpubFilter;
+use crate::extraction_run::{RunEvent, RunObserver, RunReport};
+use crate::extraction_run_intake::PreparedExtractionRun;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
@@ -333,81 +332,24 @@ fn main() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
 
-    let Args {
-        inputs,
-        named_inputs,
-        output,
-        recursive,
-        formats,
-        cover_only,
-        cover_fallback,
-        title,
-        author,
-        convert,
-        quality,
-        lossless,
-        gif_only,
+    let PreparedExtractionRun {
+        options,
+        has_convert,
         gif_output,
-    } = args;
+        defaulted_input,
+        ignored_formats,
+    } = extraction_run_intake::prepare(args)?;
 
-    // Combine positional and named inputs, fallback to current directory if none specified
-    let mut all_inputs: Vec<PathBuf> = inputs.into_iter().chain(named_inputs).collect();
-
-    if all_inputs.is_empty() {
-        let cwd = std::env::current_dir()?;
+    if let Some(cwd) = defaulted_input {
         println!(
             "No input path specified, using current directory: {}",
             cwd.display()
         );
-        all_inputs.push(cwd);
     }
 
-    let quality = quality.unwrap_or(85);
-    let has_convert = convert.is_some();
-
-    // Determine allowed extensions
-    let mut target_formats = std::collections::HashSet::new();
-    if let Some(formats) = &formats {
-        for fmt in formats {
-            if let Some(format) = ImageFormat::from_user_format(fmt) {
-                target_formats.insert(format);
-            } else {
-                eprintln!("Warning: Unrecognized format '{}' ignored", fmt.trim());
-            }
-        }
+    for format in ignored_formats {
+        eprintln!("Warning: Unrecognized format '{}' ignored", format);
     }
-
-    // Fallback if empty or no formats specified
-    if target_formats.is_empty() {
-        target_formats = ImageFormat::all_set();
-    }
-
-    // --gif-only overrides format selection to extract only GIFs
-    if gif_only {
-        target_formats.clear();
-        target_formats.insert(ImageFormat::Gif);
-    }
-
-    // Create EPUB filter from CLI args
-    let epub_filter = EpubFilter { title, author };
-
-    let config = ExtractionConfig {
-        convert,
-        quality,
-        lossless,
-        gif_output: gif_output.as_deref(),
-    };
-
-    let options = RunOptions {
-        inputs: all_inputs,
-        recursive,
-        output,
-        allowed_formats: target_formats,
-        cover_only,
-        cover_fallback,
-        epub_filter,
-        extraction: config,
-    };
 
     let mut observer = IndicatifRunObserver::new();
     let report = extraction_run::run(options, &mut observer)?;
@@ -581,29 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gif_only_overrides_extensions() {
-        let mut target_formats = ImageFormat::all_set();
-        assert!(target_formats.len() > 1);
-        target_formats.clear();
-        target_formats.insert(ImageFormat::Gif);
-        assert_eq!(target_formats.len(), 1);
-        assert!(target_formats.contains(&ImageFormat::Gif));
-        assert!(!target_formats.contains(&ImageFormat::Png));
-        assert!(!target_formats.contains(&ImageFormat::Jpg));
-    }
-
-    #[test]
-    fn test_gif_only_overrides_formats_flag() {
-        let mut target_formats = std::collections::HashSet::new();
-        target_formats.insert(ImageFormat::Png);
-        target_formats.insert(ImageFormat::Jpg);
-        target_formats.clear();
-        target_formats.insert(ImageFormat::Gif);
-        assert_eq!(target_formats.len(), 1);
-        assert!(target_formats.contains(&ImageFormat::Gif));
-    }
-
-    #[test]
     fn test_extraction_counts_split_message_logic() {
         let counts = ExtractionCounts {
             extracted: 5,
@@ -663,20 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn test_quality_default_85() {
-        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
-        let quality = args.quality.unwrap_or(85);
-        assert_eq!(quality, 85);
-    }
-
-    #[test]
-    fn test_quality_override() {
-        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
-        let quality = args.quality.unwrap_or(85);
-        assert_eq!(quality, 90);
-    }
-
-    #[test]
     fn test_conversion_message_format() {
         let msg = format!(
             "Extracted {} {}, converted {}, skipped {} from {} document(s)",
@@ -712,7 +617,5 @@ mod tests {
         let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
         assert_eq!(args.convert, Some(OutputFormat::Webp));
         assert!(args.lossless);
-        let quality = args.quality.unwrap_or(85);
-        assert_eq!(quality, 85);
     }
 }
