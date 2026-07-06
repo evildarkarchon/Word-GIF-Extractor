@@ -4,8 +4,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::archive_image_discovery::ArchiveImageDiscoveryWarning;
 use crate::convert::OutputFormat;
+use crate::extraction_warning::DocumentExtractionWarning;
 
 /// Sanitizes a string to be safe for use as a filename
 /// Replaces invalid characters with underscores
@@ -57,19 +57,19 @@ pub struct ExtractionConfig {
 /// Result returned by one document adapter after image extraction.
 ///
 /// Counts describe images written by the Image write pipeline. Warnings are
-/// archive discovery facts routed through the Extraction run observer so lower
-/// modules do not print directly to stderr.
+/// structured facts routed through the Extraction run observer so lower modules
+/// do not print directly to stderr.
 #[derive(Debug, Default)]
 pub struct DocumentExtractionResult {
     /// Write/conversion counts for the document.
     pub counts: ExtractionCounts,
-    /// User-visible Archive image discovery warnings.
-    pub warnings: Vec<ArchiveImageDiscoveryWarning>,
+    /// User-visible extraction warning facts.
+    pub warnings: Vec<DocumentExtractionWarning>,
 }
 
 impl DocumentExtractionResult {
-    /// Creates a document extraction result from write counts and discovery warnings.
-    pub fn new(counts: ExtractionCounts, warnings: Vec<ArchiveImageDiscoveryWarning>) -> Self {
+    /// Creates a document extraction result from write counts and warning facts.
+    pub fn new(counts: ExtractionCounts, warnings: Vec<DocumentExtractionWarning>) -> Self {
         Self { counts, warnings }
     }
 }

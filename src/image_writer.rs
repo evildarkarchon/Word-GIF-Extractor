@@ -8,6 +8,7 @@ use crate::common::{
     ExtractionConfig, ExtractionCounts, get_unique_output_path, write_image_to_file,
 };
 use crate::convert::{ConversionResult, try_convert};
+use crate::extraction_warning::ImageWriteWarning;
 use crate::image_format::ImageFormat;
 
 /// Image data ready to be written by the image write pipeline.
@@ -39,21 +40,30 @@ struct PreparedImage {
     skipped_conversion: bool,
 }
 
+/// Counts and warnings produced by one Image write pipeline batch.
+#[derive(Debug, Default)]
+pub struct ImageWriteResult {
+    /// Write/conversion counts for the batch.
+    pub counts: ExtractionCounts,
+    /// Structured warning facts produced while preparing images for writing.
+    pub warnings: Vec<ImageWriteWarning>,
+}
+
 /// Writes extracted images using the project's image write pipeline.
 ///
-/// The interface accepts already-discovered images and returns extraction
-/// counts for the batch. `BatchImages` preserves original bytes on conversion
-/// skip/failure, while `RequiredCover` preserves the existing cover-only
-/// behavior of skipping the cover when conversion cannot complete.
+/// The interface accepts already-discovered images and returns extraction counts
+/// plus warning facts for the batch. `BatchImages` preserves original bytes on
+/// conversion skip/failure, while `RequiredCover` preserves the existing
+/// cover-only behavior of skipping the cover when conversion cannot complete.
 pub fn write_images(
     output_base_dir: &Path,
     base_name: &str,
     images: Vec<ImageToWrite>,
     config: &ExtractionConfig,
     mode: WriteMode,
-) -> Result<ExtractionCounts> {
+) -> Result<ImageWriteResult> {
     if images.is_empty() {
-        return Ok(ExtractionCounts::default());
+        return Ok(ImageWriteResult::default());
     }
 
     if matches!(mode, WriteMode::BatchImages) {
@@ -63,14 +73,16 @@ pub fn write_images(
     }
 
     let total_images = images.len();
-    let mut counts = ExtractionCounts::default();
+    let mut result = ImageWriteResult::default();
     let mut gif_dir_created = false;
 
     for (seq_index, image) in images.into_iter().enumerate() {
         let is_gif = image.format == ImageFormat::Gif;
         let is_routed_gif = is_gif && config.gif_output.is_some();
 
-        let Some(prepared) = prepare_image_for_write(image, base_name, config, mode)? else {
+        let Some(prepared) =
+            prepare_image_for_write(image, base_name, config, mode, &mut result.warnings)?
+        else {
             continue;
         };
 
@@ -97,27 +109,31 @@ pub fn write_images(
 
         write_image_to_file(&output_path, &prepared.data)?;
 
-        counts.extracted += 1;
+        result.counts.extracted += 1;
         if is_routed_gif {
-            counts.gifs_routed += 1;
+            result.counts.gifs_routed += 1;
         }
         if prepared.converted {
-            counts.converted += 1;
+            result.counts.converted += 1;
         }
         if prepared.skipped_conversion {
-            counts.skipped += 1;
+            result.counts.skipped += 1;
         }
     }
 
-    Ok(counts)
+    Ok(result)
 }
 
 /// Applies conversion policy before an image is written.
+///
+/// Conversion warnings are recorded as facts so the CLI adapter remains the only
+/// module that renders terminal output.
 fn prepare_image_for_write(
     image: ImageToWrite,
     base_name: &str,
     config: &ExtractionConfig,
     mode: WriteMode,
+    warnings: &mut Vec<ImageWriteWarning>,
 ) -> Result<Option<PreparedImage>> {
     let is_routed_gif = image.format == ImageFormat::Gif && config.gif_output.is_some();
 
@@ -146,11 +162,10 @@ fn prepare_image_for_write(
             })),
             Ok(ConversionResult::Skipped(original_format)) => match mode {
                 WriteMode::BatchImages => {
-                    eprintln!(
-                        "Warning: Skipping conversion for {} ({} format not supported for conversion)",
-                        base_name,
-                        original_format.extension()
-                    );
+                    warnings.push(ImageWriteWarning::ConversionSkipped {
+                        base_name: base_name.to_string(),
+                        format: original_format,
+                    });
                     Ok(Some(PreparedImage {
                         data: image.data,
                         format: original_format,
@@ -159,19 +174,18 @@ fn prepare_image_for_write(
                     }))
                 }
                 WriteMode::RequiredCover => {
-                    eprintln!(
-                        "Warning: Cover image format '{}' not supported for conversion, skipping cover.",
-                        original_format.extension()
-                    );
+                    warnings.push(ImageWriteWarning::CoverConversionSkipped {
+                        format: original_format,
+                    });
                     Ok(None)
                 }
             },
             Err(e) => match mode {
                 WriteMode::BatchImages => {
-                    eprintln!(
-                        "Warning: Conversion failed for image in {}: {}",
-                        base_name, e
-                    );
+                    warnings.push(ImageWriteWarning::ConversionFailed {
+                        base_name: base_name.to_string(),
+                        message: e.to_string(),
+                    });
                     Ok(Some(PreparedImage {
                         data: image.data,
                         format: image.format,
@@ -180,7 +194,9 @@ fn prepare_image_for_write(
                     }))
                 }
                 WriteMode::RequiredCover => {
-                    eprintln!("Warning: Cover conversion failed: {}", e);
+                    warnings.push(ImageWriteWarning::CoverConversionFailed {
+                        message: e.to_string(),
+                    });
                     Ok(None)
                 }
             },
@@ -227,12 +243,19 @@ mod tests {
             format: ImageFormat::Svg,
         }];
 
-        let counts = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
+        let result = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
             .expect("batch image write should succeed");
 
-        assert_eq!(counts.extracted, 1);
-        assert_eq!(counts.skipped, 1);
-        assert_eq!(counts.converted, 0);
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.skipped, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::ConversionSkipped {
+                base_name: "sample".to_string(),
+                format: ImageFormat::Svg,
+            }]
+        );
         assert!(temp_dir.join("sample.svg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
@@ -252,7 +275,7 @@ mod tests {
             format: ImageFormat::Svg,
         }];
 
-        let counts = write_images(
+        let result = write_images(
             &temp_dir,
             "cover",
             images,
@@ -261,10 +284,16 @@ mod tests {
         )
         .expect("cover image write should succeed");
 
-        assert_eq!(counts.extracted, 0);
-        assert_eq!(counts.gifs_routed, 0);
-        assert_eq!(counts.converted, 0);
-        assert_eq!(counts.skipped, 0);
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(result.counts.gifs_routed, 0);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::CoverConversionSkipped {
+                format: ImageFormat::Svg,
+            }]
+        );
         assert!(!temp_dir.exists());
     }
 
@@ -284,7 +313,7 @@ mod tests {
             format: ImageFormat::Gif,
         }];
 
-        let counts = write_images(
+        let result = write_images(
             &output_dir,
             "sample",
             images,
@@ -293,11 +322,43 @@ mod tests {
         )
         .expect("GIF routing should succeed");
 
-        assert_eq!(counts.extracted, 1);
-        assert_eq!(counts.gifs_routed, 1);
-        assert_eq!(counts.converted, 0);
-        assert_eq!(counts.skipped, 0);
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.gifs_routed, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert!(result.warnings.is_empty());
         assert!(gif_dir.join("sample.gif").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn batch_images_records_conversion_failure_warning() {
+        let temp_dir = temp_test_dir("batch-conversion-failure");
+        let config = ExtractionConfig {
+            convert: Some(OutputFormat::Jpg),
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+        let images = vec![ImageToWrite {
+            data: b"\x89PNG\r\n\x1A\nnot a valid png".to_vec(),
+            format: ImageFormat::Png,
+        }];
+
+        let result = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
+            .expect("batch image write should preserve original bytes after conversion failure");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.skipped, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(matches!(
+            &result.warnings[0],
+            ImageWriteWarning::ConversionFailed { base_name, message }
+                if base_name == "sample" && message.contains("Failed to decode image")
+        ));
+        assert!(temp_dir.join("sample.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }

@@ -9,6 +9,7 @@ use zip::ZipArchive;
 
 use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
 use crate::common::{DocumentExtractionResult, ExtractionConfig};
+use crate::extraction_warning::combine_document_warnings;
 use crate::image_format::ImageFormat;
 use crate::image_writer::{WriteMode, write_images};
 
@@ -47,7 +48,7 @@ pub fn process_file(
     }
 
     let discovered = discover_images(sources, allowed_formats);
-    let counts = write_images(
+    let write_result = write_images(
         output_base_dir,
         &doc_name,
         discovered.images,
@@ -55,13 +56,17 @@ pub fn process_file(
         WriteMode::BatchImages,
     )?;
 
-    Ok(DocumentExtractionResult::new(counts, discovered.warnings))
+    Ok(DocumentExtractionResult::new(
+        write_result.counts,
+        combine_document_warnings(discovered.warnings, write_result.warnings),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::archive_image_discovery::ArchiveImageDiscoveryWarning;
+    use crate::extraction_warning::DocumentExtractionWarning;
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -113,10 +118,12 @@ mod tests {
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
             result.warnings,
-            vec![ArchiveImageDiscoveryWarning::ExtensionFallback {
-                source_name: "word/media/image1.png".to_string(),
-                format: ImageFormat::Png,
-            }]
+            vec![DocumentExtractionWarning::ArchiveImageDiscovery(
+                ArchiveImageDiscoveryWarning::ExtensionFallback {
+                    source_name: "word/media/image1.png".to_string(),
+                    format: ImageFormat::Png,
+                }
+            )]
         );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");

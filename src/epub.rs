@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
 use crate::common::{DocumentExtractionResult, ExtractionConfig, sanitize_filename};
+use crate::extraction_warning::combine_document_warnings;
 use crate::image_format::ImageFormat;
 use crate::image_writer::{WriteMode, write_images};
 
@@ -207,7 +208,7 @@ fn extract_all_images(
     }
 
     let discovered = discover_images(sources, allowed_formats);
-    let counts = write_images(
+    let write_result = write_images(
         output_base_dir,
         base_name,
         discovered.images,
@@ -215,7 +216,10 @@ fn extract_all_images(
         WriteMode::BatchImages,
     )?;
 
-    Ok(DocumentExtractionResult::new(counts, discovered.warnings))
+    Ok(DocumentExtractionResult::new(
+        write_result.counts,
+        combine_document_warnings(discovered.warnings, write_result.warnings),
+    ))
 }
 
 /// Searches for a cover image by filename when metadata-based detection fails.
@@ -307,7 +311,7 @@ fn write_cover_image(
         allowed_formats,
     );
 
-    let counts = write_images(
+    let write_result = write_images(
         output_base_dir,
         base_name,
         discovered.images,
@@ -315,7 +319,10 @@ fn write_cover_image(
         WriteMode::RequiredCover,
     )?;
 
-    Ok(DocumentExtractionResult::new(counts, discovered.warnings))
+    Ok(DocumentExtractionResult::new(
+        write_result.counts,
+        combine_document_warnings(discovered.warnings, write_result.warnings),
+    ))
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ mod docx;
 mod epub;
 mod extraction_run;
 mod extraction_run_intake;
+mod extraction_warning;
 mod image_format;
 mod image_writer;
 
