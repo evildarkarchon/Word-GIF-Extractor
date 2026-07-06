@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::common::{ExtractionConfig, ExtractionCounts};
+use crate::common::{DocumentExtractionResult, ExtractionConfig, ExtractionCounts};
 use crate::docx;
 use crate::epub::{self, EpubFilter};
 use crate::image_format::ImageFormat;
@@ -97,6 +97,8 @@ pub enum RunEvent {
     DocumentStarted { path: PathBuf, display_name: String },
     /// A document failed to process; the run will continue.
     DocumentError { path: PathBuf, message: String },
+    /// A document produced a user-visible warning while processing.
+    DocumentWarning { path: PathBuf, message: String },
     /// A document has finished processing, successfully or not.
     DocumentFinished { path: PathBuf },
 }
@@ -162,7 +164,15 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
             &options.epub_filter,
             &options.extraction,
         ) {
-            Ok(counts) => report.record_document_result(counts, is_docx),
+            Ok(result) => {
+                for warning in result.warnings {
+                    observer.on_event(RunEvent::DocumentWarning {
+                        path: path.clone(),
+                        message: warning.message(),
+                    });
+                }
+                report.record_document_result(result.counts, is_docx);
+            }
             Err(e) => observer.on_event(RunEvent::DocumentError {
                 path: path.clone(),
                 message: e.to_string(),
@@ -384,7 +394,7 @@ fn process_file(
     cover_fallback: bool,
     epub_filter: &EpubFilter,
     config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
+) -> Result<DocumentExtractionResult> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
             docx::process_file(input_path, output_base_dir, allowed_formats, config)

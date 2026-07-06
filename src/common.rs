@@ -4,32 +4,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::archive_image_discovery::ArchiveImageDiscoveryWarning;
 use crate::convert::OutputFormat;
-
-/// Validates that an archive entry path is safe (no path traversal attacks)
-///
-/// Returns `true` if the path is safe, `false` if it contains potentially malicious patterns.
-/// Checks for: null bytes, path traversal (..), absolute paths, Windows drive letters,
-/// and Windows alternate data streams.
-pub fn is_safe_archive_path(name: &str) -> bool {
-    // Reject null bytes
-    if name.contains('\0') {
-        return false;
-    }
-    // Reject path traversal
-    if name.contains("..") {
-        return false;
-    }
-    // Reject absolute paths (Unix-style)
-    if name.starts_with('/') || name.starts_with('\\') {
-        return false;
-    }
-    // Reject colons because they are invalid in Windows filenames and enable drive/ADS syntax.
-    if name.contains(':') {
-        return false;
-    }
-    true
-}
 
 /// Sanitizes a string to be safe for use as a filename
 /// Replaces invalid characters with underscores
@@ -76,6 +52,26 @@ pub struct ExtractionConfig {
     pub lossless: bool,
     /// Separate output directory for GIF files
     pub gif_output: Option<PathBuf>,
+}
+
+/// Result returned by one document adapter after image extraction.
+///
+/// Counts describe images written by the Image write pipeline. Warnings are
+/// archive discovery facts routed through the Extraction run observer so lower
+/// modules do not print directly to stderr.
+#[derive(Debug, Default)]
+pub struct DocumentExtractionResult {
+    /// Write/conversion counts for the document.
+    pub counts: ExtractionCounts,
+    /// User-visible Archive image discovery warnings.
+    pub warnings: Vec<ArchiveImageDiscoveryWarning>,
+}
+
+impl DocumentExtractionResult {
+    /// Creates a document extraction result from write counts and discovery warnings.
+    pub fn new(counts: ExtractionCounts, warnings: Vec<ArchiveImageDiscoveryWarning>) -> Self {
+        Self { counts, warnings }
+    }
 }
 
 /// Generates a unique output path, appending a counter if the file already exists
@@ -161,46 +157,6 @@ mod tests {
         );
         assert_eq!(sanitize_filename("Test*?\"<>|"), "Test______"); // 6 special chars
         assert_eq!(sanitize_filename("  Trimmed  "), "Trimmed");
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_valid() {
-        assert!(is_safe_archive_path("word/media/image1.png"));
-        assert!(is_safe_archive_path("image.jpg"));
-        assert!(is_safe_archive_path("nested/folder/file.gif"));
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_traversal() {
-        assert!(!is_safe_archive_path("../etc/passwd"));
-        assert!(!is_safe_archive_path("foo/../bar"));
-        assert!(!is_safe_archive_path(".."));
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_absolute() {
-        assert!(!is_safe_archive_path("/etc/passwd"));
-        assert!(!is_safe_archive_path("\\Windows\\System32"));
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_windows_drive() {
-        assert!(!is_safe_archive_path("C:\\Windows\\System32\\calc.exe"));
-        assert!(!is_safe_archive_path("D:/file.txt"));
-        assert!(!is_safe_archive_path("D:file.txt"));
-        assert!(!is_safe_archive_path("E:"));
-        assert!(!is_safe_archive_path("a:config.json"));
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_null_byte() {
-        assert!(!is_safe_archive_path("file\0.txt"));
-    }
-
-    #[test]
-    fn test_is_safe_archive_path_alternate_data_stream() {
-        assert!(!is_safe_archive_path("file.txt::$DATA"));
-        assert!(!is_safe_archive_path("file::stream"));
     }
 
     #[test]

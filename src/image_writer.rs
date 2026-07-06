@@ -15,6 +15,7 @@ use crate::image_format::ImageFormat;
 /// Callers are responsible for discovering images and deciding whether the
 /// source extension is allowed. The write pipeline owns conversion, GIF
 /// routing, output naming, directory creation, file writes, and counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageToWrite {
     /// Raw bytes for the extracted image.
     pub data: Vec<u8>,

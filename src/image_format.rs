@@ -200,6 +200,8 @@ impl ImageFormat {
     }
 
     /// Identifies a supported image format from bytes, falling back to a path extension.
+    // Retained for low-churn call sites and direct Image format tests.
+    #[allow(dead_code)]
     pub fn identify(data: &[u8], source_name: &str) -> Option<IdentifiedFormat> {
         ImageFormat::identify_source(ImageFormatSource {
             data,

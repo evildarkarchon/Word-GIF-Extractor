@@ -3,6 +3,7 @@
 //! This tool treats DOCX and EPUB files as ZIP archives and extracts image files
 //! matching specified formats.
 
+mod archive_image_discovery;
 mod common;
 mod convert;
 mod docx;
@@ -248,6 +249,11 @@ impl RunObserver for IndicatifRunObserver {
             RunEvent::DocumentError { path, message } => {
                 self.suspend_extraction(|| {
                     eprintln!("Error processing {}: {}", path.display(), message);
+                });
+            }
+            RunEvent::DocumentWarning { message, .. } => {
+                self.suspend_extraction(|| {
+                    eprintln!("Warning: {}", message);
                 });
             }
             RunEvent::DocumentFinished { .. } => {

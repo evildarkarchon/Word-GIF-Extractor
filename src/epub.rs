@@ -5,9 +5,10 @@ use epub::doc::EpubDoc;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::common::{ExtractionConfig, ExtractionCounts, is_safe_archive_path, sanitize_filename};
-use crate::image_format::{FormatConfidence, FormatFallbackPolicy, ImageFormat, ImageFormatSource};
-use crate::image_writer::{ImageToWrite, WriteMode, write_images};
+use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
+use crate::common::{DocumentExtractionResult, ExtractionConfig, sanitize_filename};
+use crate::image_format::ImageFormat;
+use crate::image_writer::{WriteMode, write_images};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -121,7 +122,7 @@ struct EpubResourceCandidate {
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
 /// If a filter is provided, only processes files matching the filter criteria.
-/// Returns extraction counts including GIF routing information.
+/// Returns extraction counts plus Archive image discovery warnings.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
@@ -130,7 +131,7 @@ pub fn process_file(
     cover_fallback: bool,
     filter: &EpubFilter,
     config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
+) -> Result<DocumentExtractionResult> {
     let fallback_name = input_path
         .file_stem()
         .context("Invalid filename")?
@@ -146,7 +147,7 @@ pub fn process_file(
 
     // Check filter if any criteria are set - silently skip non-matching files
     if !filter.is_empty() && !matches_filter(title.as_deref(), author.as_deref(), filter) {
-        return Ok(ExtractionCounts::default());
+        return Ok(DocumentExtractionResult::default());
     }
 
     let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
@@ -178,17 +179,13 @@ fn extract_all_images(
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
+) -> Result<DocumentExtractionResult> {
     // Clone the resource keys and extract info to avoid borrow issues
     let resources: Vec<EpubResourceCandidate> = doc
         .resources
         .iter()
         .filter_map(|(id, item)| {
-            // Defense-in-depth: validate resource paths
             let path_str = item.path.to_string_lossy();
-            if !is_safe_archive_path(&path_str) {
-                return None;
-            }
 
             // Candidate selection stays metadata-based; the user's format
             // filter is applied after byte-first Image format identification.
@@ -203,45 +200,30 @@ fn extract_all_images(
         })
         .collect();
 
-    let mut images_to_write = Vec::new();
+    let mut sources = Vec::new();
     for candidate in resources {
         // Get the image data - get_resource returns Option<(Vec<u8>, String)>
         let (data, mime) = doc
             .get_resource(&candidate.id)
             .ok_or_else(|| anyhow::anyhow!("Failed to get resource '{}'", candidate.id))?;
 
-        let Some(identified) = ImageFormat::identify_source(ImageFormatSource {
-            data: &data,
-            source_name: Some(&candidate.source_name),
-            mime: Some(&mime),
-            fallback_policy: FormatFallbackPolicy::SkipUnknown,
-        }) else {
-            continue;
-        };
-        let format = identified.format;
-
-        if identified.confidence == FormatConfidence::ExtensionFallback {
-            eprintln!(
-                "Warning: Magic detection failed for {}; falling back to .{} extension",
-                candidate.source_name,
-                format.extension()
-            );
-        }
-
-        if !allowed_formats.contains(&format) {
-            continue;
-        }
-
-        images_to_write.push(ImageToWrite { data, format });
+        sources.push(ArchiveImageSource::batch(
+            data,
+            candidate.source_name,
+            Some(mime),
+        ));
     }
 
-    write_images(
+    let discovered = discover_images(sources, allowed_formats);
+    let counts = write_images(
         output_base_dir,
         base_name,
-        images_to_write,
+        discovered.images,
         config,
         WriteMode::BatchImages,
-    )
+    )?;
+
+    Ok(DocumentExtractionResult::new(counts, discovered.warnings))
 }
 
 fn is_declared_epub_image(source_name: &str, mime: &str) -> bool {
@@ -293,7 +275,7 @@ fn extract_cover_only(
     allowed_formats: &HashSet<ImageFormat>,
     cover_fallback: bool,
     config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
+) -> Result<DocumentExtractionResult> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
 
@@ -322,7 +304,7 @@ fn extract_cover_only(
                 extract_all_images(doc, output_base_dir, base_name, allowed_formats, config)
             } else {
                 // No cover image found
-                Ok(ExtractionCounts::default())
+                Ok(DocumentExtractionResult::default())
             }
         }
     }
@@ -336,39 +318,21 @@ fn write_cover_image(
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
-    let identified = ImageFormat::identify_source(ImageFormatSource {
-        data: &data,
-        source_name: None,
-        mime: Some(mime),
-        fallback_policy: FormatFallbackPolicy::DefaultCoverToJpeg,
-    })
-    .expect("cover fallback policy should always identify a format");
-    let format = identified.format;
+) -> Result<DocumentExtractionResult> {
+    let discovered = discover_images(
+        vec![ArchiveImageSource::required_cover(data, mime.to_string())],
+        allowed_formats,
+    );
 
-    if identified.confidence == FormatConfidence::CoverDefault {
-        eprintln!(
-            "Warning: Cover image MIME '{}' could not be identified; defaulting to .jpg extension.",
-            mime
-        );
-    }
-
-    // Check if this format is in our allowed list.
-    if !allowed_formats.contains(&format) {
-        eprintln!(
-            "Warning: Cover image format '{}' not in allowed formats, skipping.",
-            format.extension()
-        );
-        return Ok(ExtractionCounts::default());
-    }
-
-    write_images(
+    let counts = write_images(
         output_base_dir,
         base_name,
-        vec![ImageToWrite { data, format }],
+        discovered.images,
         config,
         WriteMode::RequiredCover,
-    )
+    )?;
+
+    Ok(DocumentExtractionResult::new(counts, discovered.warnings))
 }
 
 #[cfg(test)]
@@ -527,7 +491,7 @@ mod tests {
             gif_output: None,
         };
 
-        let counts = process_file(
+        let result = process_file(
             &input_path,
             &output_dir,
             &allowed_formats,
@@ -538,7 +502,7 @@ mod tests {
         )
         .expect("EPUB extraction should succeed");
 
-        assert_eq!(counts.extracted, 1);
+        assert_eq!(result.counts.extracted, 1);
         assert!(output_dir.join("Tester - Magic Test.png").exists());
         assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
 
