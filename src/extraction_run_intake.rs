@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::Args;
 use crate::common::ExtractionConfig;
-use crate::epub::EpubFilter;
+use crate::document_selection::EpubFilter;
 use crate::extraction_run::RunOptions;
 use crate::image_format::ImageFormat;
 

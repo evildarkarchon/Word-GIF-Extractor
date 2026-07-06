@@ -1,22 +1,14 @@
 //! Extraction run workflow for document discovery, dispatch, and aggregation.
 
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use crate::common::{DocumentExtractionResult, ExtractionConfig, ExtractionCounts};
+use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter, SelectedDocument};
 use crate::docx;
-use crate::epub::{self, EpubFilter};
+use crate::epub;
 use crate::image_format::ImageFormat;
-
-/// Supported document types.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DocumentType {
-    Docx,
-    Epub,
-}
 
 /// Options for one extraction run after CLI arguments have been normalized.
 ///
@@ -114,54 +106,43 @@ pub trait RunObserver {
 /// Per-document failures are emitted as events and do not abort the run. Setup
 /// failures that prevent the run from starting are returned as errors.
 pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunReport> {
-    for input_path in &options.inputs {
-        if !input_path.exists() {
-            observer.on_event(RunEvent::InputWarning {
-                path: input_path.clone(),
-            });
-        }
-    }
-
-    let files = collect_document_files(&options.inputs, options.recursive, observer);
-
-    let filtered_files = if !options.epub_filter.is_empty() {
-        filter_epub_files(files, &options.epub_filter, observer)
-    } else {
-        files
-    };
-
-    let files_to_process = deduplicate_by_metadata(filtered_files, observer);
+    let selected_documents = document_selection::select_documents(
+        DocumentSelectionOptions {
+            inputs: &options.inputs,
+            recursive: options.recursive,
+            output: options.output.as_deref(),
+            cover_only: options.cover_only,
+            epub_filter: &options.epub_filter,
+        },
+        observer,
+    );
     let mut report = RunReport {
         cover_only: options.cover_only,
-        documents_to_process: files_to_process.len(),
+        documents_to_process: selected_documents.len(),
         ..RunReport::default()
     };
 
-    if files_to_process.is_empty() {
+    if selected_documents.is_empty() {
         return Ok(report);
     }
 
     observer.on_event(RunEvent::ExtractionStarted {
-        total: files_to_process.len(),
+        total: selected_documents.len(),
         cover_only: options.cover_only,
     });
 
-    for path in &files_to_process {
-        let is_docx = get_document_type(path) == Some(DocumentType::Docx);
-        let display_name = display_name_for(path, options.cover_only);
+    for selected_document in &selected_documents {
+        let path = selected_document.path().to_path_buf();
         observer.on_event(RunEvent::DocumentStarted {
             path: path.clone(),
-            display_name,
+            display_name: selected_document.display_name().to_string(),
         });
 
-        let effective_output = resolve_output_dir(path, options.output.as_deref());
         match process_file(
-            path,
-            &effective_output,
+            selected_document,
             &options.allowed_formats,
             options.cover_only,
             options.cover_fallback,
-            &options.epub_filter,
             &options.extraction,
         ) {
             Ok(result) => {
@@ -171,7 +152,7 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
                         message: warning.message(),
                     });
                 }
-                report.record_document_result(result.counts, is_docx);
+                report.record_document_result(result.counts, selected_document.is_docx());
             }
             Err(e) => observer.on_event(RunEvent::DocumentError {
                 path: path.clone(),
@@ -202,378 +183,37 @@ impl RunReport {
     }
 }
 
-/// Determines the document type based on file extension.
-fn get_document_type(path: &Path) -> Option<DocumentType> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase())
-        .and_then(|ext| match ext.as_str() {
-            "docx" => Some(DocumentType::Docx),
-            "epub" => Some(DocumentType::Epub),
-            _ => None,
-        })
-}
-
-/// Checks if a path is a supported document type.
-fn is_supported_document(path: &Path) -> bool {
-    get_document_type(path).is_some()
-}
-
-/// Checks if a path is an EPUB file.
-fn is_epub(path: &Path) -> bool {
-    get_document_type(path) == Some(DocumentType::Epub)
-}
-
-/// Collects all document files from the input paths.
-fn collect_document_files(
-    inputs: &[PathBuf],
-    recursive: bool,
-    observer: &mut impl RunObserver,
-) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-
-    // Use spinner for recursive directory scanning since we don't know total count upfront.
-    let use_spinner = recursive && inputs.iter().any(|p| p.is_dir());
-    observer.on_event(RunEvent::ScanStarted { use_spinner });
-
-    for input_path in inputs {
-        if !input_path.exists() {
-            continue;
-        }
-
-        if input_path.is_file() && is_supported_document(input_path) {
-            files.push(input_path.clone());
-            observer.on_event(RunEvent::DocumentDiscovered { count: files.len() });
-        } else if input_path.is_dir() {
-            if recursive {
-                for entry in WalkDir::new(input_path).into_iter().flatten() {
-                    let path = entry.path();
-                    if path.is_file() && is_supported_document(path) {
-                        files.push(path.to_path_buf());
-                        observer.on_event(RunEvent::DocumentDiscovered { count: files.len() });
-                    }
-                }
-            } else if let Ok(entries) = fs::read_dir(input_path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && is_supported_document(&path) {
-                        files.push(path);
-                        observer.on_event(RunEvent::DocumentDiscovered { count: files.len() });
-                    }
-                }
-            }
-        }
-    }
-
-    observer.on_event(RunEvent::ScanFinished { count: files.len() });
-    files
-}
-
-/// Filters EPUB files by metadata.
-///
-/// Returns only the files that match the filter criteria while passing non-EPUB
-/// files through unchanged.
-fn filter_epub_files(
-    files: Vec<PathBuf>,
-    filter: &EpubFilter,
-    observer: &mut impl RunObserver,
-) -> Vec<PathBuf> {
-    // Separate EPUB files from other document types.
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_epub(p));
-
-    if epub_files.is_empty() {
-        return other_files;
-    }
-
-    observer.on_event(RunEvent::EpubFilterStarted {
-        description: filter.description(),
-        total: epub_files.len(),
-    });
-
-    let mut matching_epubs = Vec::new();
-    for path in epub_files {
-        observer.on_event(RunEvent::EpubFilterAdvanced);
-        match epub::check_filter_match(&path, filter) {
-            Ok(true) => matching_epubs.push(path),
-            Ok(false) => {} // File doesn't match filter, skip.
-            Err(e) => {
-                // Log error but continue searching.
-                observer.on_event(RunEvent::EpubFilterWarning {
-                    path,
-                    message: e.to_string(),
-                });
-            }
-        }
-    }
-
-    observer.on_event(RunEvent::EpubFilterFinished {
-        matching: matching_epubs.len(),
-    });
-
-    // Combine matching EPUBs with other document types.
-    let mut result = matching_epubs;
-    result.extend(other_files);
-    result
-}
-
-/// Deduplicates EPUB files based on their metadata (author + title).
-///
-/// Keeps the first occurrence of each unique (author, title) combination.
-/// Non-EPUB files are passed through unchanged. EPUBs without metadata are
-/// deduplicated by filename.
-fn deduplicate_by_metadata(files: Vec<PathBuf>, observer: &mut impl RunObserver) -> Vec<PathBuf> {
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_epub(p));
-
-    if epub_files.is_empty() {
-        return other_files;
-    }
-
-    observer.on_event(RunEvent::EpubDedupStarted {
-        total: epub_files.len(),
-    });
-
-    // Use a HashMap to track seen (author, title) combinations.
-    // Key: (lowercase author, lowercase title) for case-insensitive deduplication.
-    let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
-    let mut unique_epubs = Vec::new();
-    let mut duplicates_found = 0usize;
-
-    for path in epub_files {
-        observer.on_event(RunEvent::EpubDedupAdvanced);
-
-        // Try to get metadata for deduplication.
-        let key = match epub::get_metadata(&path) {
-            Ok((author, title)) if author.is_some() || title.is_some() => {
-                // Normalize: lowercase and trim, use empty string for None.
-                let author_key = author
-                    .as_deref()
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default();
-                let title_key = title
-                    .as_deref()
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default();
-                (author_key, title_key)
-            }
-            _ => {
-                // Fallback to filename if we can't read metadata or if both author and title are missing.
-                let filename = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                (String::new(), filename)
-            }
-        };
-
-        // Only add if we haven't seen this combination before.
-        if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
-            e.insert(path.clone());
-            unique_epubs.push(path);
-        } else {
-            duplicates_found += 1;
-        }
-    }
-
-    observer.on_event(RunEvent::EpubDedupFinished {
-        duplicates_found,
-        unique_remaining: unique_epubs.len(),
-    });
-
-    // Combine unique EPUBs with other document types.
-    let mut result = unique_epubs;
-    result.extend(other_files);
-    result
-}
-
 /// Processes a single file based on its type.
 fn process_file(
-    input_path: &Path,
-    output_base_dir: &Path,
+    selected_document: &SelectedDocument,
     allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    epub_filter: &EpubFilter,
     config: &ExtractionConfig,
 ) -> Result<DocumentExtractionResult> {
-    match get_document_type(input_path) {
-        Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_formats, config)
-        }
-        Some(DocumentType::Epub) => epub::process_file(
-            input_path,
-            output_base_dir,
+    match selected_document {
+        SelectedDocument::Docx { .. } => docx::process_file(
+            selected_document.path(),
+            selected_document.output_dir(),
+            selected_document.base_name(),
+            allowed_formats,
+            config,
+        ),
+        SelectedDocument::Epub { .. } => epub::process_file(
+            selected_document.path(),
+            selected_document.output_dir(),
+            selected_document.base_name(),
             allowed_formats,
             cover_only,
             cover_fallback,
-            epub_filter,
             config,
         ),
-        None => {
-            anyhow::bail!(
-                "Unsupported file type: {}. Supported types: .docx, .epub",
-                input_path.display()
-            );
-        }
     }
-}
-
-/// Resolves the output directory for a single input file.
-///
-/// When `global_output` is set, all files use that directory. Otherwise images
-/// are written beside the source file (its parent directory).
-fn resolve_output_dir(input_path: &Path, global_output: Option<&Path>) -> PathBuf {
-    match global_output {
-        Some(dir) => dir.to_path_buf(),
-        None => input_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(".")),
-    }
-}
-
-/// Builds the progress display name for a document.
-fn display_name_for(path: &Path, cover_only: bool) -> String {
-    // For EPUBs in cover-only mode, show the output filename (Author - Title).
-    // Otherwise show the input filename.
-    if cover_only && is_epub(path) {
-        epub::get_base_name(path).unwrap_or_else(|_| fallback_display_name(path))
-    } else {
-        fallback_display_name(path)
-    }
-}
-
-/// Builds a fallback display name from a path.
-fn fallback_display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[derive(Default)]
-    struct CollectingObserver {
-        events: Vec<RunEvent>,
-    }
-
-    impl RunObserver for CollectingObserver {
-        fn on_event(&mut self, event: RunEvent) {
-            self.events.push(event);
-        }
-    }
-
-    fn temp_test_dir(test_name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after Unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "word-image-extractor-extraction-run-{test_name}-{}-{nanos}",
-            std::process::id()
-        ))
-    }
-
-    #[test]
-    fn resolves_output_dir_uses_global_when_set() {
-        let global = Path::new("/out");
-        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), Some(global));
-        assert_eq!(resolved, PathBuf::from("/out"));
-    }
-
-    #[test]
-    fn resolves_output_dir_beside_file_in_subdir() {
-        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), None);
-        assert_eq!(resolved, PathBuf::from("subdir"));
-    }
-
-    #[test]
-    fn resolves_output_dir_bare_filename_defaults_to_dot() {
-        let resolved = resolve_output_dir(Path::new("doc.docx"), None);
-        assert_eq!(resolved, PathBuf::from("."));
-    }
-
-    #[test]
-    fn resolves_output_dir_absolute_input() {
-        let input = Path::new("/books/sample.epub");
-        let resolved = resolve_output_dir(input, None);
-        assert_eq!(resolved, Path::new("/books"));
-    }
-
-    #[test]
-    fn collect_document_files_respects_recursive_flag() {
-        let temp_dir = temp_test_dir("collect-recursive");
-        let nested = temp_dir.join("nested");
-        fs::create_dir_all(&nested).expect("nested test directory should be creatable");
-        fs::write(temp_dir.join("root.docx"), []).expect("root docx should be writable");
-        fs::write(nested.join("nested.epub"), []).expect("nested epub should be writable");
-        fs::write(temp_dir.join("ignored.txt"), []).expect("ignored file should be writable");
-
-        let mut observer = CollectingObserver::default();
-        let non_recursive =
-            collect_document_files(std::slice::from_ref(&temp_dir), false, &mut observer);
-        assert_eq!(non_recursive.len(), 1);
-
-        let mut observer = CollectingObserver::default();
-        let recursive =
-            collect_document_files(std::slice::from_ref(&temp_dir), true, &mut observer);
-        assert_eq!(recursive.len(), 2);
-        assert!(
-            observer
-                .events
-                .iter()
-                .any(|event| { matches!(event, RunEvent::ScanStarted { use_spinner: true }) })
-        );
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn filter_epub_files_passes_non_epubs_through_without_filter_events() {
-        let files = vec![PathBuf::from("doc.docx"), PathBuf::from("notes.txt")];
-        let filter = EpubFilter {
-            title: Some("needle".to_string()),
-            author: None,
-        };
-        let mut observer = CollectingObserver::default();
-
-        let result = filter_epub_files(files.clone(), &filter, &mut observer);
-
-        assert_eq!(result, files);
-        assert!(observer.events.is_empty());
-    }
-
-    #[test]
-    fn deduplicate_by_metadata_falls_back_to_filename_when_metadata_cannot_be_read() {
-        let temp_dir = temp_test_dir("dedupe-fallback");
-        let first_dir = temp_dir.join("first");
-        let second_dir = temp_dir.join("second");
-        fs::create_dir_all(&first_dir).expect("first test directory should be creatable");
-        fs::create_dir_all(&second_dir).expect("second test directory should be creatable");
-        let first = first_dir.join("book.epub");
-        let second = second_dir.join("book.epub");
-        fs::write(&first, b"not an epub").expect("first invalid epub should be writable");
-        fs::write(&second, b"not an epub").expect("second invalid epub should be writable");
-
-        let mut observer = CollectingObserver::default();
-        let result = deduplicate_by_metadata(vec![first.clone(), second], &mut observer);
-
-        assert_eq!(result, vec![first]);
-        assert!(observer.events.iter().any(|event| {
-            matches!(
-                event,
-                RunEvent::EpubDedupFinished {
-                    duplicates_found: 1,
-                    unique_remaining: 1
-                }
-            )
-        }));
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
 
     #[test]
     fn run_report_records_counts_and_docx_output_state() {

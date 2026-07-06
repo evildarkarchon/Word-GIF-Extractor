@@ -14,21 +14,17 @@ use crate::image_format::ImageFormat;
 use crate::image_writer::{WriteMode, write_images};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
+/// Uses the selected document base name for output files.
 /// When `convert` is specified, images are converted to the target format before writing.
 /// GIF routing takes priority over conversion: GIFs routed to `gif_output` are written as-is.
 /// Returns extraction counts plus Archive image discovery warnings.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
+    base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<DocumentExtractionResult> {
-    let doc_name = input_path
-        .file_stem()
-        .context("Invalid filename")?
-        .to_string_lossy()
-        .to_string();
-
     let file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
     let mut archive = ZipArchive::new(file)
@@ -50,7 +46,7 @@ pub fn process_file(
     let discovered = discover_images(sources, allowed_formats);
     let write_result = write_images(
         output_base_dir,
-        &doc_name,
+        base_name,
         discovered.images,
         config,
         WriteMode::BatchImages,
@@ -105,6 +101,7 @@ mod tests {
         let result = process_file(
             &input_path,
             &output_dir,
+            "sample",
             &HashSet::from([ImageFormat::Png]),
             &ExtractionConfig {
                 convert: None,

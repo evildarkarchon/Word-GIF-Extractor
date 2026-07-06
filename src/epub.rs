@@ -1,70 +1,18 @@
 //! EPUB file processing module
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use epub::doc::EpubDoc;
 use std::collections::HashSet;
 use std::path::Path;
 
 use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
-use crate::common::{DocumentExtractionResult, ExtractionConfig, sanitize_filename};
+use crate::common::{DocumentExtractionResult, ExtractionConfig};
 use crate::extraction_warning::combine_document_warnings;
 use crate::image_format::ImageFormat;
 use crate::image_writer::{WriteMode, write_images};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
-
-/// Filter criteria for EPUB files
-#[derive(Debug, Default)]
-pub struct EpubFilter {
-    pub title: Option<String>,
-    pub author: Option<String>,
-}
-
-impl EpubFilter {
-    /// Returns true if no filter criteria are set
-    pub fn is_empty(&self) -> bool {
-        self.title.is_none() && self.author.is_none()
-    }
-
-    /// Returns a human-readable description of the filter for progress messages
-    pub fn description(&self) -> String {
-        match (&self.author, &self.title) {
-            (Some(author), Some(title)) => format!("author '{}' and title '{}'", author, title),
-            (Some(author), None) => format!("author '{}'", author),
-            (None, Some(title)) => format!("title '{}'", title),
-            (None, None) => String::new(),
-        }
-    }
-}
-
-/// Checks if EPUB metadata matches the filter (case-insensitive substring match)
-fn matches_filter(title: Option<&str>, author: Option<&str>, filter: &EpubFilter) -> bool {
-    let title_matches = filter
-        .title
-        .as_ref()
-        .is_none_or(|f| title.is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase())));
-
-    let author_matches = filter
-        .author
-        .as_ref()
-        .is_none_or(|f| author.is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase())));
-
-    title_matches && author_matches
-}
-
-/// Checks if an EPUB file matches the given filter without extracting any images.
-/// Returns true if the file matches, false otherwise.
-/// Returns an error if the file cannot be opened or read.
-pub fn check_filter_match(input_path: &Path, filter: &EpubFilter) -> Result<bool> {
-    let doc =
-        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
-
-    let title = doc.mdata("title").map(|m| m.value.clone());
-    let author = doc.mdata("creator").map(|m| m.value.clone());
-
-    Ok(matches_filter(title.as_deref(), author.as_deref(), filter))
-}
 
 /// Gets the metadata (author, title) from an EPUB file.
 /// Returns a tuple of (author, title) where either may be None if not present.
@@ -79,85 +27,33 @@ pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>
     Ok((author, title))
 }
 
-/// Gets the computed base name for an EPUB file based on its metadata.
-/// This is used for progress bar display in cover-only mode.
-/// Returns the sanitized "Author - Title" name, or falls back to the filename.
-pub fn get_base_name(input_path: &Path) -> Result<String> {
-    let fallback_name = input_path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let (author, title) = get_metadata(input_path)?;
-
-    Ok(format_epub_base_name(
-        author.as_deref(),
-        title.as_deref(),
-        &fallback_name,
-    ))
-}
-
-/// Formats a filename based on EPUB metadata (author and title)
-/// Falls back to the provided fallback name if metadata is missing
-fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &str) -> String {
-    let author = author.map(|s| s.trim()).filter(|s| !s.is_empty());
-    let title = title.map(|s| s.trim()).filter(|s| !s.is_empty());
-
-    let raw_name = match (author, title) {
-        (Some(a), Some(t)) => format!("{} - {}", a, t),
-        (None, Some(t)) => t.to_string(),
-        (Some(a), None) => a.to_string(),
-        (None, None) => fallback.to_string(),
-    };
-
-    sanitize_filename(&raw_name)
-}
-
 struct EpubResourceCandidate {
     id: String,
     source_name: String,
 }
 
 /// Processes a single .epub file, extracting images matching the allowed extensions.
-/// Uses author and title metadata for naming, falling back to filename.
+/// Uses the selected document base name for output files.
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
-/// If a filter is provided, only processes files matching the filter criteria.
 /// Returns extraction counts plus Archive image discovery warnings.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
+    base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    filter: &EpubFilter,
     config: &ExtractionConfig,
 ) -> Result<DocumentExtractionResult> {
-    let fallback_name = input_path
-        .file_stem()
-        .context("Invalid filename")?
-        .to_string_lossy()
-        .to_string();
-
     let mut doc =
         EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
-
-    // Extract metadata - mdata() returns Option<MetadataItem> with .value field
-    let title = doc.mdata("title").map(|m| m.value.clone());
-    let author = doc.mdata("creator").map(|m| m.value.clone()); // 'creator' is the Dublin Core element for author
-
-    // Check filter if any criteria are set - silently skip non-matching files
-    if !filter.is_empty() && !matches_filter(title.as_deref(), author.as_deref(), filter) {
-        return Ok(DocumentExtractionResult::default());
-    }
-
-    let base_name = format_epub_base_name(author.as_deref(), title.as_deref(), &fallback_name);
 
     if cover_only {
         return extract_cover_only(
             &mut doc,
             output_base_dir,
-            &base_name,
+            base_name,
             allowed_formats,
             cover_fallback,
             config,
@@ -167,7 +63,7 @@ pub fn process_file(
     extract_all_images(
         &mut doc,
         output_base_dir,
-        &base_name,
+        base_name,
         allowed_formats,
         config,
     )
@@ -407,42 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_epub_base_name_both() {
-        let result = format_epub_base_name(Some("Stephen King"), Some("The Shining"), "fallback");
-        assert_eq!(result, "Stephen King - The Shining");
-    }
-
-    #[test]
-    fn test_format_epub_base_name_title_only() {
-        let result = format_epub_base_name(None, Some("The Shining"), "fallback");
-        assert_eq!(result, "The Shining");
-    }
-
-    #[test]
-    fn test_format_epub_base_name_author_only() {
-        let result = format_epub_base_name(Some("Stephen King"), None, "fallback");
-        assert_eq!(result, "Stephen King");
-    }
-
-    #[test]
-    fn test_format_epub_base_name_neither() {
-        let result = format_epub_base_name(None, None, "fallback");
-        assert_eq!(result, "fallback");
-    }
-
-    #[test]
-    fn test_format_epub_base_name_empty_strings() {
-        let result = format_epub_base_name(Some("  "), Some(""), "fallback");
-        assert_eq!(result, "fallback");
-    }
-
-    #[test]
-    fn test_format_epub_base_name_sanitizes() {
-        let result = format_epub_base_name(Some("Author/Name"), Some("Title:Subtitle"), "fallback");
-        assert_eq!(result, "Author_Name - Title_Subtitle");
-    }
-
-    #[test]
     fn test_jpeg_extensions_contains_common_extensions() {
         assert!(JPEG_EXTENSIONS.contains(&"jpg"));
         assert!(JPEG_EXTENSIONS.contains(&"jpeg"));
@@ -484,10 +344,10 @@ mod tests {
         let result = process_file(
             &input_path,
             &output_dir,
+            "Tester - Magic Test",
             &allowed_formats,
             false,
             false,
-            &EpubFilter::default(),
             &config,
         )
         .expect("EPUB extraction should succeed");
@@ -525,10 +385,10 @@ mod tests {
         let result = process_file(
             &input_path,
             &output_dir,
+            "Tester - Magic Test",
             &allowed_formats,
             false,
             false,
-            &EpubFilter::default(),
             &config,
         )
         .expect("EPUB extraction should succeed");

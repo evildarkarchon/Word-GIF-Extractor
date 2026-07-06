@@ -6,6 +6,7 @@
 mod archive_image_discovery;
 mod common;
 mod convert;
+mod document_selection;
 mod docx;
 mod epub;
 mod extraction_run;
