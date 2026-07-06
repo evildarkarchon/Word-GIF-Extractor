@@ -8,10 +8,9 @@ use std::path::Path;
 use zip::ZipArchive;
 
 use crate::common::{
-    ExtractionConfig, ExtractionCounts, get_unique_output_path, is_safe_archive_path,
-    is_supported_extension, write_image_to_file,
+    ExtractionConfig, ExtractionCounts, is_safe_archive_path, is_supported_extension,
 };
-use crate::convert::{ConversionResult, try_convert};
+use crate::image_writer::{ImageToWrite, WriteMode, write_images};
 use crate::magic::detect_image_format;
 
 #[derive(Debug)]
@@ -97,87 +96,20 @@ pub fn process_file(
         }
 
         if allowed_extensions.contains(format.as_str()) {
-            images.push((data, format));
+            images.push(ImageToWrite {
+                data,
+                extension: format,
+            });
         }
     }
 
-    if images.is_empty() {
-        return Ok(ExtractionCounts::default());
-    }
-
-    // create_dir_all is idempotent - succeeds if directory exists
-    fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
-
-    let total_images = images.len();
-    let mut counts = ExtractionCounts::default();
-    let mut gif_dir_created = false;
-
-    for (seq_index, (data, extension)) in images.into_iter().enumerate() {
-        // Determine output directory: route GIFs to gif_output if set
-        let is_gif = extension == "gif";
-        let effective_output_dir = if let (true, Some(gif_dir)) = (is_gif, config.gif_output) {
-            if !gif_dir_created {
-                fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
-                gif_dir_created = true;
-            }
-            gif_dir
-        } else {
-            output_base_dir
-        };
-
-        // Determine if this GIF is being routed (GIF routing takes priority per D-10)
-        let is_routed_gif = is_gif && config.gif_output.is_some();
-
-        // Attempt conversion if requested and not a routed GIF
-        let (final_data, final_ext) = if let Some(format) = config.convert {
-            if is_routed_gif {
-                // GIF is being routed to gif_output -- write as-is, skip conversion
-                (data, extension.clone())
-            } else {
-                match try_convert(&data, &extension, format, config.quality, config.lossless) {
-                    Ok(ConversionResult::Converted(converted_bytes, ext)) => {
-                        counts.converted += 1;
-                        (converted_bytes, ext)
-                    }
-                    Ok(ConversionResult::Skipped(original_ext)) => {
-                        eprintln!(
-                            "Warning: Skipping conversion for {} ({} format not supported for conversion)",
-                            doc_name, original_ext
-                        );
-                        counts.skipped += 1;
-                        (data, original_ext)
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Conversion failed for image in {}: {}",
-                            doc_name, e
-                        );
-                        counts.skipped += 1;
-                        (data, extension.clone())
-                    }
-                }
-            }
-        } else {
-            (data, extension.clone())
-        };
-
-        let output_path = get_unique_output_path(
-            effective_output_dir,
-            &doc_name,
-            seq_index,
-            total_images,
-            &final_ext,
-        )?;
-
-        write_image_to_file(&output_path, &final_data)?;
-
-        counts.extracted += 1;
-        if is_routed_gif {
-            counts.gifs_routed += 1;
-        }
-    }
-
-    Ok(counts)
+    write_images(
+        output_base_dir,
+        &doc_name,
+        images,
+        config,
+        WriteMode::BatchImages,
+    )
 }
 
 #[cfg(test)]

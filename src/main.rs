@@ -7,6 +7,7 @@ mod common;
 mod convert;
 mod docx;
 mod epub;
+mod image_writer;
 mod magic;
 
 use anyhow::Result;
