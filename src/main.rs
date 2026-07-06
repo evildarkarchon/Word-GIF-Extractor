@@ -7,19 +7,19 @@ mod common;
 mod convert;
 mod docx;
 mod epub;
+mod extraction_run;
 mod image_writer;
 mod magic;
 
 use anyhow::Result;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 use crate::convert::OutputFormat;
-use common::{ExtractionConfig, ExtractionCounts, get_supported_extensions, normalize_format};
+use crate::extraction_run::{RunEvent, RunObserver, RunOptions, RunReport};
+use common::{ExtractionConfig, get_supported_extensions, normalize_format};
 use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
@@ -81,35 +81,6 @@ struct Args {
     gif_output: Option<PathBuf>,
 }
 
-/// Supported document types
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum DocumentType {
-    Docx,
-    Epub,
-}
-
-/// Determines the document type based on file extension
-fn get_document_type(path: &Path) -> Option<DocumentType> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase())
-        .and_then(|ext| match ext.as_str() {
-            "docx" => Some(DocumentType::Docx),
-            "epub" => Some(DocumentType::Epub),
-            _ => None,
-        })
-}
-
-/// Checks if a path is a supported document type
-fn is_supported_document(path: &Path) -> bool {
-    get_document_type(path).is_some()
-}
-
-/// Checks if a path is an EPUB file
-fn is_epub(path: &Path) -> bool {
-    get_document_type(path) == Some(DocumentType::Epub)
-}
-
 /// Creates a standard progress bar style for collection phases
 fn create_progress_style() -> ProgressStyle {
     ProgressStyle::default_bar()
@@ -123,203 +94,6 @@ fn create_spinner_style() -> ProgressStyle {
     ProgressStyle::default_spinner()
         .template("{spinner:.green} {msg}")
         .expect("Invalid spinner template")
-}
-
-/// Collects all document files from the input paths with progress indication
-fn collect_document_files(inputs: &[PathBuf], recursive: bool) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-
-    // Use spinner for recursive directory scanning since we don't know total count upfront
-    let use_spinner = recursive && inputs.iter().any(|p| p.is_dir());
-    let pb = if use_spinner {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(create_spinner_style());
-        pb.set_message("Scanning directories for documents...");
-        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-        Some(pb)
-    } else {
-        None
-    };
-
-    for input_path in inputs {
-        if !input_path.exists() {
-            continue;
-        }
-
-        if input_path.is_file() && is_supported_document(input_path) {
-            files.push(input_path.clone());
-            if let Some(ref pb) = pb {
-                pb.set_message(format!("Found {} document(s)...", files.len()));
-            }
-        } else if input_path.is_dir() {
-            if recursive {
-                for entry in WalkDir::new(input_path).into_iter().flatten() {
-                    let path = entry.path();
-                    if path.is_file() && is_supported_document(path) {
-                        files.push(path.to_path_buf());
-                        if let Some(ref pb) = pb {
-                            pb.set_message(format!("Found {} document(s)...", files.len()));
-                        }
-                    }
-                }
-            } else if let Ok(entries) = fs::read_dir(input_path) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && is_supported_document(&path) {
-                        files.push(path);
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(pb) = pb {
-        pb.finish_with_message(format!("Found {} document(s)", files.len()));
-    }
-
-    files
-}
-
-/// Filters EPUB files by metadata with a progress bar.
-/// Returns only the files that match the filter criteria.
-fn filter_epub_files_with_progress(files: Vec<PathBuf>, filter: &EpubFilter) -> Vec<PathBuf> {
-    // Separate EPUB files from other document types
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_epub(p));
-
-    if epub_files.is_empty() {
-        return other_files;
-    }
-
-    let pb = ProgressBar::new(epub_files.len() as u64);
-    pb.set_style(create_progress_style());
-    pb.set_message(format!("Filtering EPUBs by {}", filter.description()));
-
-    let mut matching_epubs = Vec::new();
-    for path in epub_files {
-        pb.inc(1);
-        match epub::check_filter_match(&path, filter) {
-            Ok(true) => matching_epubs.push(path),
-            Ok(false) => {} // File doesn't match filter, skip
-            Err(e) => {
-                // Log error but continue searching
-                pb.suspend(|| {
-                    eprintln!("Warning: Could not read {}: {}", path.display(), e);
-                });
-            }
-        }
-    }
-
-    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching_epubs.len()));
-
-    // Combine matching EPUBs with other document types
-    let mut result = matching_epubs;
-    result.extend(other_files);
-    result
-}
-
-/// Deduplicates EPUB files based on their metadata (author + title).
-/// Keeps the first occurrence of each unique (author, title) combination.
-/// Non-EPUB files are passed through unchanged.
-/// EPUBs without metadata are deduplicated by filename.
-fn deduplicate_by_metadata(files: Vec<PathBuf>) -> Vec<PathBuf> {
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(|p| is_epub(p));
-
-    if epub_files.is_empty() {
-        return other_files;
-    }
-
-    let pb = ProgressBar::new(epub_files.len() as u64);
-    pb.set_style(create_progress_style());
-    pb.set_message("Deduplicating EPUBs by metadata");
-
-    // Use a HashMap to track seen (author, title) combinations
-    // Key: (lowercase author, lowercase title) for case-insensitive deduplication
-    let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
-    let mut unique_epubs = Vec::new();
-    let mut duplicates_found = 0usize;
-
-    for path in epub_files {
-        pb.inc(1);
-
-        // Try to get metadata for deduplication
-        let key = match epub::get_metadata(&path) {
-            Ok((author, title)) if author.is_some() || title.is_some() => {
-                // Normalize: lowercase and trim, use empty string for None
-                let author_key = author
-                    .as_deref()
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default();
-                let title_key = title
-                    .as_deref()
-                    .map(|s| s.trim().to_lowercase())
-                    .unwrap_or_default();
-                (author_key, title_key)
-            }
-            _ => {
-                // Fallback to filename if we can't read metadata or if both author and title are missing
-                let filename = path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                (String::new(), filename)
-            }
-        };
-
-        // Only add if we haven't seen this combination before
-        if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key) {
-            e.insert(path.clone());
-            unique_epubs.push(path);
-        } else {
-            duplicates_found += 1;
-        }
-    }
-
-    if duplicates_found > 0 {
-        pb.finish_with_message(format!(
-            "Removed {} duplicate EPUB(s), {} unique remaining",
-            duplicates_found,
-            unique_epubs.len()
-        ));
-    } else {
-        pb.finish_and_clear();
-    }
-
-    // Combine unique EPUBs with other document types
-    let mut result = unique_epubs;
-    result.extend(other_files);
-    result
-}
-
-/// Processes a single file based on its type.
-fn process_file(
-    input_path: &Path,
-    output_base_dir: &Path,
-    allowed_extensions: &HashSet<&str>,
-    cover_only: bool,
-    cover_fallback: bool,
-    epub_filter: &EpubFilter,
-    config: &ExtractionConfig,
-) -> Result<ExtractionCounts> {
-    match get_document_type(input_path) {
-        Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_extensions, config)
-        }
-        Some(DocumentType::Epub) => epub::process_file(
-            input_path,
-            output_base_dir,
-            allowed_extensions,
-            cover_only,
-            cover_fallback,
-            epub_filter,
-            config,
-        ),
-        None => {
-            anyhow::bail!(
-                "Unsupported file type: {}. Supported types: .docx, .epub",
-                input_path.display()
-            );
-        }
-    }
 }
 
 /// Validates argument combinations that clap cannot check declaratively.
@@ -341,18 +115,217 @@ fn validate_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
-/// Resolves the output directory for a single input file.
-///
-/// When `global_output` is set, all files use that directory. Otherwise images
-/// are written beside the source file (its parent directory).
-fn resolve_output_dir(input_path: &Path, global_output: Option<&Path>) -> PathBuf {
-    match global_output {
-        Some(dir) => dir.to_path_buf(),
-        None => input_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from(".")),
+/// Adapts extraction-run events to terminal progress bars.
+struct IndicatifRunObserver {
+    scan_pb: Option<ProgressBar>,
+    epub_filter_pb: Option<ProgressBar>,
+    epub_dedup_pb: Option<ProgressBar>,
+    extraction_pb: Option<ProgressBar>,
+}
+
+impl IndicatifRunObserver {
+    /// Creates a progress observer with no active progress bars.
+    fn new() -> Self {
+        Self {
+            scan_pb: None,
+            epub_filter_pb: None,
+            epub_dedup_pb: None,
+            extraction_pb: None,
+        }
+    }
+
+    /// Finishes the extraction progress bar with the final run summary.
+    fn finish_extraction(&self, message: String) {
+        if let Some(pb) = &self.extraction_pb {
+            pb.finish_with_message(message);
+        }
+    }
+
+    /// Runs a closure while the extraction progress bar is suspended, when present.
+    fn suspend_extraction<F>(&self, f: F)
+    where
+        F: FnOnce(),
+    {
+        if let Some(pb) = &self.extraction_pb {
+            pb.suspend(f);
+        } else {
+            f();
+        }
+    }
+}
+
+impl RunObserver for IndicatifRunObserver {
+    fn on_event(&mut self, event: RunEvent) {
+        match event {
+            RunEvent::InputWarning { path } => {
+                eprintln!("Warning: Input path does not exist: {}", path.display());
+            }
+            RunEvent::ScanStarted { use_spinner } => {
+                if use_spinner {
+                    let pb = ProgressBar::new_spinner();
+                    pb.set_style(create_spinner_style());
+                    pb.set_message("Scanning directories for documents...");
+                    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                    self.scan_pb = Some(pb);
+                }
+            }
+            RunEvent::DocumentDiscovered { count } => {
+                if let Some(pb) = &self.scan_pb {
+                    pb.set_message(format!("Found {} document(s)...", count));
+                }
+            }
+            RunEvent::ScanFinished { count } => {
+                if let Some(pb) = self.scan_pb.take() {
+                    pb.finish_with_message(format!("Found {} document(s)", count));
+                }
+            }
+            RunEvent::EpubFilterStarted { description, total } => {
+                let pb = ProgressBar::new(total as u64);
+                pb.set_style(create_progress_style());
+                pb.set_message(format!("Filtering EPUBs by {}", description));
+                self.epub_filter_pb = Some(pb);
+            }
+            RunEvent::EpubFilterAdvanced => {
+                if let Some(pb) = &self.epub_filter_pb {
+                    pb.inc(1);
+                }
+            }
+            RunEvent::EpubFilterWarning { path, message } => {
+                if let Some(pb) = &self.epub_filter_pb {
+                    pb.suspend(|| {
+                        eprintln!("Warning: Could not read {}: {}", path.display(), message);
+                    });
+                } else {
+                    eprintln!("Warning: Could not read {}: {}", path.display(), message);
+                }
+            }
+            RunEvent::EpubFilterFinished { matching } => {
+                if let Some(pb) = self.epub_filter_pb.take() {
+                    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
+                }
+            }
+            RunEvent::EpubDedupStarted { total } => {
+                let pb = ProgressBar::new(total as u64);
+                pb.set_style(create_progress_style());
+                pb.set_message("Deduplicating EPUBs by metadata");
+                self.epub_dedup_pb = Some(pb);
+            }
+            RunEvent::EpubDedupAdvanced => {
+                if let Some(pb) = &self.epub_dedup_pb {
+                    pb.inc(1);
+                }
+            }
+            RunEvent::EpubDedupFinished {
+                duplicates_found,
+                unique_remaining,
+            } => {
+                if let Some(pb) = self.epub_dedup_pb.take() {
+                    if duplicates_found > 0 {
+                        pb.finish_with_message(format!(
+                            "Removed {} duplicate EPUB(s), {} unique remaining",
+                            duplicates_found, unique_remaining
+                        ));
+                    } else {
+                        pb.finish_and_clear();
+                    }
+                }
+            }
+            RunEvent::ExtractionStarted { total, cover_only } => {
+                let pb = ProgressBar::new(total as u64);
+                pb.set_style(create_progress_style());
+                let extraction_msg = if cover_only {
+                    "Extracting cover images"
+                } else {
+                    "Extracting images from documents"
+                };
+                pb.set_message(extraction_msg);
+                self.extraction_pb = Some(pb);
+            }
+            RunEvent::DocumentStarted { display_name, .. } => {
+                if let Some(pb) = &self.extraction_pb {
+                    pb.set_message(display_name);
+                }
+            }
+            RunEvent::DocumentError { path, message } => {
+                self.suspend_extraction(|| {
+                    eprintln!("Error processing {}: {}", path.display(), message);
+                });
+            }
+            RunEvent::DocumentFinished { .. } => {
+                if let Some(pb) = &self.extraction_pb {
+                    pb.inc(1);
+                }
+            }
+        }
+    }
+}
+
+/// Builds the final extraction summary shown in the terminal.
+fn final_summary_message(
+    report: &RunReport,
+    has_convert: bool,
+    gif_output: Option<&Path>,
+) -> String {
+    if report.total_counts.extracted > 0 {
+        // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
+        // (DOCX files always extract all images regardless of cover_only flag)
+        let item_name = if report.cover_only && !report.has_docx_images {
+            "cover(s)"
+        } else {
+            "image(s)"
+        };
+        let has_gif_routing = report.total_counts.gifs_routed > 0;
+
+        match (has_convert, has_gif_routing) {
+            (true, true) => {
+                // D-04: Combined conversion + GIF routing message
+                let gif_dir = gif_output.unwrap();
+                format!(
+                    "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+                    report.total_counts.extracted,
+                    item_name,
+                    report.total_counts.converted,
+                    report.total_counts.skipped,
+                    report.total_counts.gifs_routed,
+                    gif_dir.display(),
+                    report.documents_with_output
+                )
+            }
+            (true, false) => {
+                // D-01: Conversion stats only
+                format!(
+                    "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+                    report.total_counts.extracted,
+                    item_name,
+                    report.total_counts.converted,
+                    report.total_counts.skipped,
+                    report.documents_with_output
+                )
+            }
+            (false, true) => {
+                // Existing GIF routing message (no conversion) -- unchanged
+                let gif_dir = gif_output.unwrap();
+                format!(
+                    "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
+                    report.total_counts.extracted,
+                    item_name,
+                    report.total_counts.gifs_routed,
+                    gif_dir.display(),
+                    report.documents_with_output
+                )
+            }
+            (false, false) => {
+                // Existing default message -- unchanged
+                format!(
+                    "Extracted {} {} from {} document(s)",
+                    report.total_counts.extracted, item_name, report.documents_with_output
+                )
+            }
+        }
+    } else if report.cover_only && !report.has_docx_images {
+        "No cover images found".to_string()
+    } else {
+        "No images found".to_string()
     }
 }
 
@@ -360,8 +333,25 @@ fn main() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
 
+    let Args {
+        inputs,
+        named_inputs,
+        output,
+        recursive,
+        formats,
+        cover_only,
+        cover_fallback,
+        title,
+        author,
+        convert,
+        quality,
+        lossless,
+        gif_only,
+        gif_output,
+    } = args;
+
     // Combine positional and named inputs, fallback to current directory if none specified
-    let mut all_inputs: Vec<PathBuf> = args.inputs.into_iter().chain(args.named_inputs).collect();
+    let mut all_inputs: Vec<PathBuf> = inputs.into_iter().chain(named_inputs).collect();
 
     if all_inputs.is_empty() {
         let cwd = std::env::current_dir()?;
@@ -372,18 +362,12 @@ fn main() -> Result<()> {
         all_inputs.push(cwd);
     }
 
-    let quality = args.quality.unwrap_or(85);
-
-    let config = ExtractionConfig {
-        convert: args.convert,
-        quality,
-        lossless: args.lossless,
-        gif_output: args.gif_output.as_deref(),
-    };
+    let quality = quality.unwrap_or(85);
+    let has_convert = convert.is_some();
 
     // Determine allowed extensions
     let mut target_extensions = HashSet::new();
-    if let Some(formats) = &args.formats {
+    if let Some(formats) = &formats {
         for fmt in formats {
             let normalized = normalize_format(fmt);
             for ext in normalized {
@@ -397,174 +381,46 @@ fn main() -> Result<()> {
         target_extensions = get_supported_extensions();
     }
 
-    // Create EPUB filter from CLI args
-    let epub_filter = EpubFilter {
-        title: args.title,
-        author: args.author,
-    };
-
-    // Validate input paths exist
-    for input_path in &all_inputs {
-        if !input_path.exists() {
-            eprintln!(
-                "Warning: Input path does not exist: {}",
-                input_path.display()
-            );
-        }
-    }
-
-    // Collect all document files
-    let files = collect_document_files(&all_inputs, args.recursive);
-
-    // If a filter is specified, search EPUB files with a progress bar
-    let filtered_files = if !epub_filter.is_empty() {
-        filter_epub_files_with_progress(files, &epub_filter)
-    } else {
-        files
-    };
-
-    // Deduplicate EPUBs by metadata (author + title) to avoid processing the same book twice
-    let files_to_process = deduplicate_by_metadata(filtered_files);
-
-    if files_to_process.is_empty() {
-        println!("No documents found to process.");
-        return Ok(());
-    }
-
     // --gif-only overrides format selection to extract only GIFs
-    if args.gif_only {
+    if gif_only {
         target_extensions.clear();
         target_extensions.insert("gif");
     }
 
-    let mut total_counts = ExtractionCounts::default();
-    let mut total_documents = 0usize;
-    let mut has_docx_images = false;
+    // Create EPUB filter from CLI args
+    let epub_filter = EpubFilter { title, author };
 
-    // Create progress bar for extraction phase with context-appropriate message
-    let pb = ProgressBar::new(files_to_process.len() as u64);
-    pb.set_style(create_progress_style());
-    let extraction_msg = if args.cover_only {
-        "Extracting cover images"
-    } else {
-        "Extracting images from documents"
+    let config = ExtractionConfig {
+        convert,
+        quality,
+        lossless,
+        gif_output: gif_output.as_deref(),
     };
-    pb.set_message(extraction_msg);
 
-    for path in &files_to_process {
-        let is_docx = get_document_type(path) == Some(DocumentType::Docx);
-        // Update progress bar with appropriate name
-        // For EPUBs in cover-only mode, show the output filename (Author - Title)
-        // Otherwise show the input filename
-        let display_name = if args.cover_only && is_epub(path) {
-            epub::get_base_name(path).unwrap_or_else(|_| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| path.display().to_string())
-            })
-        } else {
-            path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.display().to_string())
-        };
-        pb.set_message(display_name);
+    let options = RunOptions {
+        inputs: all_inputs,
+        recursive,
+        output,
+        allowed_extensions: target_extensions,
+        cover_only,
+        cover_fallback,
+        epub_filter,
+        extraction: config,
+    };
 
-        let effective_output = resolve_output_dir(path, args.output.as_deref());
-        match process_file(
-            path,
-            &effective_output,
-            &target_extensions,
-            args.cover_only,
-            args.cover_fallback,
-            &epub_filter,
-            &config,
-        ) {
-            Ok(counts) => {
-                total_counts.extracted += counts.extracted;
-                total_counts.gifs_routed += counts.gifs_routed;
-                total_counts.converted += counts.converted;
-                total_counts.skipped += counts.skipped;
-                if counts.extracted > 0 {
-                    total_documents += 1;
-                    if is_docx {
-                        has_docx_images = true;
-                    }
-                }
-            }
-            Err(e) => {
-                pb.suspend(|| {
-                    eprintln!("Error processing {}: {}", path.display(), e);
-                });
-            }
-        }
-        pb.inc(1);
+    let mut observer = IndicatifRunObserver::new();
+    let report = extraction_run::run(options, &mut observer)?;
+
+    if report.documents_to_process == 0 {
+        println!("No documents found to process.");
+        return Ok(());
     }
 
-    if total_counts.extracted > 0 {
-        // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
-        // (DOCX files always extract all images regardless of cover_only flag)
-        let item_name = if args.cover_only && !has_docx_images {
-            "cover(s)"
-        } else {
-            "image(s)"
-        };
-        let has_convert = args.convert.is_some();
-        let has_gif_routing = total_counts.gifs_routed > 0;
-
-        match (has_convert, has_gif_routing) {
-            (true, true) => {
-                // D-04: Combined conversion + GIF routing message
-                let gif_dir = args.gif_output.as_ref().unwrap();
-                pb.finish_with_message(format!(
-                    "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
-                    total_counts.extracted,
-                    item_name,
-                    total_counts.converted,
-                    total_counts.skipped,
-                    total_counts.gifs_routed,
-                    gif_dir.display(),
-                    total_documents
-                ));
-            }
-            (true, false) => {
-                // D-01: Conversion stats only
-                pb.finish_with_message(format!(
-                    "Extracted {} {}, converted {}, skipped {} from {} document(s)",
-                    total_counts.extracted,
-                    item_name,
-                    total_counts.converted,
-                    total_counts.skipped,
-                    total_documents
-                ));
-            }
-            (false, true) => {
-                // Existing GIF routing message (no conversion) -- unchanged
-                let gif_dir = args.gif_output.as_ref().unwrap();
-                pb.finish_with_message(format!(
-                    "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
-                    total_counts.extracted,
-                    item_name,
-                    total_counts.gifs_routed,
-                    gif_dir.display(),
-                    total_documents
-                ));
-            }
-            (false, false) => {
-                // Existing default message -- unchanged
-                pb.finish_with_message(format!(
-                    "Extracted {} {} from {} document(s)",
-                    total_counts.extracted, item_name, total_documents
-                ));
-            }
-        }
-    } else {
-        let not_found_msg = if args.cover_only && !has_docx_images {
-            "No cover images found"
-        } else {
-            "No images found"
-        };
-        pb.finish_with_message(not_found_msg);
-    }
+    observer.finish_extraction(final_summary_message(
+        &report,
+        has_convert,
+        gif_output.as_deref(),
+    ));
 
     Ok(())
 }
@@ -572,6 +428,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::ExtractionCounts;
 
     #[test]
     fn test_convert_flag_parses_all_formats() {
@@ -856,31 +713,5 @@ mod tests {
         assert!(args.lossless);
         let quality = args.quality.unwrap_or(85);
         assert_eq!(quality, 85);
-    }
-
-    #[test]
-    fn test_resolve_output_dir_uses_global_when_set() {
-        let global = Path::new("/out");
-        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), Some(global));
-        assert_eq!(resolved, PathBuf::from("/out"));
-    }
-
-    #[test]
-    fn test_resolve_output_dir_beside_file_in_subdir() {
-        let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), None);
-        assert_eq!(resolved, PathBuf::from("subdir"));
-    }
-
-    #[test]
-    fn test_resolve_output_dir_bare_filename_defaults_to_dot() {
-        let resolved = resolve_output_dir(Path::new("doc.docx"), None);
-        assert_eq!(resolved, PathBuf::from("."));
-    }
-
-    #[test]
-    fn test_resolve_output_dir_absolute_input() {
-        let input = Path::new("/books/sample.epub");
-        let resolved = resolve_output_dir(input, None);
-        assert_eq!(resolved, Path::new("/books"));
     }
 }
