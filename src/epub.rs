@@ -181,22 +181,14 @@ fn extract_all_images(
     config: &ExtractionConfig,
 ) -> Result<DocumentExtractionResult> {
     // Clone the resource keys and extract info to avoid borrow issues
+    // Send every manifest resource through Archive image discovery so byte-first
+    // Image format identification can recover images with weak EPUB labels.
     let resources: Vec<EpubResourceCandidate> = doc
         .resources
         .iter()
-        .filter_map(|(id, item)| {
-            let path_str = item.path.to_string_lossy();
-
-            // Candidate selection stays metadata-based; the user's format
-            // filter is applied after byte-first Image format identification.
-            if !is_declared_epub_image(&path_str, &item.mime) {
-                return None;
-            }
-
-            Some(EpubResourceCandidate {
-                id: id.clone(),
-                source_name: path_str.to_string(),
-            })
+        .map(|(id, item)| EpubResourceCandidate {
+            id: id.clone(),
+            source_name: item.path.to_string_lossy().to_string(),
         })
         .collect();
 
@@ -224,15 +216,6 @@ fn extract_all_images(
     )?;
 
     Ok(DocumentExtractionResult::new(counts, discovered.warnings))
-}
-
-fn is_declared_epub_image(source_name: &str, mime: &str) -> bool {
-    mime.starts_with("image/")
-        || Path::new(source_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(ImageFormat::from_extension)
-            .is_some()
 }
 
 /// Searches for a cover image by filename when metadata-based detection fails.
@@ -505,6 +488,46 @@ mod tests {
         assert_eq!(result.counts.extracted, 1);
         assert!(output_dir.join("Tester - Magic Test.png").exists());
         assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn extracts_epub_resource_by_magic_without_declared_image_hints() {
+        let temp_dir = temp_test_dir("magic-without-hints");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+
+        write_minimal_epub(
+            &input_path,
+            "images/mislabeled.bin",
+            "application/octet-stream",
+            MINIMAL_PNG,
+        );
+
+        let allowed_formats = HashSet::from([ImageFormat::Png]);
+        let config = ExtractionConfig {
+            convert: None,
+            quality: 85,
+            lossless: false,
+            gif_output: None,
+        };
+
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            &allowed_formats,
+            false,
+            false,
+            &EpubFilter::default(),
+            &config,
+        )
+        .expect("EPUB extraction should succeed");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert!(output_dir.join("Tester - Magic Test.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
