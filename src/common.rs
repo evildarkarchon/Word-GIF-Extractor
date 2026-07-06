@@ -1,46 +1,10 @@
 //! Common utilities shared between document processors
 
-use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
 use crate::convert::OutputFormat;
-
-const SUPPORTED_EXTENSIONS: [&str; 12] = [
-    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "svg", "wmf", "emf", "webp", "ico",
-];
-
-/// Returns the set of supported image file extensions
-pub fn get_supported_extensions() -> HashSet<&'static str> {
-    HashSet::from(SUPPORTED_EXTENSIONS)
-}
-
-/// Returns whether an already-normalized extension is supported for extraction.
-pub fn is_supported_extension(extension: &str) -> bool {
-    SUPPORTED_EXTENSIONS.contains(&extension)
-}
-
-/// Normalizes a format string to actual file extensions
-pub fn normalize_format(fmt: &str) -> Vec<&'static str> {
-    let fmt_lower = fmt.trim().to_lowercase();
-    match fmt_lower.as_str() {
-        "jpg" | "jpeg" => vec!["jpg", "jpeg"],
-        "png" => vec!["png"],
-        "gif" => vec!["gif"],
-        "bmp" => vec!["bmp"],
-        "tiff" | "tif" => vec!["tiff", "tif"],
-        "svg" => vec!["svg"],
-        "wmf" => vec!["wmf"],
-        "emf" => vec!["emf"],
-        "webp" => vec!["webp"],
-        "ico" => vec!["ico"],
-        _ => {
-            eprintln!("Warning: Unrecognized format '{}' ignored", fmt.trim());
-            vec![]
-        }
-    }
-}
 
 /// Validates that an archive entry path is safe (no path traversal attacks)
 ///
@@ -197,23 +161,6 @@ mod tests {
         );
         assert_eq!(sanitize_filename("Test*?\"<>|"), "Test______"); // 6 special chars
         assert_eq!(sanitize_filename("  Trimmed  "), "Trimmed");
-    }
-
-    #[test]
-    fn test_normalize_format() {
-        assert_eq!(normalize_format("jpg"), vec!["jpg", "jpeg"]);
-        assert_eq!(normalize_format("JPEG"), vec!["jpg", "jpeg"]);
-        assert_eq!(normalize_format("png"), vec!["png"]);
-        assert_eq!(normalize_format("unknown").len(), 0);
-    }
-
-    #[test]
-    fn test_get_supported_extensions() {
-        let exts = get_supported_extensions();
-        assert!(exts.contains("jpg"));
-        assert!(exts.contains("png"));
-        assert!(exts.contains("gif"));
-        assert!(!exts.contains("pdf"));
     }
 
     #[test]

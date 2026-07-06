@@ -14,6 +14,8 @@ use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPEncoder;
 use image::{DynamicImage, ImageError, Rgb, RgbImage, Rgba};
 
+use crate::image_format::ImageFormat;
+
 /// Target format for image conversion
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -29,38 +31,24 @@ pub enum OutputFormat {
 ///
 /// Used by callers to determine whether to write converted bytes or
 /// extract the original image as-is. The extension string in each
-/// variant is ready to pass directly to `get_unique_output_path()`.
+/// variant is ready to pass directly to the image write pipeline.
 #[derive(Debug)]
 pub enum ConversionResult {
-    /// Image was successfully converted. Contains the converted bytes
-    /// and the target format extension (e.g., "png", "jpg", "webp").
-    Converted(Vec<u8>, String),
-    /// Image was skipped (unsupported source format). Contains the
-    /// original file extension to preserve in the output filename.
-    Skipped(String),
+    /// Image was successfully converted. Contains the converted bytes and target format.
+    Converted(Vec<u8>, ImageFormat),
+    /// Image was skipped because the source format is unsupported for conversion.
+    Skipped(ImageFormat),
 }
 
 impl OutputFormat {
-    /// Returns the file extension for this output format (without leading dot).
-    pub fn extension(&self) -> &'static str {
+    /// Returns this output target as the canonical image format.
+    pub fn image_format(self) -> ImageFormat {
         match self {
-            OutputFormat::Jpg => "jpg",
-            OutputFormat::Png => "png",
-            OutputFormat::Webp => "webp",
+            OutputFormat::Jpg => ImageFormat::Jpg,
+            OutputFormat::Png => ImageFormat::Png,
+            OutputFormat::Webp => ImageFormat::Webp,
         }
     }
-}
-
-/// Checks whether a source image extension can be decoded for conversion.
-///
-/// Returns `true` for formats the `image` crate can decode: jpg, jpeg, png,
-/// gif, bmp, tiff, tif, webp, ico. Returns `false` for SVG, WMF, EMF, and
-/// other unsupported formats.
-pub fn can_convert(extension: &str) -> bool {
-    matches!(
-        extension.to_lowercase().as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "tif" | "webp" | "ico"
-    )
 }
 
 /// Converts image bytes from one format to another.
@@ -110,36 +98,36 @@ pub fn convert_image(
 /// Attempts to convert image data to the target format.
 ///
 /// This is the primary conversion API for callers. It checks whether the
-/// source format is convertible, attempts conversion, and returns a
+/// source image format is convertible, attempts conversion, and returns a
 /// `ConversionResult` indicating whether the image was converted or skipped.
 ///
 /// Returns `Skipped` when:
-/// - `can_convert()` returns false for the source extension (pre-check)
+/// - `ImageFormat::can_convert()` returns false for the source image format (pre-check)
 /// - `convert_image()` returns `Ok(None)` (unsupported at decode time)
 ///
 /// Returns `Err` when:
 /// - The image data is corrupt or undecodable
 pub fn try_convert(
     data: &[u8],
-    source_ext: &str,
+    source_format: ImageFormat,
     format: OutputFormat,
     quality: u8,
     lossless: bool,
 ) -> Result<ConversionResult> {
-    // Fast path: extension not in decodable set
-    if !can_convert(source_ext) {
-        return Ok(ConversionResult::Skipped(source_ext.to_lowercase()));
+    // Fast path: format not in decodable set.
+    if !source_format.can_convert() {
+        return Ok(ConversionResult::Skipped(source_format));
     }
 
     // Attempt conversion
     match convert_image(data, format, quality, lossless)? {
         Some(converted_bytes) => Ok(ConversionResult::Converted(
             converted_bytes,
-            format.extension().to_string(),
+            format.image_format(),
         )),
         None => {
             // Unsupported format detected at decode time (magic bytes don't match)
-            Ok(ConversionResult::Skipped(source_ext.to_lowercase()))
+            Ok(ConversionResult::Skipped(source_format))
         }
     }
 }
@@ -213,7 +201,7 @@ fn encode_webp_lossy(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use image::codecs::jpeg::JpegEncoder;
-    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+    use image::{DynamicImage, ImageFormat as EncodedImageFormat, Rgba, RgbaImage};
     use std::io::Cursor;
 
     /// Creates a 2x2 RGBA PNG with transparent pixels for alpha compositing tests
@@ -226,7 +214,7 @@ mod tests {
 
         let dynamic = DynamicImage::ImageRgba8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Png).unwrap();
+        dynamic.write_to(&mut buf, EncodedImageFormat::Png).unwrap();
         buf.into_inner()
     }
 
@@ -250,7 +238,7 @@ mod tests {
         let img = RgbImage::new(4, 4);
         let dynamic = DynamicImage::ImageRgb8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Bmp).unwrap();
+        dynamic.write_to(&mut buf, EncodedImageFormat::Bmp).unwrap();
         buf.into_inner()
     }
 
@@ -262,7 +250,7 @@ mod tests {
         }
         let dynamic = DynamicImage::ImageRgba8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Gif).unwrap();
+        dynamic.write_to(&mut buf, EncodedImageFormat::Gif).unwrap();
         buf.into_inner()
     }
 
@@ -275,7 +263,9 @@ mod tests {
         }
         let dynamic = DynamicImage::ImageRgb8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Tiff).unwrap();
+        dynamic
+            .write_to(&mut buf, EncodedImageFormat::Tiff)
+            .unwrap();
         buf.into_inner()
     }
 
@@ -288,7 +278,9 @@ mod tests {
         }
         let dynamic = DynamicImage::ImageRgb8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::WebP).unwrap();
+        dynamic
+            .write_to(&mut buf, EncodedImageFormat::WebP)
+            .unwrap();
         buf.into_inner()
     }
 
@@ -302,36 +294,8 @@ mod tests {
         }
         let dynamic = DynamicImage::ImageRgb8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Png).unwrap();
+        dynamic.write_to(&mut buf, EncodedImageFormat::Png).unwrap();
         buf.into_inner()
-    }
-
-    #[test]
-    fn test_can_convert() {
-        // Supported formats
-        assert!(can_convert("jpg"));
-        assert!(can_convert("jpeg"));
-        assert!(can_convert("png"));
-        assert!(can_convert("gif"));
-        assert!(can_convert("bmp"));
-        assert!(can_convert("tiff"));
-        assert!(can_convert("tif"));
-        assert!(can_convert("webp"));
-        assert!(can_convert("ico"));
-
-        // Unsupported formats
-        assert!(!can_convert("svg"));
-        assert!(!can_convert("wmf"));
-        assert!(!can_convert("emf"));
-        assert!(!can_convert("pdf"));
-    }
-
-    #[test]
-    fn test_can_convert_case_insensitive() {
-        assert!(can_convert("JPG"));
-        assert!(can_convert("PNG"));
-        assert!(can_convert("Jpeg"));
-        assert!(can_convert("TIFF"));
     }
 
     /// Creates a 16x16 RGBA PNG with a large transparent region for alpha compositing tests.
@@ -347,7 +311,7 @@ mod tests {
 
         let dynamic = DynamicImage::ImageRgba8(img);
         let mut buf = Cursor::new(Vec::new());
-        dynamic.write_to(&mut buf, ImageFormat::Png).unwrap();
+        dynamic.write_to(&mut buf, EncodedImageFormat::Png).unwrap();
         buf.into_inner()
     }
 
@@ -455,7 +419,8 @@ mod tests {
         // Lossless via image crate
         let img = image::load_from_memory(&photo_data).unwrap();
         let mut lossless_buf = Cursor::new(Vec::new());
-        img.write_to(&mut lossless_buf, ImageFormat::WebP).unwrap();
+        img.write_to(&mut lossless_buf, EncodedImageFormat::WebP)
+            .unwrap();
         let lossless = lossless_buf.into_inner();
 
         assert!(
@@ -550,21 +515,21 @@ mod tests {
     }
 
     #[test]
-    fn test_output_format_extension() {
-        assert_eq!(OutputFormat::Jpg.extension(), "jpg");
-        assert_eq!(OutputFormat::Png.extension(), "png");
-        assert_eq!(OutputFormat::Webp.extension(), "webp");
+    fn test_output_format_maps_to_image_format() {
+        assert_eq!(OutputFormat::Jpg.image_format(), ImageFormat::Jpg);
+        assert_eq!(OutputFormat::Png.image_format(), ImageFormat::Png);
+        assert_eq!(OutputFormat::Webp.image_format(), ImageFormat::Webp);
     }
 
     #[test]
     fn test_try_convert_supported() {
         let png_data = create_test_rgba_png();
-        let result = try_convert(&png_data, "png", OutputFormat::Jpg, 85, false)
+        let result = try_convert(&png_data, ImageFormat::Png, OutputFormat::Jpg, 85, false)
             .expect("try_convert should succeed");
         match result {
-            ConversionResult::Converted(bytes, ext) => {
+            ConversionResult::Converted(bytes, format) => {
                 assert!(!bytes.is_empty(), "Converted bytes should not be empty");
-                assert_eq!(ext, "jpg", "Extension should be target format");
+                assert_eq!(format, ImageFormat::Jpg, "Format should be target format");
             }
             ConversionResult::Skipped(_) => {
                 panic!("Expected Converted, got Skipped");
@@ -575,11 +540,11 @@ mod tests {
     #[test]
     fn test_try_convert_unsupported_extension() {
         // SVG
-        let result = try_convert(&[1, 2, 3], "svg", OutputFormat::Png, 85, false)
+        let result = try_convert(&[1, 2, 3], ImageFormat::Svg, OutputFormat::Png, 85, false)
             .expect("try_convert should succeed for unsupported extension");
         match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "svg", "Skipped extension should be 'svg'");
+            ConversionResult::Skipped(format) => {
+                assert_eq!(format, ImageFormat::Svg, "Skipped format should be SVG");
             }
             ConversionResult::Converted(_, _) => {
                 panic!("Expected Skipped for SVG, got Converted");
@@ -587,11 +552,11 @@ mod tests {
         }
 
         // WMF
-        let result = try_convert(&[1, 2, 3], "wmf", OutputFormat::Png, 85, false)
+        let result = try_convert(&[1, 2, 3], ImageFormat::Wmf, OutputFormat::Png, 85, false)
             .expect("try_convert should succeed for unsupported extension");
         match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "wmf", "Skipped extension should be 'wmf'");
+            ConversionResult::Skipped(format) => {
+                assert_eq!(format, ImageFormat::Wmf, "Skipped format should be WMF");
             }
             ConversionResult::Converted(_, _) => {
                 panic!("Expected Skipped for WMF, got Converted");
@@ -599,11 +564,11 @@ mod tests {
         }
 
         // EMF
-        let result = try_convert(&[1, 2, 3], "emf", OutputFormat::Png, 85, false)
+        let result = try_convert(&[1, 2, 3], ImageFormat::Emf, OutputFormat::Png, 85, false)
             .expect("try_convert should succeed for unsupported extension");
         match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "emf", "Skipped extension should be 'emf'");
+            ConversionResult::Skipped(format) => {
+                assert_eq!(format, ImageFormat::Emf, "Skipped format should be EMF");
             }
             ConversionResult::Converted(_, _) => {
                 panic!("Expected Skipped for EMF, got Converted");
@@ -613,14 +578,24 @@ mod tests {
 
     #[test]
     fn test_try_convert_unsupported_at_decode() {
-        // Extension says "png" but data is actually SVG -- convert_image returns Ok(None)
+        // Format says PNG but data is actually SVG -- convert_image returns Ok(None)
         let fake_svg_data =
             b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
-        let result = try_convert(fake_svg_data, "png", OutputFormat::Jpg, 85, false)
-            .expect("try_convert should succeed (Skipped, not Err)");
+        let result = try_convert(
+            fake_svg_data,
+            ImageFormat::Png,
+            OutputFormat::Jpg,
+            85,
+            false,
+        )
+        .expect("try_convert should succeed (Skipped, not Err)");
         match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "png", "Skipped extension should preserve source ext");
+            ConversionResult::Skipped(format) => {
+                assert_eq!(
+                    format,
+                    ImageFormat::Png,
+                    "Skipped format should preserve source format"
+                );
             }
             ConversionResult::Converted(_, _) => {
                 panic!("Expected Skipped for undecodable data, got Converted");
@@ -632,11 +607,11 @@ mod tests {
     fn test_try_convert_correct_extension() {
         // BMP -> PNG: extension should be "png", not "bmp" or "bmp.png"
         let bmp_data = create_test_bmp();
-        let result = try_convert(&bmp_data, "bmp", OutputFormat::Png, 85, false)
+        let result = try_convert(&bmp_data, ImageFormat::Bmp, OutputFormat::Png, 85, false)
             .expect("try_convert should succeed");
         match result {
-            ConversionResult::Converted(_, ext) => {
-                assert_eq!(ext, "png", "Extension should be target format 'png'");
+            ConversionResult::Converted(_, format) => {
+                assert_eq!(format, ImageFormat::Png, "Format should be target PNG");
             }
             ConversionResult::Skipped(_) => {
                 panic!("Expected Converted for BMP->PNG, got Skipped");
@@ -645,11 +620,11 @@ mod tests {
 
         // PNG -> WebP: extension should be "webp"
         let png_data = create_test_rgba_png();
-        let result = try_convert(&png_data, "png", OutputFormat::Webp, 85, false)
+        let result = try_convert(&png_data, ImageFormat::Png, OutputFormat::Webp, 85, false)
             .expect("try_convert should succeed");
         match result {
-            ConversionResult::Converted(_, ext) => {
-                assert_eq!(ext, "webp", "Extension should be target format 'webp'");
+            ConversionResult::Converted(_, format) => {
+                assert_eq!(format, ImageFormat::Webp, "Format should be target WebP");
             }
             ConversionResult::Skipped(_) => {
                 panic!("Expected Converted for PNG->WebP, got Skipped");
@@ -661,39 +636,12 @@ mod tests {
     fn test_try_convert_corrupt_data() {
         // Corrupt PNG: has PNG magic bytes but is invalid
         let corrupt_data = b"\x89PNG\r\n\x1a\nnot an image at all!!!";
-        let result = try_convert(corrupt_data, "png", OutputFormat::Png, 85, false);
+        let result = try_convert(corrupt_data, ImageFormat::Png, OutputFormat::Png, 85, false);
         assert!(
             result.is_err(),
             "Corrupt data should return Err, got: {:?}",
             result
         );
-    }
-
-    #[test]
-    fn test_try_convert_case_normalization() {
-        // Uppercase "SVG" should become lowercase "svg" in Skipped
-        let result = try_convert(&[1, 2, 3], "SVG", OutputFormat::Png, 85, false)
-            .expect("try_convert should succeed for unsupported extension");
-        match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "svg", "Extension should be lowercase 'svg', not 'SVG'");
-            }
-            ConversionResult::Converted(_, _) => {
-                panic!("Expected Skipped for SVG, got Converted");
-            }
-        }
-
-        // Uppercase "WMF" should become lowercase "wmf" in Skipped
-        let result = try_convert(&[1, 2, 3], "WMF", OutputFormat::Png, 85, false)
-            .expect("try_convert should succeed for unsupported extension");
-        match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "wmf", "Extension should be lowercase 'wmf', not 'WMF'");
-            }
-            ConversionResult::Converted(_, _) => {
-                panic!("Expected Skipped for WMF, got Converted");
-            }
-        }
     }
 
     #[test]
@@ -771,12 +719,12 @@ mod tests {
     #[test]
     fn test_try_convert_with_lossless() {
         let png_data = create_test_rgba_png();
-        let result = try_convert(&png_data, "png", OutputFormat::Webp, 85, true)
+        let result = try_convert(&png_data, ImageFormat::Png, OutputFormat::Webp, 85, true)
             .expect("try_convert with lossless should succeed");
         match result {
-            ConversionResult::Converted(bytes, ext) => {
+            ConversionResult::Converted(bytes, format) => {
                 assert!(!bytes.is_empty(), "Converted bytes should not be empty");
-                assert_eq!(ext, "webp", "Extension should be 'webp'");
+                assert_eq!(format, ImageFormat::Webp, "Format should be WebP");
             }
             ConversionResult::Skipped(_) => {
                 panic!("Expected Converted, got Skipped");
@@ -786,11 +734,11 @@ mod tests {
 
     #[test]
     fn test_try_convert_lossless_skipped_unsupported() {
-        let result = try_convert(&[1, 2, 3], "svg", OutputFormat::Webp, 85, true)
+        let result = try_convert(&[1, 2, 3], ImageFormat::Svg, OutputFormat::Webp, 85, true)
             .expect("try_convert with lossless for unsupported should succeed");
         match result {
-            ConversionResult::Skipped(ext) => {
-                assert_eq!(ext, "svg", "Skipped extension should be 'svg'");
+            ConversionResult::Skipped(format) => {
+                assert_eq!(format, ImageFormat::Svg, "Skipped format should be SVG");
             }
             ConversionResult::Converted(_, _) => {
                 panic!("Expected Skipped for SVG with lossless, got Converted");

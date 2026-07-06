@@ -7,36 +7,13 @@ use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
 
-use crate::common::{
-    ExtractionConfig, ExtractionCounts, is_safe_archive_path, is_supported_extension,
-};
+use crate::common::{ExtractionConfig, ExtractionCounts, is_safe_archive_path};
+use crate::image_format::{FormatConfidence, ImageFormat};
 use crate::image_writer::{ImageToWrite, WriteMode, write_images};
-use crate::magic::detect_image_format;
 
 #[derive(Debug)]
 struct CandidateEntry {
     index: usize,
-}
-
-/// Identifies an image format using magic bytes first, then a supported extension fallback.
-///
-/// Returns the selected format and whether extension fallback was used. Unsupported fallback
-/// extensions are ignored so generic entries like `.bin` do not create noisy warnings.
-pub(crate) fn identify_image_format(data: &[u8], archive_name: &str) -> (Option<String>, bool) {
-    if let Some(format) = detect_image_format(data) {
-        return (Some(format.to_string()), false);
-    }
-
-    let Some(ext) = Path::new(archive_name).extension().and_then(|e| e.to_str()) else {
-        return (None, false);
-    };
-
-    let ext_lower = ext.to_lowercase();
-    if is_supported_extension(ext_lower.as_str()) {
-        (Some(ext_lower), true)
-    } else {
-        (None, false)
-    }
 }
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
@@ -46,7 +23,7 @@ pub(crate) fn identify_image_format(data: &[u8], archive_name: &str) -> (Option<
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     let doc_name = input_path
@@ -84,22 +61,21 @@ pub fn process_file(
         file.read_to_end(&mut data)
             .context("Failed to read image from archive")?;
 
-        let (Some(format), used_fallback) = identify_image_format(&data, &archive_name) else {
+        let Some(identified) = ImageFormat::identify(&data, &archive_name) else {
             continue;
         };
+        let format = identified.format;
 
-        if used_fallback {
+        if identified.confidence == FormatConfidence::ExtensionFallback {
             eprintln!(
                 "Warning: Magic detection failed for {}; falling back to .{} extension",
-                archive_name, format
+                archive_name,
+                format.extension()
             );
         }
 
-        if allowed_extensions.contains(format.as_str()) {
-            images.push(ImageToWrite {
-                data,
-                extension: format,
-            });
+        if allowed_formats.contains(&format) {
+            images.push(ImageToWrite { data, format });
         }
     }
 
@@ -110,31 +86,4 @@ pub fn process_file(
         config,
         WriteMode::BatchImages,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn identify_image_format_prefers_magic_over_extension() {
-        let (format, used_fallback) =
-            identify_image_format(b"\x89PNG\r\n\x1A\n", "word/media/image.bin");
-        assert_eq!(format.as_deref(), Some("png"));
-        assert!(!used_fallback);
-    }
-
-    #[test]
-    fn identify_image_format_falls_back_to_supported_extension() {
-        let (format, used_fallback) = identify_image_format(b"unknown", "word/media/image.PNG");
-        assert_eq!(format.as_deref(), Some("png"));
-        assert!(used_fallback);
-    }
-
-    #[test]
-    fn identify_image_format_ignores_unsupported_extension() {
-        let (format, used_fallback) = identify_image_format(b"unknown", "word/media/image.bin");
-        assert_eq!(format, None);
-        assert!(!used_fallback);
-    }
 }

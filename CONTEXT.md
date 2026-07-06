@@ -11,3 +11,7 @@ _Avoid_: CLI orchestration, processing loop
 **Image write pipeline**:
 The project policy for turning extracted image bytes into files on disk, including output naming, conversion outcomes, and special GIF routing.
 _Avoid_: Save helper, output utility
+
+**Image format**:
+The project-normalized identity of image bytes used to decide whether an image is extractable, writable, and convertible, independent of how a document labels it.
+_Avoid_: Raw extension, MIME type, detected kind

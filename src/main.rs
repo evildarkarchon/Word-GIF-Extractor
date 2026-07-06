@@ -8,18 +8,18 @@ mod convert;
 mod docx;
 mod epub;
 mod extraction_run;
+mod image_format;
 mod image_writer;
-mod magic;
 
 use anyhow::Result;
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::convert::OutputFormat;
 use crate::extraction_run::{RunEvent, RunObserver, RunOptions, RunReport};
-use common::{ExtractionConfig, get_supported_extensions, normalize_format};
+use crate::image_format::ImageFormat;
+use common::ExtractionConfig;
 use epub::EpubFilter;
 
 #[derive(Parser, Debug)]
@@ -366,25 +366,26 @@ fn main() -> Result<()> {
     let has_convert = convert.is_some();
 
     // Determine allowed extensions
-    let mut target_extensions = HashSet::new();
+    let mut target_formats = std::collections::HashSet::new();
     if let Some(formats) = &formats {
         for fmt in formats {
-            let normalized = normalize_format(fmt);
-            for ext in normalized {
-                target_extensions.insert(ext);
+            if let Some(format) = ImageFormat::from_user_format(fmt) {
+                target_formats.insert(format);
+            } else {
+                eprintln!("Warning: Unrecognized format '{}' ignored", fmt.trim());
             }
         }
     }
 
     // Fallback if empty or no formats specified
-    if target_extensions.is_empty() {
-        target_extensions = get_supported_extensions();
+    if target_formats.is_empty() {
+        target_formats = ImageFormat::all_set();
     }
 
     // --gif-only overrides format selection to extract only GIFs
     if gif_only {
-        target_extensions.clear();
-        target_extensions.insert("gif");
+        target_formats.clear();
+        target_formats.insert(ImageFormat::Gif);
     }
 
     // Create EPUB filter from CLI args
@@ -401,7 +402,7 @@ fn main() -> Result<()> {
         inputs: all_inputs,
         recursive,
         output,
-        allowed_extensions: target_extensions,
+        allowed_formats: target_formats,
         cover_only,
         cover_fallback,
         epub_filter,
@@ -581,25 +582,25 @@ mod tests {
 
     #[test]
     fn test_gif_only_overrides_extensions() {
-        let mut target_extensions = get_supported_extensions();
-        assert!(target_extensions.len() > 1);
-        target_extensions.clear();
-        target_extensions.insert("gif");
-        assert_eq!(target_extensions.len(), 1);
-        assert!(target_extensions.contains("gif"));
-        assert!(!target_extensions.contains("png"));
-        assert!(!target_extensions.contains("jpg"));
+        let mut target_formats = ImageFormat::all_set();
+        assert!(target_formats.len() > 1);
+        target_formats.clear();
+        target_formats.insert(ImageFormat::Gif);
+        assert_eq!(target_formats.len(), 1);
+        assert!(target_formats.contains(&ImageFormat::Gif));
+        assert!(!target_formats.contains(&ImageFormat::Png));
+        assert!(!target_formats.contains(&ImageFormat::Jpg));
     }
 
     #[test]
     fn test_gif_only_overrides_formats_flag() {
-        let mut target_extensions = HashSet::new();
-        target_extensions.insert("png");
-        target_extensions.insert("jpg");
-        target_extensions.clear();
-        target_extensions.insert("gif");
-        assert_eq!(target_extensions.len(), 1);
-        assert!(target_extensions.contains("gif"));
+        let mut target_formats = std::collections::HashSet::new();
+        target_formats.insert(ImageFormat::Png);
+        target_formats.insert(ImageFormat::Jpg);
+        target_formats.clear();
+        target_formats.insert(ImageFormat::Gif);
+        assert_eq!(target_formats.len(), 1);
+        assert!(target_formats.contains(&ImageFormat::Gif));
     }
 
     #[test]

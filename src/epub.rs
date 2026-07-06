@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::common::{ExtractionConfig, ExtractionCounts, is_safe_archive_path, sanitize_filename};
+use crate::image_format::ImageFormat;
 use crate::image_writer::{ImageToWrite, WriteMode, write_images};
 
 /// Common JPEG file extensions for cover image fallback detection
@@ -113,7 +114,7 @@ fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &s
 /// Struct to hold image data extracted from EPUB
 struct EpubImage {
     id: String,
-    extension: String,
+    format: ImageFormat,
 }
 
 /// Processes a single .epub file, extracting images matching the allowed extensions.
@@ -125,7 +126,7 @@ struct EpubImage {
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
     filter: &EpubFilter,
@@ -156,7 +157,7 @@ pub fn process_file(
             &mut doc,
             output_base_dir,
             &base_name,
-            allowed_extensions,
+            allowed_formats,
             cover_fallback,
             config,
         );
@@ -166,7 +167,7 @@ pub fn process_file(
         &mut doc,
         output_base_dir,
         &base_name,
-        allowed_extensions,
+        allowed_formats,
         config,
     )
 }
@@ -176,7 +177,7 @@ fn extract_all_images(
     doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
     // Collect images from resources
@@ -184,7 +185,7 @@ fn extract_all_images(
     let mut images: Vec<EpubImage> = Vec::new();
 
     // Clone the resource keys and extract info to avoid borrow issues
-    let resources: Vec<(String, String)> = doc
+    let resources: Vec<(String, ImageFormat)> = doc
         .resources
         .iter()
         .filter_map(|(id, item)| {
@@ -199,22 +200,24 @@ fn extract_all_images(
                 return None;
             }
 
-            // Try to get extension from path first, then from mime
-            let ext = item
+            // Try to get image format from path first, then from MIME.
+            let format = item
                 .path
                 .extension()
                 .and_then(|e| e.to_str())
-                .map(|s| s.to_lowercase())
-                .or_else(|| mime_to_extension(&item.mime));
+                .and_then(ImageFormat::from_extension)
+                .or_else(|| {
+                    ImageFormat::identify_mime(&item.mime).map(|identified| identified.format)
+                });
 
-            ext.map(|e| (id.clone(), e))
+            format.map(|format| (id.clone(), format))
         })
-        .collect::<Vec<(String, String)>>();
+        .collect::<Vec<(String, ImageFormat)>>();
 
-    for (id, extension) in resources {
-        // Check if this extension is in our allowed list
-        if allowed_extensions.contains(extension.as_str()) {
-            images.push(EpubImage { id, extension });
+    for (id, format) in resources {
+        // Check if this format is in our allowed list.
+        if allowed_formats.contains(&format) {
+            images.push(EpubImage { id, format });
         }
     }
 
@@ -231,7 +234,7 @@ fn extract_all_images(
 
         images_to_write.push(ImageToWrite {
             data,
-            extension: image.extension,
+            format: image.format,
         });
     }
 
@@ -281,7 +284,7 @@ fn extract_cover_only(
     doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     cover_fallback: bool,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
@@ -294,7 +297,7 @@ fn extract_cover_only(
             &mime,
             output_base_dir,
             base_name,
-            allowed_extensions,
+            allowed_formats,
             config,
         ),
         None => {
@@ -305,12 +308,12 @@ fn extract_cover_only(
                     &mime,
                     output_base_dir,
                     base_name,
-                    allowed_extensions,
+                    allowed_formats,
                     config,
                 )
             } else if cover_fallback {
                 // No cover found via metadata or filename, fall back to extracting all images
-                extract_all_images(doc, output_base_dir, base_name, allowed_extensions, config)
+                extract_all_images(doc, output_base_dir, base_name, allowed_formats, config)
             } else {
                 // No cover image found
                 Ok(ExtractionCounts::default())
@@ -325,17 +328,19 @@ fn write_cover_image(
     mime: &str,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     config: &ExtractionConfig,
 ) -> Result<ExtractionCounts> {
-    // Determine the extension from the MIME type
-    let extension = mime_to_extension(mime).unwrap_or_else(|| "jpg".to_string());
+    // Preserve the existing cover behavior: unknown cover MIME defaults to JPEG.
+    let format = ImageFormat::identify_mime(mime)
+        .map(|identified| identified.format)
+        .unwrap_or(ImageFormat::Jpg);
 
-    // Check if this extension is in our allowed list
-    if !allowed_extensions.contains(extension.as_str()) {
+    // Check if this format is in our allowed list.
+    if !allowed_formats.contains(&format) {
         eprintln!(
             "Warning: Cover image format '{}' not in allowed formats, skipping.",
-            extension
+            format.extension()
         );
         return Ok(ExtractionCounts::default());
     }
@@ -343,27 +348,10 @@ fn write_cover_image(
     write_images(
         output_base_dir,
         base_name,
-        vec![ImageToWrite { data, extension }],
+        vec![ImageToWrite { data, format }],
         config,
         WriteMode::RequiredCover,
     )
-}
-
-/// Converts a MIME type to a file extension
-fn mime_to_extension(mime: &str) -> Option<String> {
-    match mime {
-        "image/jpeg" => Some("jpg".to_string()),
-        "image/png" => Some("png".to_string()),
-        "image/gif" => Some("gif".to_string()),
-        "image/bmp" => Some("bmp".to_string()),
-        "image/webp" => Some("webp".to_string()),
-        "image/svg+xml" => Some("svg".to_string()),
-        "image/tiff" => Some("tiff".to_string()),
-        "image/x-icon" | "image/vnd.microsoft.icon" => Some("ico".to_string()),
-        "image/x-emf" | "image/emf" => Some("emf".to_string()),
-        "image/x-wmf" | "image/wmf" => Some("wmf".to_string()),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -404,14 +392,6 @@ mod tests {
     fn test_format_epub_base_name_sanitizes() {
         let result = format_epub_base_name(Some("Author/Name"), Some("Title:Subtitle"), "fallback");
         assert_eq!(result, "Author_Name - Title_Subtitle");
-    }
-
-    #[test]
-    fn test_mime_to_extension() {
-        assert_eq!(mime_to_extension("image/jpeg"), Some("jpg".to_string()));
-        assert_eq!(mime_to_extension("image/png"), Some("png".to_string()));
-        assert_eq!(mime_to_extension("image/gif"), Some("gif".to_string()));
-        assert_eq!(mime_to_extension("image/unknown"), None);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use walkdir::WalkDir;
 use crate::common::{ExtractionConfig, ExtractionCounts};
 use crate::docx;
 use crate::epub::{self, EpubFilter};
+use crate::image_format::ImageFormat;
 
 /// Supported document types.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,8 +30,8 @@ pub struct RunOptions<'a> {
     pub recursive: bool,
     /// Optional output directory shared by every input file.
     pub output: Option<PathBuf>,
-    /// Image extensions accepted by the run.
-    pub allowed_extensions: HashSet<&'static str>,
+    /// Image formats accepted by the run.
+    pub allowed_formats: HashSet<ImageFormat>,
     /// Extract only cover images from EPUB files.
     pub cover_only: bool,
     /// Extract all EPUB images if a cover cannot be found.
@@ -155,7 +156,7 @@ pub fn run(options: RunOptions<'_>, observer: &mut impl RunObserver) -> Result<R
         match process_file(
             path,
             &effective_output,
-            &options.allowed_extensions,
+            &options.allowed_formats,
             options.cover_only,
             options.cover_fallback,
             &options.epub_filter,
@@ -378,7 +379,7 @@ fn deduplicate_by_metadata(files: Vec<PathBuf>, observer: &mut impl RunObserver)
 fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
-    allowed_extensions: &HashSet<&str>,
+    allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
     epub_filter: &EpubFilter,
@@ -386,12 +387,12 @@ fn process_file(
 ) -> Result<ExtractionCounts> {
     match get_document_type(input_path) {
         Some(DocumentType::Docx) => {
-            docx::process_file(input_path, output_base_dir, allowed_extensions, config)
+            docx::process_file(input_path, output_base_dir, allowed_formats, config)
         }
         Some(DocumentType::Epub) => epub::process_file(
             input_path,
             output_base_dir,
-            allowed_extensions,
+            allowed_formats,
             cover_only,
             cover_fallback,
             epub_filter,

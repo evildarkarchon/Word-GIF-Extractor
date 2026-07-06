@@ -8,6 +8,7 @@ use crate::common::{
     ExtractionConfig, ExtractionCounts, get_unique_output_path, write_image_to_file,
 };
 use crate::convert::{ConversionResult, try_convert};
+use crate::image_format::ImageFormat;
 
 /// Image data ready to be written by the image write pipeline.
 ///
@@ -17,8 +18,8 @@ use crate::convert::{ConversionResult, try_convert};
 pub struct ImageToWrite {
     /// Raw bytes for the extracted image.
     pub data: Vec<u8>,
-    /// Source image extension without a leading dot.
-    pub extension: String,
+    /// Canonical source image format.
+    pub format: ImageFormat,
 }
 
 /// Controls how conversion failure affects an image write batch.
@@ -32,7 +33,7 @@ pub enum WriteMode {
 
 struct PreparedImage {
     data: Vec<u8>,
-    extension: String,
+    format: ImageFormat,
     converted: bool,
     skipped_conversion: bool,
 }
@@ -65,7 +66,7 @@ pub fn write_images(
     let mut gif_dir_created = false;
 
     for (seq_index, image) in images.into_iter().enumerate() {
-        let is_gif = image.extension == "gif";
+        let is_gif = image.format == ImageFormat::Gif;
         let is_routed_gif = is_gif && config.gif_output.is_some();
 
         let Some(prepared) = prepare_image_for_write(image, base_name, config, mode)? else {
@@ -90,7 +91,7 @@ pub fn write_images(
             base_name,
             seq_index,
             total_images,
-            &prepared.extension,
+            prepared.format.extension(),
         )?;
 
         write_image_to_file(&output_path, &prepared.data)?;
@@ -117,13 +118,13 @@ fn prepare_image_for_write(
     config: &ExtractionConfig<'_>,
     mode: WriteMode,
 ) -> Result<Option<PreparedImage>> {
-    let is_routed_gif = image.extension == "gif" && config.gif_output.is_some();
+    let is_routed_gif = image.format == ImageFormat::Gif && config.gif_output.is_some();
 
     if let Some(format) = config.convert {
         if is_routed_gif {
             return Ok(Some(PreparedImage {
                 data: image.data,
-                extension: image.extension,
+                format: image.format,
                 converted: false,
                 skipped_conversion: false,
             }));
@@ -131,26 +132,27 @@ fn prepare_image_for_write(
 
         match try_convert(
             &image.data,
-            &image.extension,
+            image.format,
             format,
             config.quality,
             config.lossless,
         ) {
-            Ok(ConversionResult::Converted(converted_bytes, ext)) => Ok(Some(PreparedImage {
+            Ok(ConversionResult::Converted(converted_bytes, format)) => Ok(Some(PreparedImage {
                 data: converted_bytes,
-                extension: ext,
+                format,
                 converted: true,
                 skipped_conversion: false,
             })),
-            Ok(ConversionResult::Skipped(original_ext)) => match mode {
+            Ok(ConversionResult::Skipped(original_format)) => match mode {
                 WriteMode::BatchImages => {
                     eprintln!(
                         "Warning: Skipping conversion for {} ({} format not supported for conversion)",
-                        base_name, original_ext
+                        base_name,
+                        original_format.extension()
                     );
                     Ok(Some(PreparedImage {
                         data: image.data,
-                        extension: original_ext,
+                        format: original_format,
                         converted: false,
                         skipped_conversion: true,
                     }))
@@ -158,7 +160,7 @@ fn prepare_image_for_write(
                 WriteMode::RequiredCover => {
                     eprintln!(
                         "Warning: Cover image format '{}' not supported for conversion, skipping cover.",
-                        original_ext
+                        original_format.extension()
                     );
                     Ok(None)
                 }
@@ -171,7 +173,7 @@ fn prepare_image_for_write(
                     );
                     Ok(Some(PreparedImage {
                         data: image.data,
-                        extension: image.extension,
+                        format: image.format,
                         converted: false,
                         skipped_conversion: true,
                     }))
@@ -185,7 +187,7 @@ fn prepare_image_for_write(
     } else {
         Ok(Some(PreparedImage {
             data: image.data,
-            extension: image.extension,
+            format: image.format,
             converted: false,
             skipped_conversion: false,
         }))
@@ -221,7 +223,7 @@ mod tests {
         };
         let images = vec![ImageToWrite {
             data: b"<svg/>".to_vec(),
-            extension: "svg".to_string(),
+            format: ImageFormat::Svg,
         }];
 
         let counts = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
@@ -246,7 +248,7 @@ mod tests {
         };
         let images = vec![ImageToWrite {
             data: b"<svg/>".to_vec(),
-            extension: "svg".to_string(),
+            format: ImageFormat::Svg,
         }];
 
         let counts = write_images(
@@ -278,7 +280,7 @@ mod tests {
         };
         let images = vec![ImageToWrite {
             data: b"not a real gif but routed as-is".to_vec(),
-            extension: "gif".to_string(),
+            format: ImageFormat::Gif,
         }];
 
         let counts = write_images(
