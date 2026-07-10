@@ -3,17 +3,14 @@
 //! This tool treats DOCX and EPUB files as ZIP archives and extracts image files
 //! matching specified formats.
 
-mod archive_image_discovery;
-mod common;
 mod conversion;
 mod document_selection;
 mod docx;
 mod epub;
 mod extraction_run;
 mod extraction_run_intake;
-mod extraction_warning;
 mod image_format;
-mod image_writer;
+mod image_write_pipeline;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -402,7 +399,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::ExtractionCounts;
+    use crate::image_write_pipeline::ImageWriteCounts;
 
     #[test]
     fn test_convert_flag_parses_all_formats() {
@@ -561,14 +558,14 @@ mod tests {
 
     #[test]
     fn test_extraction_counts_split_message_logic() {
-        let counts = ExtractionCounts {
+        let counts = ImageWriteCounts {
             extracted: 5,
             gifs_routed: 2,
             converted: 0,
             skipped: 0,
         };
         assert!(counts.gifs_routed > 0);
-        let counts = ExtractionCounts {
+        let counts = ImageWriteCounts {
             extracted: 3,
             gifs_routed: 0,
             converted: 0,
@@ -601,8 +598,8 @@ mod tests {
 
     #[test]
     fn test_extraction_counts_conversion_fields() {
-        let mut total = ExtractionCounts::default();
-        let counts = ExtractionCounts {
+        let mut total = ImageWriteCounts::default();
+        let counts = ImageWriteCounts {
             extracted: 10,
             gifs_routed: 2,
             converted: 7,
@@ -621,10 +618,10 @@ mod tests {
     #[test]
     fn conversion_summary_reports_preserved_matching_source_as_unconverted() {
         let report = RunReport {
-            total_counts: ExtractionCounts {
+            total_counts: ImageWriteCounts {
                 extracted: 1,
                 converted: 0,
-                ..ExtractionCounts::default()
+                ..ImageWriteCounts::default()
             },
             documents_with_output: 1,
             ..RunReport::default()
@@ -642,7 +639,7 @@ mod tests {
     fn combined_conversion_and_gif_summary_uses_run_report() {
         let gif_dir = std::path::PathBuf::from("/tmp/gifs");
         let report = RunReport {
-            total_counts: ExtractionCounts {
+            total_counts: ImageWriteCounts {
                 extracted: 10,
                 converted: 5,
                 skipped: 2,

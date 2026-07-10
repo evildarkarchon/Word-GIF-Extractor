@@ -17,15 +17,19 @@ The project policy for turning parsed user options into one ready-to-run extract
 _Avoid_: Argument normalization, options builder
 
 **Image write pipeline**:
-The project policy for turning extracted image bytes into files on disk, including output naming, conversion outcomes, and special GIF routing.
+The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, counts, and special GIF routing.
 _Avoid_: Save helper, output utility
 
 **Image write policy**:
-The valid per-run choices that govern how the Image write pipeline emits accepted images, including an optional Conversion policy and GIF destination.
+The valid per-run choices that govern how the Image write pipeline accepts and emits images, including requested Image formats, an optional Conversion policy, and GIF destination.
 _Avoid_: Extraction config, writer options
 
+**Image write purpose**:
+The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It distinguishes cover-specific outcomes from per-run Image write policy.
+_Avoid_: Write mode, archive image purpose, extraction kind
+
 **Archive image discovery**:
-The project policy for deciding which image-bearing archive resources are accepted for extraction before the Image write pipeline runs, including archive source safety, Image format identification, fallback warning facts, and requested format filtering.
+The acceptance policy within the Image write pipeline for deciding which image-bearing archive resources may be emitted, including archive source safety, Image format identification, fallback warning facts, and requested format filtering.
 _Avoid_: Candidate normalization, resource filter
 
 **Image format**:

@@ -5,9 +5,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::common::sanitize_filename;
 use crate::epub;
 use crate::extraction_run::{RunEvent, RunObserver};
+
+/// Sanitizes document metadata for use as an output filename.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            character if character.is_control() => '_',
+            character => character,
+        })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
 /// Filter criteria for selecting EPUB files by metadata.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

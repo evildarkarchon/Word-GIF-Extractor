@@ -9,7 +9,7 @@ use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionReque
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::RunOptions;
 use crate::image_format::ImageFormat;
-use crate::image_writer::ImageWritePolicy;
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
@@ -104,19 +104,20 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
 
     let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
     let gif_output_for_summary = gif_output.clone();
+    let image_write_pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+        allowed_formats,
+        conversion,
+        gif_output,
+    ));
 
     let options = RunOptions {
         inputs: all_inputs,
         recursive,
         output,
-        allowed_formats,
         cover_only,
         cover_fallback,
         epub_filter: EpubFilter { title, author },
-        image_write: ImageWritePolicy {
-            conversion,
-            gif_output,
-        },
+        image_write_pipeline,
     };
 
     Ok(PreparedExtractionRun {
@@ -166,11 +167,50 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image_write_pipeline::{ArchiveImageSource, ImageWriteRequest};
     use clap::Parser;
+    use image::DynamicImage;
+    use std::fs;
+    use std::io::Cursor;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
         let args = Args::try_parse_from(args).expect("test args should parse");
         prepare(args).expect("extraction run intake should succeed")
+    }
+
+    fn temp_test_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "word-image-extractor-intake-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn write_sources(
+        prepared: &PreparedExtractionRun,
+        output_dir: &Path,
+        sources: Vec<ArchiveImageSource>,
+    ) -> crate::image_write_pipeline::ImageWriteResult {
+        prepared
+            .options
+            .image_write_pipeline
+            .write(ImageWriteRequest::normal_images(
+                output_dir, "sample", sources,
+            ))
+            .expect("prepared pipeline should write test sources")
+    }
+
+    fn valid_png() -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .expect("test PNG should encode");
+        cursor.into_inner()
     }
 
     #[test]
@@ -196,39 +236,86 @@ mod tests {
     #[test]
     fn parses_allowed_formats_and_records_ignored_tokens() {
         let prepared = prepare_from(["test", "book.epub", "--formats", "png,unknown,jpeg"]);
+        let temp_dir = temp_test_dir("selected-formats");
 
-        assert!(prepared.options.allowed_formats.contains(&ImageFormat::Png));
-        assert!(prepared.options.allowed_formats.contains(&ImageFormat::Jpg));
+        let result = write_sources(
+            &prepared,
+            &temp_dir,
+            vec![
+                ArchiveImageSource::named(b"\x89PNG\r\n\x1A\n".to_vec(), "image.bin"),
+                ArchiveImageSource::named(b"\xFF\xD8\xFF".to_vec(), "photo.bin"),
+                ArchiveImageSource::named(b"GIF89a".to_vec(), "animation.bin"),
+            ],
+        );
+
+        assert_eq!(result.counts.extracted, 2);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
+        assert!(temp_dir.join("sample_1.png").exists());
+        assert!(temp_dir.join("sample_2.jpg").exists());
+        assert!(!temp_dir.join("sample_3.gif").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
         let prepared = prepare_from(["test", "book.epub", "--formats", "unknown"]);
+        let temp_dir = temp_test_dir("all-formats-fallback");
 
-        assert_eq!(prepared.options.allowed_formats, ImageFormat::all_set());
+        let result = write_sources(
+            &prepared,
+            &temp_dir,
+            vec![ArchiveImageSource::named(b"<svg/>".to_vec(), "vector.bin")],
+        );
+
+        assert_eq!(result.counts.extracted, 1);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
+        assert!(temp_dir.join("sample.svg").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn gif_only_overrides_format_selection() {
         let prepared = prepare_from(["test", "book.epub", "--formats", "png,jpg", "--gif-only"]);
+        let temp_dir = temp_test_dir("gif-only");
 
-        assert_eq!(
-            prepared.options.allowed_formats,
-            HashSet::from([ImageFormat::Gif])
+        let result = write_sources(
+            &prepared,
+            &temp_dir,
+            vec![
+                ArchiveImageSource::named(b"\x89PNG\r\n\x1A\n".to_vec(), "image.bin"),
+                ArchiveImageSource::named(b"GIF89a".to_vec(), "animation.bin"),
+            ],
         );
+
+        assert_eq!(result.counts.extracted, 1);
+        assert!(temp_dir.join("sample.gif").exists());
+        assert!(!temp_dir.join("sample.png").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn builds_default_conversion_policy() {
         let prepared = prepare_from(["test", "book.epub", "--convert", "jpg"]);
+        let temp_dir = temp_test_dir("default-conversion");
 
-        assert!(prepared.options.image_write.conversion.is_some());
+        let result = write_sources(
+            &prepared,
+            &temp_dir,
+            vec![ArchiveImageSource::named(valid_png(), "image.png")],
+        );
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.converted, 1);
+        assert!(temp_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
-    fn threads_conversion_and_summary_facts() {
+    fn retains_conversion_and_gif_summary_facts() {
         let prepared = prepare_from([
             "test",
             "book.epub",
@@ -241,12 +328,7 @@ mod tests {
         ]);
 
         assert!(prepared.has_convert);
-        assert!(prepared.options.image_write.conversion.is_some());
         assert_eq!(prepared.gif_output, Some(PathBuf::from("gifs")));
-        assert_eq!(
-            prepared.options.image_write.gif_output,
-            Some(PathBuf::from("gifs"))
-        );
     }
 
     #[test]

@@ -2,14 +2,11 @@
 
 use anyhow::Result;
 use epub::doc::EpubDoc;
-use std::collections::HashSet;
 use std::path::Path;
 
-use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
-use crate::common::DocumentExtractionResult;
-use crate::extraction_warning::combine_document_warnings;
-use crate::image_format::ImageFormat;
-use crate::image_writer::{ImageWritePolicy, WriteMode, write_images};
+use crate::image_write_pipeline::{
+    ArchiveImageSource, ImageWritePipeline, ImageWriteRequest, ImageWriteResult,
+};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -32,20 +29,19 @@ struct EpubResourceCandidate {
     source_name: String,
 }
 
-/// Processes a single .epub file, extracting images matching the allowed extensions.
+/// Processes a single .epub file, extracting images accepted by the requested Image formats.
 /// Uses the selected document base name for output files.
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
-/// Returns extraction counts plus Archive image discovery warnings.
+/// The configured Image write pipeline owns image acceptance and output policy.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
     let mut doc =
         EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
 
@@ -54,19 +50,12 @@ pub fn process_file(
             &mut doc,
             output_base_dir,
             base_name,
-            allowed_formats,
             cover_fallback,
-            policy,
+            pipeline,
         );
     }
 
-    extract_all_images(
-        &mut doc,
-        output_base_dir,
-        base_name,
-        allowed_formats,
-        policy,
-    )
+    extract_all_images(&mut doc, output_base_dir, base_name, pipeline)
 }
 
 /// Extracts all images from an EPUB file
@@ -74,9 +63,8 @@ fn extract_all_images(
     doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_formats: &HashSet<ImageFormat>,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
     // Clone the resource keys and extract info to avoid borrow issues
     // Send every manifest resource through Archive image discovery so byte-first
     // Image format identification can recover images with weak EPUB labels.
@@ -96,25 +84,13 @@ fn extract_all_images(
             .get_resource(&candidate.id)
             .ok_or_else(|| anyhow::anyhow!("Failed to get resource '{}'", candidate.id))?;
 
-        sources.push(ArchiveImageSource::batch(
-            data,
-            candidate.source_name,
-            Some(mime),
-        ));
+        sources.push(ArchiveImageSource::named(data, candidate.source_name).with_mime(mime));
     }
 
-    let discovered = discover_images(sources, allowed_formats);
-    let write_result = write_images(
+    pipeline.write(ImageWriteRequest::normal_images(
         output_base_dir,
         base_name,
-        discovered.images,
-        policy,
-        WriteMode::BatchImages,
-    )?;
-
-    Ok(DocumentExtractionResult::new(
-        write_result.counts,
-        combine_document_warnings(discovered.warnings, write_result.warnings),
+        sources,
     ))
 }
 
@@ -155,39 +131,24 @@ fn extract_cover_only(
     doc: &mut EpubDoc<std::io::BufReader<std::fs::File>>,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_formats: &HashSet<ImageFormat>,
     cover_fallback: bool,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
 
     match cover {
-        Some((data, mime)) => write_cover_image(
-            data,
-            &mime,
-            output_base_dir,
-            base_name,
-            allowed_formats,
-            policy,
-        ),
+        Some((data, mime)) => write_cover_image(data, &mime, output_base_dir, base_name, pipeline),
         None => {
             // Try fallback: look for a file named "cover" with JPEG extension
             if let Some((data, mime)) = find_cover_by_filename(doc) {
-                write_cover_image(
-                    data,
-                    &mime,
-                    output_base_dir,
-                    base_name,
-                    allowed_formats,
-                    policy,
-                )
+                write_cover_image(data, &mime, output_base_dir, base_name, pipeline)
             } else if cover_fallback {
                 // No cover found via metadata or filename, fall back to extracting all images
-                extract_all_images(doc, output_base_dir, base_name, allowed_formats, policy)
+                extract_all_images(doc, output_base_dir, base_name, pipeline)
             } else {
                 // No cover image found
-                Ok(DocumentExtractionResult::default())
+                Ok(ImageWriteResult::default())
             }
         }
     }
@@ -199,31 +160,22 @@ fn write_cover_image(
     mime: &str,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_formats: &HashSet<ImageFormat>,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
-    let discovered = discover_images(
-        vec![ArchiveImageSource::required_cover(data, mime.to_string())],
-        allowed_formats,
-    );
-
-    let write_result = write_images(
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
+    pipeline.write(ImageWriteRequest::required_epub_cover(
         output_base_dir,
         base_name,
-        discovered.images,
-        policy,
-        WriteMode::RequiredCover,
-    )?;
-
-    Ok(DocumentExtractionResult::new(
-        write_result.counts,
-        combine_document_warnings(discovered.warnings, write_result.warnings),
+        data,
+        mime,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::image_format::ImageFormat;
+    use crate::image_write_pipeline::ImageWritePolicy;
+    use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -333,20 +285,19 @@ mod tests {
             MINIMAL_PNG,
         );
 
-        let allowed_formats = HashSet::from([ImageFormat::Png]);
-        let policy = ImageWritePolicy {
-            conversion: None,
-            gif_output: None,
-        };
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
 
         let result = process_file(
             &input_path,
             &output_dir,
             "Tester - Magic Test",
-            &allowed_formats,
             false,
             false,
-            &policy,
+            &pipeline,
         )
         .expect("EPUB extraction should succeed");
 
@@ -372,20 +323,19 @@ mod tests {
             MINIMAL_PNG,
         );
 
-        let allowed_formats = HashSet::from([ImageFormat::Png]);
-        let policy = ImageWritePolicy {
-            conversion: None,
-            gif_output: None,
-        };
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
 
         let result = process_file(
             &input_path,
             &output_dir,
             "Tester - Magic Test",
-            &allowed_formats,
             false,
             false,
-            &policy,
+            &pipeline,
         )
         .expect("EPUB extraction should succeed");
 

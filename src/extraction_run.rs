@@ -1,15 +1,12 @@
 //! Extraction run workflow for document discovery, dispatch, and aggregation.
 
 use anyhow::Result;
-use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::common::{DocumentExtractionResult, ExtractionCounts};
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter, SelectedDocument};
 use crate::docx;
 use crate::epub;
-use crate::image_format::ImageFormat;
-use crate::image_writer::ImageWritePolicy;
+use crate::image_write_pipeline::{ImageWriteCounts, ImageWritePipeline, ImageWriteResult};
 
 /// Options for one extraction run after CLI arguments have been normalized.
 ///
@@ -23,16 +20,14 @@ pub struct RunOptions {
     pub recursive: bool,
     /// Optional output directory shared by every input file.
     pub output: Option<PathBuf>,
-    /// Image formats accepted by the run.
-    pub allowed_formats: HashSet<ImageFormat>,
     /// Extract only cover images from EPUB files.
     pub cover_only: bool,
     /// Extract all EPUB images if a cover cannot be found.
     pub cover_fallback: bool,
     /// EPUB metadata filter criteria.
     pub epub_filter: EpubFilter,
-    /// Image extraction and conversion behavior.
-    pub image_write: ImageWritePolicy,
+    /// Ready Image write pipeline configured for the run.
+    pub image_write_pipeline: ImageWritePipeline,
 }
 
 /// Aggregated outcome from an extraction run.
@@ -42,7 +37,7 @@ pub struct RunOptions {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RunReport {
     /// Total write/conversion counts across every processed document.
-    pub total_counts: ExtractionCounts,
+    pub total_counts: ImageWriteCounts,
     /// Number of documents that produced at least one output image.
     pub documents_with_output: usize,
     /// Whether any DOCX document produced output images.
@@ -141,10 +136,9 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
 
         match process_file(
             selected_document,
-            &options.allowed_formats,
             options.cover_only,
             options.cover_fallback,
-            &options.image_write,
+            &options.image_write_pipeline,
         ) {
             Ok(result) => {
                 for warning in result.warnings {
@@ -169,7 +163,7 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
 
 impl RunReport {
     /// Records the counts for one successfully processed document.
-    fn record_document_result(&mut self, counts: ExtractionCounts, is_docx: bool) {
+    fn record_document_result(&mut self, counts: ImageWriteCounts, is_docx: bool) {
         self.total_counts.extracted += counts.extracted;
         self.total_counts.gifs_routed += counts.gifs_routed;
         self.total_counts.converted += counts.converted;
@@ -187,27 +181,24 @@ impl RunReport {
 /// Processes a single file based on its type.
 fn process_file(
     selected_document: &SelectedDocument,
-    allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
     match selected_document {
         SelectedDocument::Docx { .. } => docx::process_file(
             selected_document.path(),
             selected_document.output_dir(),
             selected_document.base_name(),
-            allowed_formats,
-            policy,
+            pipeline,
         ),
         SelectedDocument::Epub { .. } => epub::process_file(
             selected_document.path(),
             selected_document.output_dir(),
             selected_document.base_name(),
-            allowed_formats,
             cover_only,
             cover_fallback,
-            policy,
+            pipeline,
         ),
     }
 }
@@ -221,7 +212,7 @@ mod tests {
         let mut report = RunReport::default();
 
         report.record_document_result(
-            ExtractionCounts {
+            ImageWriteCounts {
                 extracted: 2,
                 gifs_routed: 1,
                 converted: 1,
@@ -230,7 +221,7 @@ mod tests {
             true,
         );
         report.record_document_result(
-            ExtractionCounts {
+            ImageWriteCounts {
                 extracted: 0,
                 gifs_routed: 0,
                 converted: 0,

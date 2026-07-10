@@ -1,30 +1,24 @@
 //! DOCX file processing module
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
 
-use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
-use crate::common::DocumentExtractionResult;
-use crate::extraction_warning::combine_document_warnings;
-use crate::image_format::ImageFormat;
-use crate::image_writer::{ImageWritePolicy, WriteMode, write_images};
+use crate::image_write_pipeline::{
+    ArchiveImageSource, ImageWritePipeline, ImageWriteRequest, ImageWriteResult,
+};
 
-/// Processes a single .docx file, extracting images matching the allowed extensions.
+/// Processes a single .docx file, extracting images accepted by the requested Image formats.
 /// Uses the selected document base name for output files.
-/// When `convert` is specified, images are converted to the target format before writing.
-/// GIF routing takes priority over conversion: GIFs routed to `gif_output` are written as-is.
-/// Returns extraction counts plus Archive image discovery warnings.
+/// The configured Image write pipeline owns image acceptance and output policy.
 pub fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     base_name: &str,
-    allowed_formats: &HashSet<ImageFormat>,
-    policy: &ImageWritePolicy,
-) -> Result<DocumentExtractionResult> {
+    pipeline: &ImageWritePipeline,
+) -> Result<ImageWriteResult> {
     let file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
     let mut archive = ZipArchive::new(file)
@@ -40,29 +34,22 @@ pub fn process_file(
         file.read_to_end(&mut data)
             .context("Failed to read image from archive")?;
 
-        sources.push(ArchiveImageSource::batch(data, archive_name, None));
+        sources.push(ArchiveImageSource::named(data, archive_name));
     }
 
-    let discovered = discover_images(sources, allowed_formats);
-    let write_result = write_images(
+    pipeline.write(ImageWriteRequest::normal_images(
         output_base_dir,
         base_name,
-        discovered.images,
-        policy,
-        WriteMode::BatchImages,
-    )?;
-
-    Ok(DocumentExtractionResult::new(
-        write_result.counts,
-        combine_document_warnings(discovered.warnings, write_result.warnings),
+        sources,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::archive_image_discovery::ArchiveImageDiscoveryWarning;
-    use crate::extraction_warning::DocumentExtractionWarning;
+    use crate::image_format::ImageFormat;
+    use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
+    use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
@@ -102,23 +89,21 @@ mod tests {
             &input_path,
             &output_dir,
             "sample",
-            &HashSet::from([ImageFormat::Png]),
-            &ImageWritePolicy {
-                conversion: None,
-                gif_output: None,
-            },
+            &ImageWritePipeline::new(ImageWritePolicy::new(
+                HashSet::from([ImageFormat::Png]),
+                None,
+                None,
+            )),
         )
         .expect("DOCX extraction should succeed");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
             result.warnings,
-            vec![DocumentExtractionWarning::ArchiveImageDiscovery(
-                ArchiveImageDiscoveryWarning::ExtensionFallback {
-                    source_name: "word/media/image1.png".to_string(),
-                    format: ImageFormat::Png,
-                }
-            )]
+            vec![ImageWriteWarning::ExtensionFallback {
+                source_name: "word/media/image1.png".to_string(),
+                format: ImageFormat::Png,
+            }]
         );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
