@@ -12,16 +12,16 @@ const MAX_COLLISION_ATTEMPTS: u32 = 1000;
 /// Emits one pipeline invocation's images without overwriting existing output.
 pub(super) struct ImageFileEmission<'name> {
     base_name: &'name str,
-    total_images: usize,
+    multiple_images: bool,
     next_ordinal: usize,
 }
 
 impl<'name> ImageFileEmission<'name> {
-    /// Starts Image file emission with the naming facts shared by the invocation.
-    pub(super) fn new(base_name: &'name str, total_images: usize) -> Self {
+    /// Starts Image file emission after singular versus multiple naming is known.
+    pub(super) fn new(base_name: &'name str, multiple_images: bool) -> Self {
         Self {
             base_name,
-            total_images,
+            multiple_images,
             next_ordinal: 1,
         }
     }
@@ -37,11 +37,6 @@ impl<'name> ImageFileEmission<'name> {
         format: ImageFormat,
         data: &[u8],
     ) -> Result<()> {
-        debug_assert!(
-            self.next_ordinal <= self.total_images,
-            "Image file emission exceeded its declared image count"
-        );
-
         fs::create_dir_all(output_dir).with_context(|| {
             format!(
                 "Failed to create output directory: {}",
@@ -49,7 +44,7 @@ impl<'name> ImageFileEmission<'name> {
             )
         })?;
 
-        let output_filename = if self.total_images > 1 {
+        let output_filename = if self.multiple_images {
             format!(
                 "{}_{}.{}",
                 self.base_name,

@@ -1,150 +1,127 @@
-//! Archive image discovery inside the Image write pipeline.
+//! Incremental Archive image discovery inside the Image write pipeline.
 
 use std::collections::HashSet;
+use std::io::Read;
 
 use crate::image_format::{FormatConfidence, FormatFallbackPolicy, ImageFormat, ImageFormatSource};
 
-use super::{AcceptedImage, ArchiveImageSource, ImageWriteWarning};
+use super::{AcceptedImage, ArchiveImageSource, ImageWritePurpose, ImageWriteWarning};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DiscoveryPurpose {
-    NormalImages,
-    RequiredEpubCover,
-}
+// SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
+const FORMAT_EVIDENCE_LIMIT: u64 = 1027;
 
-impl DiscoveryPurpose {
-    /// Returns the Image format fallback policy for this discovery purpose.
-    fn fallback_policy(self) -> FormatFallbackPolicy {
-        match self {
-            DiscoveryPurpose::NormalImages => FormatFallbackPolicy::SkipUnknown,
-            DiscoveryPurpose::RequiredEpubCover => FormatFallbackPolicy::DefaultCoverToJpeg,
-        }
-    }
-
-    /// Returns whether a filtered format must produce a cover warning.
-    fn warns_when_filtered(self) -> bool {
-        self == DiscoveryPurpose::RequiredEpubCover
-    }
-}
-
-/// Accepted images and phase-ordered warnings from Archive image discovery.
-pub(super) struct DiscoveredImages {
-    pub(super) images: Vec<AcceptedImage>,
+/// One source's accepted payload and phase-ordered discovery warning facts.
+pub(super) struct DiscoveredImage {
+    pub(super) image: Option<AcceptedImage>,
     pub(super) warnings: Vec<ImageWriteWarning>,
 }
 
-/// Accepts safe, identifiable, requested normal-image sources for writing.
-pub(super) fn discover_normal_images(
-    sources: Vec<ArchiveImageSource>,
+/// Acquires one source incrementally and accepts it when its format is requested.
+///
+/// Only bounded evidence is read for rejected or filtered sources. Accepted
+/// sources retain that prefix and append the remaining payload. Read failures
+/// become structured warning facts and discard any partial bytes.
+pub(super) fn discover_image(
+    source: &ArchiveImageSource,
+    reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
-) -> DiscoveredImages {
-    let mut discovery = DiscoveryAccumulator::new(allowed_formats);
-
-    for source in sources {
-        if !is_safe_archive_path(&source.source_name) {
-            continue;
-        }
-
-        discovery.accept(
-            source.data,
-            Some(source.source_name),
-            source.mime,
-            DiscoveryPurpose::NormalImages,
-        );
-    }
-
-    discovery.finish()
-}
-
-/// Accepts the single required EPUB cover source for writing.
-pub(super) fn discover_required_cover(
-    data: Vec<u8>,
-    mime: String,
-    allowed_formats: &HashSet<ImageFormat>,
-) -> DiscoveredImages {
-    let mut discovery = DiscoveryAccumulator::new(allowed_formats);
-
-    discovery.accept(data, None, Some(mime), DiscoveryPurpose::RequiredEpubCover);
-
-    discovery.finish()
-}
-
-struct DiscoveryAccumulator<'a> {
-    allowed_formats: &'a HashSet<ImageFormat>,
-    images: Vec<AcceptedImage>,
-    warnings: Vec<ImageWriteWarning>,
-}
-
-impl<'a> DiscoveryAccumulator<'a> {
-    /// Starts one discovery phase for the configured requested Image formats.
-    fn new(allowed_formats: &'a HashSet<ImageFormat>) -> Self {
-        Self {
-            allowed_formats,
-            images: Vec::new(),
+    purpose: ImageWritePurpose,
+) -> DiscoveredImage {
+    if !is_source_safe(source, purpose) {
+        return DiscoveredImage {
+            image: None,
             warnings: Vec::new(),
-        }
+        };
     }
 
-    /// Applies Image format evidence, warning, and filter policy to one source.
-    ///
-    /// `purpose` keeps cover fallback and filtered-cover warning behavior coupled
-    /// so callers cannot construct an invalid combination of those policies.
-    fn accept(
-        &mut self,
-        data: Vec<u8>,
-        source_name: Option<String>,
-        mime: Option<String>,
-        purpose: DiscoveryPurpose,
-    ) {
-        let Some(identified) = ImageFormat::identify_source(ImageFormatSource {
-            data: &data,
-            source_name: source_name.as_deref(),
-            mime: mime.as_deref(),
-            fallback_policy: purpose.fallback_policy(),
-        }) else {
-            return;
+    let mut warnings = Vec::new();
+    let mut data = Vec::new();
+    if let Err(error) = reader.take(FORMAT_EVIDENCE_LIMIT).read_to_end(&mut data) {
+        warnings.push(ImageWriteWarning::archive_image_acquisition_failed(
+            source.diagnostic_name.clone(),
+            error,
+        ));
+        return DiscoveredImage {
+            image: None,
+            warnings,
         };
+    }
 
-        match identified.confidence {
-            FormatConfidence::ExtensionFallback => {
-                if let Some(source_name) = &source_name {
-                    self.warnings.push(ImageWriteWarning::ExtensionFallback {
-                        source_name: source_name.clone(),
-                        format: identified.format,
-                    });
-                }
-            }
-            FormatConfidence::CoverDefault => {
-                self.warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
-                    mime: mime.clone().unwrap_or_default(),
+    let fallback_policy = if purpose.is_required_epub_cover() {
+        FormatFallbackPolicy::DefaultCoverToJpeg
+    } else {
+        FormatFallbackPolicy::SkipUnknown
+    };
+    let Some(identified) = ImageFormat::identify_source(ImageFormatSource {
+        data: &data,
+        source_name: source.format_source_name.as_deref(),
+        mime: source.mime.as_deref(),
+        fallback_policy,
+    }) else {
+        return DiscoveredImage {
+            image: None,
+            warnings,
+        };
+    };
+
+    match identified.confidence {
+        FormatConfidence::ExtensionFallback => {
+            if let Some(source_name) = &source.format_source_name {
+                warnings.push(ImageWriteWarning::ExtensionFallback {
+                    source_name: source_name.clone(),
+                    format: identified.format,
                 });
             }
-            FormatConfidence::Magic | FormatConfidence::MimeFallback => {}
         }
-
-        if !self.allowed_formats.contains(&identified.format) {
-            if purpose.warns_when_filtered() {
-                self.warnings
-                    .push(ImageWriteWarning::UnsupportedCoverFormat {
-                        format: identified.format,
-                    });
-            }
-            return;
+        FormatConfidence::CoverDefault => {
+            warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
+                mime: source.mime.clone().unwrap_or_default(),
+            });
         }
+        FormatConfidence::Magic | FormatConfidence::MimeFallback => {}
+    }
 
-        self.images.push(AcceptedImage {
+    if !allowed_formats.contains(&identified.format) {
+        if purpose.is_required_epub_cover() {
+            warnings.push(ImageWriteWarning::UnsupportedCoverFormat {
+                format: identified.format,
+            });
+        }
+        return DiscoveredImage {
+            image: None,
+            warnings,
+        };
+    }
+
+    if let Err(error) = reader.read_to_end(&mut data) {
+        warnings.push(ImageWriteWarning::archive_image_acquisition_failed(
+            source.diagnostic_name.clone(),
+            error,
+        ));
+        return DiscoveredImage {
+            image: None,
+            warnings,
+        };
+    }
+
+    DiscoveredImage {
+        image: Some(AcceptedImage {
             data,
             format: identified.format,
-        });
+        }),
+        warnings,
     }
+}
 
-    /// Finishes discovery while preserving source order for images and warnings.
-    fn finish(self) -> DiscoveredImages {
-        DiscoveredImages {
-            images: self.images,
-            warnings: self.warnings,
-        }
-    }
+/// Returns whether discovery would inspect this source.
+pub(super) fn is_source_safe(source: &ArchiveImageSource, purpose: ImageWritePurpose) -> bool {
+    // Required cover paths remain lookup/diagnostic facts, preserving the legacy
+    // cover policy that evaluated only bytes, MIME, and the JPEG default.
+    purpose.is_required_epub_cover()
+        || source
+            .format_source_name
+            .as_deref()
+            .is_some_and(is_safe_archive_path)
 }
 
 /// Returns whether an archive path is safe to use as image source evidence.

@@ -194,14 +194,20 @@ mod tests {
     fn write_sources(
         prepared: &PreparedExtractionRun,
         output_dir: &Path,
-        sources: Vec<ArchiveImageSource>,
+        sources: Vec<(ArchiveImageSource, Vec<u8>)>,
     ) -> crate::image_write_pipeline::ImageWriteResult {
         prepared
             .options
             .image_write_pipeline
-            .write(ImageWriteRequest::normal_images(
-                output_dir, "sample", sources,
-            ))
+            .write_from(
+                ImageWriteRequest::normal_images(output_dir, "sample"),
+                |visitor| {
+                    for (source, data) in sources {
+                        visitor.visit(source, &mut Cursor::new(data))?;
+                    }
+                    Ok(())
+                },
+            )
             .expect("prepared pipeline should write test sources")
     }
 
@@ -242,9 +248,18 @@ mod tests {
             &prepared,
             &temp_dir,
             vec![
-                ArchiveImageSource::named(b"\x89PNG\r\n\x1A\n".to_vec(), "image.bin"),
-                ArchiveImageSource::named(b"\xFF\xD8\xFF".to_vec(), "photo.bin"),
-                ArchiveImageSource::named(b"GIF89a".to_vec(), "animation.bin"),
+                (
+                    ArchiveImageSource::named("image.bin"),
+                    b"\x89PNG\r\n\x1A\n".to_vec(),
+                ),
+                (
+                    ArchiveImageSource::named("photo.bin"),
+                    b"\xFF\xD8\xFF".to_vec(),
+                ),
+                (
+                    ArchiveImageSource::named("animation.bin"),
+                    b"GIF89a".to_vec(),
+                ),
             ],
         );
 
@@ -265,7 +280,7 @@ mod tests {
         let result = write_sources(
             &prepared,
             &temp_dir,
-            vec![ArchiveImageSource::named(b"<svg/>".to_vec(), "vector.bin")],
+            vec![(ArchiveImageSource::named("vector.bin"), b"<svg/>".to_vec())],
         );
 
         assert_eq!(result.counts.extracted, 1);
@@ -284,8 +299,14 @@ mod tests {
             &prepared,
             &temp_dir,
             vec![
-                ArchiveImageSource::named(b"\x89PNG\r\n\x1A\n".to_vec(), "image.bin"),
-                ArchiveImageSource::named(b"GIF89a".to_vec(), "animation.bin"),
+                (
+                    ArchiveImageSource::named("image.bin"),
+                    b"\x89PNG\r\n\x1A\n".to_vec(),
+                ),
+                (
+                    ArchiveImageSource::named("animation.bin"),
+                    b"GIF89a".to_vec(),
+                ),
             ],
         );
 
@@ -304,7 +325,7 @@ mod tests {
         let result = write_sources(
             &prepared,
             &temp_dir,
-            vec![ArchiveImageSource::named(valid_png(), "image.png")],
+            vec![(ArchiveImageSource::named("image.png"), valid_png())],
         );
 
         assert_eq!(result.counts.extracted, 1);

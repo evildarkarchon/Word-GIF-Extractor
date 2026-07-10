@@ -41,7 +41,7 @@ The role of one source set in the Image write pipeline: normal batch images or a
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **Archive image discovery**:
-The acceptance policy within the Image write pipeline for deciding which image-bearing archive resources may be emitted, including archive source safety, Image format identification, fallback warning facts, and requested format filtering.
+The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
 
 **Image format**:

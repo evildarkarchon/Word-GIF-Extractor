@@ -1114,6 +1114,7 @@ dependencies = [
  "epub",
  "image",
  "indicatif",
+ "percent-encoding",
  "walkdir",
  "webp",
  "zip 2.4.2",
