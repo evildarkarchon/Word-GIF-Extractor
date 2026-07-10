@@ -178,12 +178,12 @@ impl IndicatifRunObserver {
         }
     }
 
-    /// Runs a closure while the extraction progress bar is suspended, when present.
-    fn suspend_extraction<F>(&self, f: F)
+    /// Runs a closure while the supplied progress bar is suspended, when present.
+    fn suspend_progress_bar<F>(progress_bar: Option<&ProgressBar>, f: F)
     where
         F: FnOnce(),
     {
-        if let Some(pb) = &self.extraction_pb {
+        if let Some(pb) = progress_bar {
             pb.suspend(f);
         } else {
             f();
@@ -300,11 +300,7 @@ impl DocumentSelectionObserver for IndicatifRunObserver {
                     let render = || {
                         eprintln!("Warning: Could not read {}: {}", path.display(), detail);
                     };
-                    if let Some(pb) = &self.epub_filter_pb {
-                        pb.suspend(render);
-                    } else {
-                        render();
-                    }
+                    Self::suspend_progress_bar(self.epub_filter_pb.as_ref(), render);
                 }
                 EpubMetadataPurpose::Deduplication => {
                     let render = || {
@@ -314,11 +310,7 @@ impl DocumentSelectionObserver for IndicatifRunObserver {
                             detail
                         );
                     };
-                    if let Some(pb) = &self.epub_dedup_pb {
-                        pb.suspend(render);
-                    } else {
-                        render();
-                    }
+                    Self::suspend_progress_bar(self.epub_dedup_pb.as_ref(), render);
                 }
             },
         }
@@ -345,12 +337,12 @@ impl RunObserver for IndicatifRunObserver {
                 }
             }
             RunEvent::DocumentError { path, message } => {
-                self.suspend_extraction(|| {
+                Self::suspend_progress_bar(self.extraction_pb.as_ref(), || {
                     eprintln!("Error processing {}: {}", path.display(), message);
                 });
             }
             RunEvent::DocumentWarning { message, .. } => {
-                self.suspend_extraction(|| {
+                Self::suspend_progress_bar(self.extraction_pb.as_ref(), || {
                     eprintln!("Warning: {}", message);
                 });
             }

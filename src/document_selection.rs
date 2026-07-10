@@ -55,6 +55,11 @@ pub enum DocumentSelectionScanScope {
 }
 
 /// Immutable current-state snapshot for one live Document selection phase.
+///
+/// Phases are reported in scanning, optional filtering, then optional
+/// deduplication order. A phase with no work is silent; every phase that runs
+/// emits an initial running snapshot, monotonically advancing running snapshots,
+/// and exactly one finished snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentSelectionProgress {
     /// Current document scanning state.
@@ -104,6 +109,10 @@ pub enum DocumentSelectionDiagnostic {
 }
 
 /// Receives live Document selection progress and diagnostics.
+///
+/// The observer is informational: callbacks cannot cancel selection or alter
+/// which documents are returned. Progress snapshots carry structured selection
+/// facts, while diagnostics carry non-fatal facts without terminal wording.
 pub trait DocumentSelectionObserver {
     /// Handles one immutable phase snapshot.
     fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress);
@@ -230,12 +239,13 @@ impl DocumentCandidate {
     }
 }
 
-/// Selects documents for extraction and emits progress events for selection phases.
+/// Selects documents for extraction while reporting live progress snapshots and diagnostics.
 ///
 /// Selection owns document discovery, EPUB metadata filtering, EPUB dedupe,
 /// display identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
-/// filters.
+/// filters. Missing inputs and unreadable EPUB metadata are reported as
+/// structured, non-fatal diagnostics through the informational observer.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
     observer: &mut impl DocumentSelectionObserver,
@@ -293,6 +303,11 @@ fn collect_document_files(
     observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<DocumentCandidate> {
     let mut files = Vec::new();
+
+    // A phase with no requested work stays silent by the observer lifecycle contract.
+    if inputs.is_empty() {
+        return files;
+    }
 
     let scope = if recursive && inputs.iter().any(|path| path.is_dir()) {
         DocumentSelectionScanScope::RecursiveDirectories
@@ -931,6 +946,26 @@ mod tests {
             observer.diagnostics,
             vec![DocumentSelectionDiagnostic::MissingInput { path: missing }]
         );
+    }
+
+    #[test]
+    fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &[],
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert!(selected.is_empty());
+        assert!(observer.progress.is_empty());
+        assert!(observer.diagnostics.is_empty());
     }
 
     #[test]
