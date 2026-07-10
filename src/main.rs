@@ -18,6 +18,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
 use crate::conversion::{ConversionPolicyError, ConversionTarget};
+use crate::document_selection::{
+    DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
+    DocumentSelectionProgress, DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
+};
 use crate::extraction_run::{RunEvent, RunObserver, RunReport};
 use crate::extraction_run_intake::{ExtractionRunIntakeError, PreparedExtractionRun};
 
@@ -117,6 +121,16 @@ fn create_spinner_style() -> ProgressStyle {
         .expect("Invalid spinner template")
 }
 
+/// Formats EPUB filter criteria for terminal progress messages.
+fn epub_filter_description(filter: &EpubFilter) -> String {
+    match (&filter.author, &filter.title) {
+        (Some(author), Some(title)) => format!("author '{}' and title '{}'", author, title),
+        (Some(author), None) => format!("author '{}'", author),
+        (None, Some(title)) => format!("title '{}'", title),
+        (None, None) => String::new(),
+    }
+}
+
 /// Renders typed Extraction run intake failures using CLI-specific wording.
 fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     match error {
@@ -138,7 +152,7 @@ fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     }
 }
 
-/// Adapts extraction-run events to terminal progress bars.
+/// Adapts Extraction run and Document selection facts to terminal progress bars.
 struct IndicatifRunObserver {
     scan_pb: Option<ProgressBar>,
     epub_filter_pb: Option<ProgressBar>,
@@ -177,82 +191,143 @@ impl IndicatifRunObserver {
     }
 }
 
+impl DocumentSelectionObserver for IndicatifRunObserver {
+    /// Renders one Document selection progress snapshot without relying on event deltas.
+    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+        match progress {
+            DocumentSelectionProgress::Scanning {
+                scope,
+                discovered,
+                status,
+            } => match status {
+                DocumentSelectionPhaseStatus::Running => {
+                    if scope == DocumentSelectionScanScope::RecursiveDirectories
+                        && self.scan_pb.is_none()
+                    {
+                        let pb = ProgressBar::new_spinner();
+                        pb.set_style(create_spinner_style());
+                        pb.set_message("Scanning directories for documents...");
+                        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                        self.scan_pb = Some(pb);
+                    }
+                    if discovered > 0
+                        && let Some(pb) = &self.scan_pb
+                    {
+                        pb.set_message(format!("Found {} document(s)...", discovered));
+                    }
+                }
+                DocumentSelectionPhaseStatus::Finished => {
+                    if let Some(pb) = self.scan_pb.take() {
+                        pb.finish_with_message(format!("Found {} document(s)", discovered));
+                    }
+                }
+            },
+            DocumentSelectionProgress::FilteringEpubs {
+                filter,
+                checked,
+                total,
+                matching,
+                status,
+            } => match status {
+                DocumentSelectionPhaseStatus::Running => {
+                    if self.epub_filter_pb.is_none() {
+                        let pb = ProgressBar::new(total as u64);
+                        pb.set_style(create_progress_style());
+                        pb.set_message(format!(
+                            "Filtering EPUBs by {}",
+                            epub_filter_description(&filter)
+                        ));
+                        self.epub_filter_pb = Some(pb);
+                    }
+                    if let Some(pb) = &self.epub_filter_pb {
+                        pb.set_position(checked as u64);
+                    }
+                }
+                DocumentSelectionPhaseStatus::Finished => {
+                    if let Some(pb) = self.epub_filter_pb.take() {
+                        pb.set_position(checked as u64);
+                        pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
+                    }
+                }
+            },
+            DocumentSelectionProgress::DeduplicatingEpubs {
+                checked,
+                total,
+                duplicates_found,
+                unique_remaining,
+                status,
+            } => match status {
+                DocumentSelectionPhaseStatus::Running => {
+                    if self.epub_dedup_pb.is_none() {
+                        let pb = ProgressBar::new(total as u64);
+                        pb.set_style(create_progress_style());
+                        pb.set_message("Deduplicating EPUBs by metadata");
+                        self.epub_dedup_pb = Some(pb);
+                    }
+                    if let Some(pb) = &self.epub_dedup_pb {
+                        pb.set_position(checked as u64);
+                    }
+                }
+                DocumentSelectionPhaseStatus::Finished => {
+                    if let Some(pb) = self.epub_dedup_pb.take() {
+                        pb.set_position(checked as u64);
+                        if duplicates_found > 0 {
+                            pb.finish_with_message(format!(
+                                "Removed {} duplicate EPUB(s), {} unique remaining",
+                                duplicates_found, unique_remaining
+                            ));
+                        } else {
+                            pb.finish_and_clear();
+                        }
+                    }
+                }
+            },
+        }
+    }
+
+    /// Renders one structured Document selection diagnostic with terminal wording.
+    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+        match diagnostic {
+            DocumentSelectionDiagnostic::MissingInput { path } => {
+                eprintln!("Warning: Input path does not exist: {}", path.display());
+            }
+            DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                path,
+                purpose,
+                detail,
+            } => match purpose {
+                EpubMetadataPurpose::Filtering => {
+                    let render = || {
+                        eprintln!("Warning: Could not read {}: {}", path.display(), detail);
+                    };
+                    if let Some(pb) = &self.epub_filter_pb {
+                        pb.suspend(render);
+                    } else {
+                        render();
+                    }
+                }
+                EpubMetadataPurpose::Deduplication => {
+                    let render = || {
+                        eprintln!(
+                            "Warning: Could not read EPUB metadata from {} during deduplication; using filename fallback: {}",
+                            path.display(),
+                            detail
+                        );
+                    };
+                    if let Some(pb) = &self.epub_dedup_pb {
+                        pb.suspend(render);
+                    } else {
+                        render();
+                    }
+                }
+            },
+        }
+    }
+}
+
 impl RunObserver for IndicatifRunObserver {
     fn on_event(&mut self, event: RunEvent) {
         match event {
-            RunEvent::InputWarning { path } => {
-                eprintln!("Warning: Input path does not exist: {}", path.display());
-            }
-            RunEvent::ScanStarted { use_spinner } => {
-                if use_spinner {
-                    let pb = ProgressBar::new_spinner();
-                    pb.set_style(create_spinner_style());
-                    pb.set_message("Scanning directories for documents...");
-                    pb.enable_steady_tick(std::time::Duration::from_millis(100));
-                    self.scan_pb = Some(pb);
-                }
-            }
-            RunEvent::DocumentDiscovered { count } => {
-                if let Some(pb) = &self.scan_pb {
-                    pb.set_message(format!("Found {} document(s)...", count));
-                }
-            }
-            RunEvent::ScanFinished { count } => {
-                if let Some(pb) = self.scan_pb.take() {
-                    pb.finish_with_message(format!("Found {} document(s)", count));
-                }
-            }
-            RunEvent::EpubFilterStarted { description, total } => {
-                let pb = ProgressBar::new(total as u64);
-                pb.set_style(create_progress_style());
-                pb.set_message(format!("Filtering EPUBs by {}", description));
-                self.epub_filter_pb = Some(pb);
-            }
-            RunEvent::EpubFilterAdvanced => {
-                if let Some(pb) = &self.epub_filter_pb {
-                    pb.inc(1);
-                }
-            }
-            RunEvent::EpubFilterWarning { path, message } => {
-                if let Some(pb) = &self.epub_filter_pb {
-                    pb.suspend(|| {
-                        eprintln!("Warning: Could not read {}: {}", path.display(), message);
-                    });
-                } else {
-                    eprintln!("Warning: Could not read {}: {}", path.display(), message);
-                }
-            }
-            RunEvent::EpubFilterFinished { matching } => {
-                if let Some(pb) = self.epub_filter_pb.take() {
-                    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
-                }
-            }
-            RunEvent::EpubDedupStarted { total } => {
-                let pb = ProgressBar::new(total as u64);
-                pb.set_style(create_progress_style());
-                pb.set_message("Deduplicating EPUBs by metadata");
-                self.epub_dedup_pb = Some(pb);
-            }
-            RunEvent::EpubDedupAdvanced => {
-                if let Some(pb) = &self.epub_dedup_pb {
-                    pb.inc(1);
-                }
-            }
-            RunEvent::EpubDedupFinished {
-                duplicates_found,
-                unique_remaining,
-            } => {
-                if let Some(pb) = self.epub_dedup_pb.take() {
-                    if duplicates_found > 0 {
-                        pb.finish_with_message(format!(
-                            "Removed {} duplicate EPUB(s), {} unique remaining",
-                            duplicates_found, unique_remaining
-                        ));
-                    } else {
-                        pb.finish_and_clear();
-                    }
-                }
-            }
             RunEvent::ExtractionStarted { total, cover_only } => {
                 let pb = ProgressBar::new(total as u64);
                 pb.set_style(create_progress_style());
@@ -409,6 +484,17 @@ mod tests {
         assert_eq!(args.convert, Some(ConversionTargetArg::Png));
         let args = Args::try_parse_from(["test", "--convert", "webp"]).unwrap();
         assert_eq!(args.convert, Some(ConversionTargetArg::Webp));
+    }
+
+    #[test]
+    fn terminal_epub_filter_description_preserves_existing_wording() {
+        assert_eq!(
+            epub_filter_description(&EpubFilter {
+                title: Some("Magic Book".to_string()),
+                author: Some("Test Author".to_string()),
+            }),
+            "author 'Test Author' and title 'Magic Book'"
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter, SelectedDocument};
+use crate::document_selection::{
+    self, DocumentSelectionObserver, DocumentSelectionOptions, EpubFilter, SelectedDocument,
+};
 use crate::docx;
 use crate::epub;
 use crate::image_write_pipeline::{ImageWriteCounts, ImageWritePipeline, ImageWriteResult};
@@ -54,31 +56,6 @@ pub struct RunReport {
 /// adapter decides how to render them as progress bars or warnings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunEvent {
-    /// Input path does not exist and will be skipped by discovery.
-    InputWarning { path: PathBuf },
-    /// Document discovery has started.
-    ScanStarted { use_spinner: bool },
-    /// A supported document was discovered.
-    DocumentDiscovered { count: usize },
-    /// Document discovery has finished.
-    ScanFinished { count: usize },
-    /// EPUB metadata filtering has started.
-    EpubFilterStarted { description: String, total: usize },
-    /// One EPUB has been checked against the filter.
-    EpubFilterAdvanced,
-    /// An EPUB could not be read while filtering.
-    EpubFilterWarning { path: PathBuf, message: String },
-    /// EPUB metadata filtering has finished.
-    EpubFilterFinished { matching: usize },
-    /// EPUB metadata deduplication has started.
-    EpubDedupStarted { total: usize },
-    /// One EPUB has been checked for deduplication.
-    EpubDedupAdvanced,
-    /// EPUB metadata deduplication has finished.
-    EpubDedupFinished {
-        duplicates_found: usize,
-        unique_remaining: usize,
-    },
     /// Document extraction has started.
     ExtractionStarted { total: usize, cover_only: bool },
     /// A document is about to be processed.
@@ -91,8 +68,8 @@ pub enum RunEvent {
     DocumentFinished { path: PathBuf },
 }
 
-/// Observer for extraction-run events.
-pub trait RunObserver {
+/// Observer for extraction-run events and the nested Document selection workflow.
+pub trait RunObserver: DocumentSelectionObserver {
     /// Handles one event emitted by the extraction run.
     fn on_event(&mut self, event: RunEvent);
 }

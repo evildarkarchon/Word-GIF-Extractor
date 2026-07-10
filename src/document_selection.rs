@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::epub;
-use crate::extraction_run::{RunEvent, RunObserver};
 
 /// Sanitizes document metadata for use as an output filename.
 fn sanitize_filename(name: &str) -> String {
@@ -35,16 +34,82 @@ impl EpubFilter {
     pub fn is_empty(&self) -> bool {
         self.title.is_none() && self.author.is_none()
     }
+}
 
-    /// Returns a human-readable description of the filter for progress events.
-    pub fn description(&self) -> String {
-        match (&self.author, &self.title) {
-            (Some(author), Some(title)) => format!("author '{}' and title '{}'", author, title),
-            (Some(author), None) => format!("author '{}'", author),
-            (None, Some(title)) => format!("title '{}'", title),
-            (None, None) => String::new(),
-        }
-    }
+/// Whether a Document selection phase is still running or has finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSelectionPhaseStatus {
+    /// The phase may emit later snapshots with greater progress.
+    Running,
+    /// The phase has emitted its final snapshot.
+    Finished,
+}
+
+/// Scope of the scanning phase reported as Document selection progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSelectionScanScope {
+    /// Requested paths are inspected without recursive directory traversal.
+    RequestedInputs,
+    /// At least one requested directory is traversed recursively.
+    RecursiveDirectories,
+}
+
+/// Immutable current-state snapshot for one live Document selection phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentSelectionProgress {
+    /// Current document scanning state.
+    Scanning {
+        scope: DocumentSelectionScanScope,
+        discovered: usize,
+        status: DocumentSelectionPhaseStatus,
+    },
+    /// Current EPUB metadata filtering state.
+    FilteringEpubs {
+        filter: EpubFilter,
+        checked: usize,
+        total: usize,
+        matching: usize,
+        status: DocumentSelectionPhaseStatus,
+    },
+    /// Current EPUB metadata deduplication state.
+    DeduplicatingEpubs {
+        checked: usize,
+        total: usize,
+        duplicates_found: usize,
+        unique_remaining: usize,
+        status: DocumentSelectionPhaseStatus,
+    },
+}
+
+/// Document selection use that could not read EPUB metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpubMetadataPurpose {
+    /// Metadata was needed to apply a requested EPUB filter.
+    Filtering,
+    /// Metadata was needed to deduplicate EPUBs before filename fallback.
+    Deduplication,
+}
+
+/// Structured non-fatal fact produced while selecting documents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentSelectionDiagnostic {
+    /// A requested input path does not exist and was skipped.
+    MissingInput { path: PathBuf },
+    /// EPUB metadata could not be read for the stated selection purpose.
+    UnreadableEpubMetadata {
+        path: PathBuf,
+        purpose: EpubMetadataPurpose,
+        detail: String,
+    },
+}
+
+/// Receives live Document selection progress and diagnostics.
+pub trait DocumentSelectionObserver {
+    /// Handles one immutable phase snapshot.
+    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress);
+
+    /// Handles one structured non-fatal selection diagnostic.
+    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic);
 }
 
 /// Options used to select documents for one extraction run.
@@ -173,11 +238,11 @@ impl DocumentCandidate {
 /// filters.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
-    observer: &mut impl RunObserver,
+    observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<SelectedDocument> {
     for input_path in options.inputs {
         if !input_path.exists() {
-            observer.on_event(RunEvent::InputWarning {
+            observer.on_document_selection_diagnostic(DocumentSelectionDiagnostic::MissingInput {
                 path: input_path.clone(),
             });
         }
@@ -225,13 +290,20 @@ fn is_epub(candidate: &DocumentCandidate) -> bool {
 fn collect_document_files(
     inputs: &[PathBuf],
     recursive: bool,
-    observer: &mut impl RunObserver,
+    observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<DocumentCandidate> {
     let mut files = Vec::new();
 
-    // Use spinner for recursive directory scanning since we don't know total count upfront.
-    let use_spinner = recursive && inputs.iter().any(|p| p.is_dir());
-    observer.on_event(RunEvent::ScanStarted { use_spinner });
+    let scope = if recursive && inputs.iter().any(|path| path.is_dir()) {
+        DocumentSelectionScanScope::RecursiveDirectories
+    } else {
+        DocumentSelectionScanScope::RequestedInputs
+    };
+    observer.on_document_selection_progress(DocumentSelectionProgress::Scanning {
+        scope,
+        discovered: 0,
+        status: DocumentSelectionPhaseStatus::Running,
+    });
 
     for input_path in inputs {
         if !input_path.exists() {
@@ -239,27 +311,31 @@ fn collect_document_files(
         }
 
         if input_path.is_file() {
-            push_supported_document(input_path.to_path_buf(), &mut files, observer);
+            push_supported_document(input_path.to_path_buf(), &mut files, scope, observer);
         } else if input_path.is_dir() {
             if recursive {
                 for entry in WalkDir::new(input_path).into_iter().flatten() {
                     let path = entry.path();
                     if path.is_file() {
-                        push_supported_document(path.to_path_buf(), &mut files, observer);
+                        push_supported_document(path.to_path_buf(), &mut files, scope, observer);
                     }
                 }
             } else if let Ok(entries) = fs::read_dir(input_path) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() {
-                        push_supported_document(path, &mut files, observer);
+                        push_supported_document(path, &mut files, scope, observer);
                     }
                 }
             }
         }
     }
 
-    observer.on_event(RunEvent::ScanFinished { count: files.len() });
+    observer.on_document_selection_progress(DocumentSelectionProgress::Scanning {
+        scope,
+        discovered: files.len(),
+        status: DocumentSelectionPhaseStatus::Finished,
+    });
     files
 }
 
@@ -267,7 +343,8 @@ fn collect_document_files(
 fn push_supported_document(
     path: PathBuf,
     files: &mut Vec<DocumentCandidate>,
-    observer: &mut impl RunObserver,
+    scope: DocumentSelectionScanScope,
+    observer: &mut impl DocumentSelectionObserver,
 ) {
     if !is_supported_document(&path) {
         return;
@@ -275,14 +352,18 @@ fn push_supported_document(
 
     let document_type = get_document_type(&path).expect("supported document type should exist");
     files.push(DocumentCandidate::new(path, document_type));
-    observer.on_event(RunEvent::DocumentDiscovered { count: files.len() });
+    observer.on_document_selection_progress(DocumentSelectionProgress::Scanning {
+        scope,
+        discovered: files.len(),
+        status: DocumentSelectionPhaseStatus::Running,
+    });
 }
 
 /// Filters EPUB files by metadata while passing non-EPUB files through.
 fn filter_epub_files(
     files: Vec<DocumentCandidate>,
     filter: &EpubFilter,
-    observer: &mut impl RunObserver,
+    observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<DocumentCandidate> {
     // Separate EPUB files from other document types.
     let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
@@ -291,14 +372,17 @@ fn filter_epub_files(
         return other_files;
     }
 
-    observer.on_event(RunEvent::EpubFilterStarted {
-        description: filter.description(),
+    observer.on_document_selection_progress(DocumentSelectionProgress::FilteringEpubs {
+        filter: filter.clone(),
+        checked: 0,
         total: epub_files.len(),
+        matching: 0,
+        status: DocumentSelectionPhaseStatus::Running,
     });
 
     let mut matching_epubs = Vec::new();
-    for mut candidate in epub_files {
-        observer.on_event(RunEvent::EpubFilterAdvanced);
+    let total = epub_files.len();
+    for (index, mut candidate) in epub_files.into_iter().enumerate() {
         match read_epub_metadata(&candidate.path) {
             Ok(metadata) if matches_filter(&metadata, filter) => {
                 candidate.epub_metadata = Some(metadata);
@@ -306,17 +390,32 @@ fn filter_epub_files(
             }
             Ok(_) => {} // File doesn't match filter, skip.
             Err(e) => {
-                // Log error but continue searching.
-                observer.on_event(RunEvent::EpubFilterWarning {
-                    path: candidate.path,
-                    message: e.to_string(),
-                });
+                // Filtering cannot accept an EPUB whose requested metadata is unreadable.
+                observer.on_document_selection_diagnostic(
+                    DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                        path: candidate.path,
+                        purpose: EpubMetadataPurpose::Filtering,
+                        detail: e.to_string(),
+                    },
+                );
             }
         }
+
+        observer.on_document_selection_progress(DocumentSelectionProgress::FilteringEpubs {
+            filter: filter.clone(),
+            checked: index + 1,
+            total,
+            matching: matching_epubs.len(),
+            status: DocumentSelectionPhaseStatus::Running,
+        });
     }
 
-    observer.on_event(RunEvent::EpubFilterFinished {
+    observer.on_document_selection_progress(DocumentSelectionProgress::FilteringEpubs {
+        filter: filter.clone(),
+        checked: total,
+        total,
         matching: matching_epubs.len(),
+        status: DocumentSelectionPhaseStatus::Finished,
     });
 
     // Combine matching EPUBs with other document types.
@@ -332,7 +431,7 @@ fn filter_epub_files(
 /// deduplicated by filename.
 fn deduplicate_by_metadata(
     files: Vec<DocumentCandidate>,
-    observer: &mut impl RunObserver,
+    observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<DocumentCandidate> {
     let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
 
@@ -340,8 +439,12 @@ fn deduplicate_by_metadata(
         return other_files;
     }
 
-    observer.on_event(RunEvent::EpubDedupStarted {
+    observer.on_document_selection_progress(DocumentSelectionProgress::DeduplicatingEpubs {
+        checked: 0,
         total: epub_files.len(),
+        duplicates_found: 0,
+        unique_remaining: 0,
+        status: DocumentSelectionPhaseStatus::Running,
     });
 
     // Use a HashMap to track seen (author, title) combinations.
@@ -349,12 +452,20 @@ fn deduplicate_by_metadata(
     let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
     let mut unique_epubs = Vec::new();
     let mut duplicates_found = 0usize;
+    let total = epub_files.len();
 
-    for mut candidate in epub_files {
-        observer.on_event(RunEvent::EpubDedupAdvanced);
-
+    for (index, mut candidate) in epub_files.into_iter().enumerate() {
         if candidate.epub_metadata.is_none() {
-            candidate.epub_metadata = read_epub_metadata(&candidate.path).ok();
+            match read_epub_metadata(&candidate.path) {
+                Ok(metadata) => candidate.epub_metadata = Some(metadata),
+                Err(error) => observer.on_document_selection_diagnostic(
+                    DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                        path: candidate.path.clone(),
+                        purpose: EpubMetadataPurpose::Deduplication,
+                        detail: error.to_string(),
+                    },
+                ),
+            }
         }
 
         let key = match candidate.epub_metadata.as_ref() {
@@ -369,11 +480,22 @@ fn deduplicate_by_metadata(
         } else {
             duplicates_found += 1;
         }
+
+        observer.on_document_selection_progress(DocumentSelectionProgress::DeduplicatingEpubs {
+            checked: index + 1,
+            total,
+            duplicates_found,
+            unique_remaining: unique_epubs.len(),
+            status: DocumentSelectionPhaseStatus::Running,
+        });
     }
 
-    observer.on_event(RunEvent::EpubDedupFinished {
+    observer.on_document_selection_progress(DocumentSelectionProgress::DeduplicatingEpubs {
+        checked: total,
+        total,
         duplicates_found,
         unique_remaining: unique_epubs.len(),
+        status: DocumentSelectionPhaseStatus::Finished,
     });
 
     // Combine unique EPUBs with other document types.
@@ -525,16 +647,23 @@ fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
 
     #[derive(Default)]
-    struct CollectingObserver {
-        events: Vec<RunEvent>,
+    struct RecordingDocumentSelectionObserver {
+        progress: Vec<DocumentSelectionProgress>,
+        diagnostics: Vec<DocumentSelectionDiagnostic>,
     }
 
-    impl RunObserver for CollectingObserver {
-        fn on_event(&mut self, event: RunEvent) {
-            self.events.push(event);
+    impl DocumentSelectionObserver for RecordingDocumentSelectionObserver {
+        fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+            self.progress.push(progress);
+        }
+
+        fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -549,8 +678,309 @@ mod tests {
         ))
     }
 
-    fn candidate(path: &str, document_type: DocumentType) -> DocumentCandidate {
-        DocumentCandidate::new(PathBuf::from(path), document_type)
+    /// Writes a minimal EPUB whose metadata can be read by the production adapter.
+    fn write_minimal_epub(path: &Path, author: &str, title: &str) {
+        let file = fs::File::create(path).expect("test EPUB should be creatable");
+        let mut archive = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+
+        archive
+            .start_file("mimetype", options)
+            .expect("mimetype entry should start");
+        archive
+            .write_all(b"application/epub+zip")
+            .expect("mimetype should be writable");
+        archive
+            .start_file("META-INF/container.xml", options)
+            .expect("container entry should start");
+        archive
+            .write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+            )
+            .expect("container should be writable");
+        archive
+            .start_file("OEBPS/content.opf", options)
+            .expect("OPF entry should start");
+        archive
+            .write_all(
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>{author}</dc:creator>
+  </metadata>
+  <manifest></manifest>
+  <spine></spine>
+</package>"#
+                )
+                .as_bytes(),
+            )
+            .expect("OPF should be writable");
+        archive.finish().expect("test EPUB should finish");
+    }
+
+    #[test]
+    fn select_documents_reports_scanning_through_its_public_interface() {
+        let temp_dir = temp_test_dir("public-scan-progress");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::write(temp_dir.join("book.docx"), []).expect("test DOCX should be writable");
+        fs::write(temp_dir.join("notes.txt"), []).expect("ignored file should be writable");
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&temp_dir),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            observer.progress,
+            vec![
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RequestedInputs,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RequestedInputs,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RequestedInputs,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                },
+            ]
+        );
+        assert!(observer.diagnostics.is_empty());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn select_documents_reports_ordered_monotonic_phase_snapshots() {
+        let temp_dir = temp_test_dir("ordered-phase-snapshots");
+        let epub_path = temp_dir.join("book.epub");
+        let docx_path = temp_dir.join("document.docx");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        write_minimal_epub(&epub_path, "Test Author", "Magic Book");
+        fs::write(docx_path, []).expect("test DOCX should be writable");
+        let filter = EpubFilter {
+            title: Some("magic".to_string()),
+            author: None,
+        };
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&temp_dir),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &filter,
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 2);
+        let scan_counts: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::Scanning { discovered, .. } => Some(*discovered),
+                _ => None,
+            })
+            .collect();
+        let filter_counts: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::FilteringEpubs { checked, .. } => Some(*checked),
+                _ => None,
+            })
+            .collect();
+        let dedup_counts: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::DeduplicatingEpubs { checked, .. } => Some(*checked),
+                _ => None,
+            })
+            .collect();
+        let scan_statuses: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::Scanning { status, .. } => Some(*status),
+                _ => None,
+            })
+            .collect();
+        let filter_statuses: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::FilteringEpubs { status, .. } => Some(*status),
+                _ => None,
+            })
+            .collect();
+        let dedup_statuses: Vec<_> = observer
+            .progress
+            .iter()
+            .filter_map(|progress| match progress {
+                DocumentSelectionProgress::DeduplicatingEpubs { status, .. } => Some(*status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(scan_counts, vec![0, 1, 2, 2]);
+        assert_eq!(filter_counts, vec![0, 1, 1]);
+        assert_eq!(dedup_counts, vec![0, 1, 1]);
+        assert_eq!(
+            scan_statuses,
+            vec![
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Finished,
+            ]
+        );
+        assert_eq!(
+            filter_statuses,
+            vec![
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Finished,
+            ]
+        );
+        assert_eq!(
+            dedup_statuses,
+            vec![
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Running,
+                DocumentSelectionPhaseStatus::Finished,
+            ]
+        );
+
+        let first_filter = observer
+            .progress
+            .iter()
+            .position(|progress| {
+                matches!(progress, DocumentSelectionProgress::FilteringEpubs { .. })
+            })
+            .expect("filter progress should be reported");
+        let last_scan = observer
+            .progress
+            .iter()
+            .rposition(|progress| matches!(progress, DocumentSelectionProgress::Scanning { .. }))
+            .expect("scan progress should be reported");
+        let first_dedup = observer
+            .progress
+            .iter()
+            .position(|progress| {
+                matches!(
+                    progress,
+                    DocumentSelectionProgress::DeduplicatingEpubs { .. }
+                )
+            })
+            .expect("deduplication progress should be reported");
+        let last_filter = observer
+            .progress
+            .iter()
+            .rposition(|progress| {
+                matches!(progress, DocumentSelectionProgress::FilteringEpubs { .. })
+            })
+            .expect("filter progress should be reported");
+        assert!(last_scan < first_filter);
+        assert!(last_filter < first_dedup);
+        assert!(observer.diagnostics.is_empty());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
+        let missing = temp_test_dir("missing-input").join("missing.docx");
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&missing),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert!(selected.is_empty());
+        assert_eq!(
+            observer.diagnostics,
+            vec![DocumentSelectionDiagnostic::MissingInput { path: missing }]
+        );
+    }
+
+    #[test]
+    fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication() {
+        let temp_dir = temp_test_dir("filter-metadata-failure");
+        let epub_path = temp_dir.join("invalid.epub");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::write(&epub_path, b"not an epub").expect("invalid EPUB should be writable");
+        let filter = EpubFilter {
+            title: Some("needle".to_string()),
+            author: None,
+        };
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&epub_path),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &filter,
+            },
+            &mut observer,
+        );
+
+        assert!(selected.is_empty());
+        assert!(matches!(
+            observer.diagnostics.as_slice(),
+            [DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                path,
+                purpose: EpubMetadataPurpose::Filtering,
+                detail,
+            }] if path == &epub_path && !detail.is_empty()
+        ));
+        assert!(observer.progress.iter().any(|progress| matches!(
+            progress,
+            DocumentSelectionProgress::FilteringEpubs {
+                checked: 1,
+                total: 1,
+                matching: 0,
+                status: DocumentSelectionPhaseStatus::Finished,
+                ..
+            }
+        )));
+        assert!(!observer.progress.iter().any(|progress| matches!(
+            progress,
+            DocumentSelectionProgress::DeduplicatingEpubs { .. }
+        )));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
@@ -580,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn collect_document_files_respects_recursive_flag() {
+    fn select_documents_respects_recursive_scanning_through_its_public_interface() {
         let temp_dir = temp_test_dir("collect-recursive");
         let nested = temp_dir.join("nested");
         fs::create_dir_all(&nested).expect("nested test directory should be creatable");
@@ -588,41 +1018,73 @@ mod tests {
         fs::write(nested.join("nested.epub"), []).expect("nested epub should be writable");
         fs::write(temp_dir.join("ignored.txt"), []).expect("ignored file should be writable");
 
-        let mut observer = CollectingObserver::default();
-        let non_recursive =
-            collect_document_files(std::slice::from_ref(&temp_dir), false, &mut observer);
+        let mut observer = RecordingDocumentSelectionObserver::default();
+        let non_recursive = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&temp_dir),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
         assert_eq!(non_recursive.len(), 1);
 
-        let mut observer = CollectingObserver::default();
-        let recursive =
-            collect_document_files(std::slice::from_ref(&temp_dir), true, &mut observer);
-        assert_eq!(recursive.len(), 2);
-        assert!(
-            observer
-                .events
-                .iter()
-                .any(|event| { matches!(event, RunEvent::ScanStarted { use_spinner: true }) })
+        let mut observer = RecordingDocumentSelectionObserver::default();
+        let recursive = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&temp_dir),
+                recursive: true,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
         );
+        assert_eq!(recursive.len(), 2);
+        assert!(observer.progress.iter().any(|progress| matches!(
+            progress,
+            DocumentSelectionProgress::Scanning {
+                scope: DocumentSelectionScanScope::RecursiveDirectories,
+                ..
+            }
+        )));
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
-    fn filter_epub_files_passes_non_epubs_through_without_filter_events() {
-        let files = vec![
-            candidate("doc.docx", DocumentType::Docx),
-            candidate("notes.txt", DocumentType::Docx),
-        ];
+    fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
+        let temp_dir = temp_test_dir("skip-empty-filter");
+        let docx = temp_dir.join("doc.docx");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::write(&docx, []).expect("test DOCX should be writable");
         let filter = EpubFilter {
             title: Some("needle".to_string()),
             author: None,
         };
-        let mut observer = CollectingObserver::default();
+        let mut observer = RecordingDocumentSelectionObserver::default();
 
-        let result = filter_epub_files(files.clone(), &filter, &mut observer);
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&docx),
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &filter,
+            },
+            &mut observer,
+        );
 
-        assert_eq!(result, files);
-        assert!(observer.events.is_empty());
+        assert_eq!(selected.len(), 1);
+        assert!(!observer.progress.iter().any(|progress| matches!(
+            progress,
+            DocumentSelectionProgress::FilteringEpubs { .. }
+                | DocumentSelectionProgress::DeduplicatingEpubs { .. }
+        )));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
@@ -637,26 +1099,45 @@ mod tests {
         fs::write(&first, b"not an epub").expect("first invalid epub should be writable");
         fs::write(&second, b"not an epub").expect("second invalid epub should be writable");
 
-        let mut observer = CollectingObserver::default();
-        let result = deduplicate_by_metadata(
-            vec![
-                DocumentCandidate::new(first.clone(), DocumentType::Epub),
-                DocumentCandidate::new(second, DocumentType::Epub),
-            ],
+        let mut observer = RecordingDocumentSelectionObserver::default();
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &[first.clone(), second],
+                recursive: false,
+                output: None,
+                cover_only: false,
+                epub_filter: &EpubFilter::default(),
+            },
             &mut observer,
         );
 
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].path, first);
-        assert!(observer.events.iter().any(|event| {
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].path(), first);
+        assert!(observer.progress.iter().any(|progress| {
             matches!(
-                event,
-                RunEvent::EpubDedupFinished {
+                progress,
+                DocumentSelectionProgress::DeduplicatingEpubs {
                     duplicates_found: 1,
-                    unique_remaining: 1
+                    unique_remaining: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
                 }
             )
         }));
+        assert_eq!(
+            observer
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| matches!(
+                    diagnostic,
+                    DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                        purpose: EpubMetadataPurpose::Deduplication,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }

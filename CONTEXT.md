@@ -12,6 +12,14 @@ _Avoid_: CLI orchestration, processing loop
 The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement.
 _Avoid_: File collection, scan results, work item builder
 
+**Document selection progress**:
+The live, user-observable status of Document selection while it scans inputs, filters EPUBs, and removes duplicates. It excludes per-document extraction status and terminal presentation details.
+_Avoid_: Run events, selection UI events, progress callbacks
+
+**Document selection diagnostic**:
+A non-fatal fact explaining why Document selection skipped an input or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
+_Avoid_: Warning string, selection error, progress message
+
 **Extraction run intake**:
 The project policy for turning parsed user options into one ready-to-run extraction request, including input fallback, image format selection, GIF-only behavior, conversion defaults, EPUB filters, and summary facts needed after the run completes.
 _Avoid_: Argument normalization, options builder
