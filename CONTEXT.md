@@ -28,6 +28,10 @@ _Avoid_: Argument normalization, options builder
 The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, counts, and special GIF routing.
 _Avoid_: Save helper, output utility
 
+**Image file emission**:
+The per-image responsibility within the Image write pipeline for claiming a collision-free output name and completing one file without overwriting existing output. It excludes Archive image discovery, conversion, and extraction counts.
+_Avoid_: Atomic image emission, output writer
+
 **Image write policy**:
 The valid per-run choices that govern how the Image write pipeline accepts and emits images, including requested Image formats, an optional Conversion policy, and GIF destination.
 _Avoid_: Extraction config, writer options

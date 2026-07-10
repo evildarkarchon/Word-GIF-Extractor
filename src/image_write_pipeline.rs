@@ -1,17 +1,17 @@
 //! Image write pipeline for turning buffered archive resources into image files.
 
 mod discovery;
+mod emission;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashSet;
-use std::fs;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
 
 use self::discovery::{discover_normal_images, discover_required_cover};
+use self::emission::ImageFileEmission;
 
 /// Buffered raw facts for one named archive resource.
 #[derive(Debug)]
@@ -273,17 +273,11 @@ fn write_discovered_images(
         return Ok(ImageWriteResult::default());
     }
 
-    if purpose == ImageWritePurposeKind::NormalImages {
-        // Normal extraction always writes something for each accepted image,
-        // even when conversion falls back to the original bytes.
-        fs::create_dir_all(output_base_dir).context("Failed to create output directory")?;
-    }
-
     let total_images = images.len();
+    let mut emission = ImageFileEmission::new(base_name, total_images);
     let mut result = ImageWriteResult::default();
-    let mut gif_dir_created = false;
 
-    for (seq_index, image) in images.into_iter().enumerate() {
+    for image in images {
         let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
 
         let Some(prepared) =
@@ -294,26 +288,12 @@ fn write_discovered_images(
 
         let effective_output_dir =
             if let (true, Some(gif_dir)) = (is_routed_gif, policy.gif_output.as_deref()) {
-                if !gif_dir_created {
-                    fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
-                    gif_dir_created = true;
-                }
                 gif_dir
             } else {
                 output_base_dir
             };
 
-        fs::create_dir_all(effective_output_dir).context("Failed to create output directory")?;
-
-        let output_path = unique_output_path(
-            effective_output_dir,
-            base_name,
-            seq_index,
-            total_images,
-            prepared.format.extension(),
-        )?;
-
-        write_image_file(&output_path, &prepared.data)?;
+        emission.emit(effective_output_dir, prepared.format, &prepared.data)?;
 
         result.counts.extracted += 1;
         if is_routed_gif {
@@ -415,74 +395,6 @@ fn prepare_image_for_write(
     }
 }
 
-/// Builds a collision-free output path using the existing numbering policy.
-fn unique_output_path(
-    output_base_dir: &Path,
-    base_name: &str,
-    seq_index: usize,
-    total_images: usize,
-    extension: &str,
-) -> Result<PathBuf> {
-    let output_filename = if total_images > 1 {
-        format!("{}_{}.{}", base_name, seq_index + 1, extension)
-    } else {
-        format!("{}.{}", base_name, extension)
-    };
-
-    let mut output_path = output_base_dir.join(output_filename);
-
-    // Bound collision attempts so a hostile or unusual filesystem cannot loop forever.
-    if output_path.exists() {
-        let base_stem = output_path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let base_ext = output_path
-            .extension()
-            .map(|extension| extension.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let mut counter = 0u32;
-        const MAX_ATTEMPTS: u32 = 1000;
-
-        while output_path.exists() {
-            counter += 1;
-            if counter > MAX_ATTEMPTS {
-                anyhow::bail!(
-                    "Could not find unique filename after {} attempts for {}",
-                    MAX_ATTEMPTS,
-                    base_stem
-                );
-            }
-            let new_filename = if base_ext.is_empty() {
-                format!("{}_{}", base_stem, counter)
-            } else {
-                format!("{}_{}.{}", base_stem, counter, base_ext)
-            };
-            output_path.set_file_name(new_filename);
-        }
-    }
-
-    Ok(output_path)
-}
-
-/// Writes and flushes one image file with path-specific error context.
-fn write_image_file(output_path: &Path, data: &[u8]) -> Result<()> {
-    let outfile = fs::File::create(output_path)
-        .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
-    let mut outfile = io::BufWriter::new(outfile);
-
-    outfile
-        .write_all(data)
-        .with_context(|| format!("Failed to write image data to {}", output_path.display()))?;
-
-    outfile
-        .flush()
-        .with_context(|| format!("Failed to flush data to {}", output_path.display()))?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,6 +439,110 @@ mod tests {
         assert_eq!(result.counts.extracted, 1);
         assert!(result.warnings.is_empty());
         assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn concurrent_image_emissions_preserve_every_payload() {
+        const WRITER_COUNT: usize = 32;
+
+        let temp_dir = temp_test_dir("concurrent-emissions");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITER_COUNT));
+        let mut expected_payloads = Vec::new();
+        let mut writers = Vec::new();
+
+        for writer_index in 0..WRITER_COUNT {
+            let mut payload = MINIMAL_PNG.to_vec();
+            payload.push(writer_index as u8);
+            expected_payloads.push(payload.clone());
+
+            let output_dir = temp_dir.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+                    HashSet::from([ImageFormat::Png]),
+                    None,
+                    None,
+                ));
+
+                barrier.wait();
+                pipeline
+                    .write(ImageWriteRequest::normal_images(
+                        &output_dir,
+                        "shared",
+                        vec![ArchiveImageSource::named(payload, "word/media/image.bin")],
+                    ))
+                    .expect("concurrent image emission should succeed");
+            }));
+        }
+
+        for writer in writers {
+            writer.join().expect("concurrent writer should not panic");
+        }
+
+        let emitted_files: Vec<(String, Vec<u8>)> = fs::read_dir(&temp_dir)
+            .expect("concurrent output directory should exist")
+            .map(|entry| {
+                let path = entry.expect("output entry should be readable").path();
+                let name = path
+                    .file_name()
+                    .expect("emitted image should have a filename")
+                    .to_string_lossy()
+                    .to_string();
+                let payload = fs::read(path).expect("emitted image should be readable");
+                (name, payload)
+            })
+            .collect();
+        let (mut emitted_names, mut emitted_payloads): (Vec<_>, Vec<_>) =
+            emitted_files.into_iter().unzip();
+        let mut expected_names = vec!["shared.png".to_string()];
+        expected_names.extend((1..WRITER_COUNT).map(|index| format!("shared_{index}.png")));
+
+        expected_names.sort();
+        emitted_names.sort();
+        expected_payloads.sort();
+        emitted_payloads.sort();
+
+        assert_eq!(emitted_names, expected_names);
+        assert_eq!(emitted_payloads, expected_payloads);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
+        let temp_dir = temp_test_dir("existing-output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        fs::write(temp_dir.join("shared.png"), b"existing")
+            .expect("existing output should be writable");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
+
+        let result = pipeline
+            .write(ImageWriteRequest::normal_images(
+                &temp_dir,
+                "shared",
+                vec![ArchiveImageSource::named(
+                    MINIMAL_PNG.to_vec(),
+                    "word/media/image.bin",
+                )],
+            ))
+            .expect("colliding image emission should succeed");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(
+            fs::read(temp_dir.join("shared.png")).expect("existing output should remain readable"),
+            b"existing"
+        );
+        assert_eq!(
+            fs::read(temp_dir.join("shared_1.png"))
+                .expect("collision-suffixed image should be readable"),
+            MINIMAL_PNG
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
