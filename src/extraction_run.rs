@@ -4,11 +4,12 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::common::{DocumentExtractionResult, ExtractionConfig, ExtractionCounts};
+use crate::common::{DocumentExtractionResult, ExtractionCounts};
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter, SelectedDocument};
 use crate::docx;
 use crate::epub;
 use crate::image_format::ImageFormat;
+use crate::image_writer::ImageWritePolicy;
 
 /// Options for one extraction run after CLI arguments have been normalized.
 ///
@@ -31,7 +32,7 @@ pub struct RunOptions {
     /// EPUB metadata filter criteria.
     pub epub_filter: EpubFilter,
     /// Image extraction and conversion behavior.
-    pub extraction: ExtractionConfig,
+    pub image_write: ImageWritePolicy,
 }
 
 /// Aggregated outcome from an extraction run.
@@ -143,7 +144,7 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
             &options.allowed_formats,
             options.cover_only,
             options.cover_fallback,
-            &options.extraction,
+            &options.image_write,
         ) {
             Ok(result) => {
                 for warning in result.warnings {
@@ -189,7 +190,7 @@ fn process_file(
     allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     match selected_document {
         SelectedDocument::Docx { .. } => docx::process_file(
@@ -197,7 +198,7 @@ fn process_file(
             selected_document.output_dir(),
             selected_document.base_name(),
             allowed_formats,
-            config,
+            policy,
         ),
         SelectedDocument::Epub { .. } => epub::process_file(
             selected_document.path(),
@@ -206,7 +207,7 @@ fn process_file(
             allowed_formats,
             cover_only,
             cover_fallback,
-            config,
+            policy,
         ),
     }
 }

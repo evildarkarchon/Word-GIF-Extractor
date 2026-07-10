@@ -2,12 +2,10 @@
 
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::common::{
-    ExtractionConfig, ExtractionCounts, get_unique_output_path, write_image_to_file,
-};
-use crate::convert::{ConversionResult, try_convert};
+use crate::common::{ExtractionCounts, get_unique_output_path, write_image_to_file};
+use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::extraction_warning::ImageWriteWarning;
 use crate::image_format::ImageFormat;
 
@@ -22,6 +20,15 @@ pub struct ImageToWrite {
     pub data: Vec<u8>,
     /// Canonical source image format.
     pub format: ImageFormat,
+}
+
+/// Valid per-run choices interpreted by the Image write pipeline.
+#[derive(Debug, Clone)]
+pub struct ImageWritePolicy {
+    /// Optional validated target encoding for extracted images.
+    pub conversion: Option<ConversionPolicy>,
+    /// Separate output directory for GIF files.
+    pub gif_output: Option<PathBuf>,
 }
 
 /// Controls how conversion failure affects an image write batch.
@@ -59,7 +66,7 @@ pub fn write_images(
     output_base_dir: &Path,
     base_name: &str,
     images: Vec<ImageToWrite>,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
     mode: WriteMode,
 ) -> Result<ImageWriteResult> {
     if images.is_empty() {
@@ -78,16 +85,16 @@ pub fn write_images(
 
     for (seq_index, image) in images.into_iter().enumerate() {
         let is_gif = image.format == ImageFormat::Gif;
-        let is_routed_gif = is_gif && config.gif_output.is_some();
+        let is_routed_gif = is_gif && policy.gif_output.is_some();
 
         let Some(prepared) =
-            prepare_image_for_write(image, base_name, config, mode, &mut result.warnings)?
+            prepare_image_for_write(image, base_name, policy, mode, &mut result.warnings)?
         else {
             continue;
         };
 
         let effective_output_dir =
-            if let (true, Some(gif_dir)) = (is_routed_gif, config.gif_output.as_deref()) {
+            if let (true, Some(gif_dir)) = (is_routed_gif, policy.gif_output.as_deref()) {
                 if !gif_dir_created {
                     fs::create_dir_all(gif_dir).context("Failed to create GIF output directory")?;
                     gif_dir_created = true;
@@ -131,13 +138,13 @@ pub fn write_images(
 fn prepare_image_for_write(
     image: ImageToWrite,
     base_name: &str,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
     mode: WriteMode,
     warnings: &mut Vec<ImageWriteWarning>,
 ) -> Result<Option<PreparedImage>> {
-    let is_routed_gif = image.format == ImageFormat::Gif && config.gif_output.is_some();
+    let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
 
-    if let Some(format) = config.convert {
+    if let Some(conversion) = &policy.conversion {
         if is_routed_gif {
             return Ok(Some(PreparedImage {
                 data: image.data,
@@ -147,20 +154,20 @@ fn prepare_image_for_write(
             }));
         }
 
-        match try_convert(
-            &image.data,
-            image.format,
-            format,
-            config.quality,
-            config.lossless,
-        ) {
-            Ok(ConversionResult::Converted(converted_bytes, format)) => Ok(Some(PreparedImage {
+        match conversion.convert(&image.data, image.format) {
+            Ok(ConversionOutcome::Converted(converted_bytes, format)) => Ok(Some(PreparedImage {
                 data: converted_bytes,
                 format,
                 converted: true,
                 skipped_conversion: false,
             })),
-            Ok(ConversionResult::Skipped(original_format)) => match mode {
+            Ok(ConversionOutcome::PreservedMatchingSource) => Ok(Some(PreparedImage {
+                data: image.data,
+                format: image.format,
+                converted: false,
+                skipped_conversion: false,
+            })),
+            Ok(ConversionOutcome::UnsupportedSource(original_format)) => match mode {
                 WriteMode::BatchImages => {
                     warnings.push(ImageWriteWarning::ConversionSkipped {
                         base_name: base_name.to_string(),
@@ -214,7 +221,7 @@ fn prepare_image_for_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::convert::OutputFormat;
+    use crate::conversion::{ConversionRequest, ConversionTarget};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -232,18 +239,13 @@ mod tests {
     #[test]
     fn batch_images_write_original_when_conversion_is_skipped() {
         let temp_dir = temp_test_dir("batch-skip");
-        let config = ExtractionConfig {
-            convert: Some(OutputFormat::Png),
-            quality: 85,
-            lossless: false,
-            gif_output: None,
-        };
+        let policy = image_write_policy(ConversionTarget::Png, None);
         let images = vec![ImageToWrite {
             data: b"<svg/>".to_vec(),
             format: ImageFormat::Svg,
         }];
 
-        let result = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
+        let result = write_images(&temp_dir, "sample", images, &policy, WriteMode::BatchImages)
             .expect("batch image write should succeed");
 
         assert_eq!(result.counts.extracted, 1);
@@ -264,12 +266,7 @@ mod tests {
     #[test]
     fn required_cover_skips_image_when_conversion_is_skipped() {
         let temp_dir = temp_test_dir("cover-skip");
-        let config = ExtractionConfig {
-            convert: Some(OutputFormat::Png),
-            quality: 85,
-            lossless: false,
-            gif_output: None,
-        };
+        let policy = image_write_policy(ConversionTarget::Png, None);
         let images = vec![ImageToWrite {
             data: b"<svg/>".to_vec(),
             format: ImageFormat::Svg,
@@ -279,7 +276,7 @@ mod tests {
             &temp_dir,
             "cover",
             images,
-            &config,
+            &policy,
             WriteMode::RequiredCover,
         )
         .expect("cover image write should succeed");
@@ -302,12 +299,7 @@ mod tests {
         let temp_dir = temp_test_dir("gif-route");
         let gif_dir = temp_dir.join("gifs");
         let output_dir = temp_dir.join("images");
-        let config = ExtractionConfig {
-            convert: Some(OutputFormat::Png),
-            quality: 85,
-            lossless: false,
-            gif_output: Some(gif_dir.clone()),
-        };
+        let policy = image_write_policy(ConversionTarget::Png, Some(gif_dir.clone()));
         let images = vec![ImageToWrite {
             data: b"not a real gif but routed as-is".to_vec(),
             format: ImageFormat::Gif,
@@ -317,7 +309,7 @@ mod tests {
             &output_dir,
             "sample",
             images,
-            &config,
+            &policy,
             WriteMode::BatchImages,
         )
         .expect("GIF routing should succeed");
@@ -335,18 +327,13 @@ mod tests {
     #[test]
     fn batch_images_records_conversion_failure_warning() {
         let temp_dir = temp_test_dir("batch-conversion-failure");
-        let config = ExtractionConfig {
-            convert: Some(OutputFormat::Jpg),
-            quality: 85,
-            lossless: false,
-            gif_output: None,
-        };
+        let policy = image_write_policy(ConversionTarget::Jpg, None);
         let images = vec![ImageToWrite {
             data: b"\x89PNG\r\n\x1A\nnot a valid png".to_vec(),
             format: ImageFormat::Png,
         }];
 
-        let result = write_images(&temp_dir, "sample", images, &config, WriteMode::BatchImages)
+        let result = write_images(&temp_dir, "sample", images, &policy, WriteMode::BatchImages)
             .expect("batch image write should preserve original bytes after conversion failure");
 
         assert_eq!(result.counts.extracted, 1);
@@ -361,5 +348,44 @@ mod tests {
         assert!(temp_dir.join("sample.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn matching_source_preserves_bytes_without_conversion_count() {
+        let temp_dir = temp_test_dir("matching-source");
+        let original = b"accepted through extension fallback".to_vec();
+        let images = vec![ImageToWrite {
+            data: original.clone(),
+            format: ImageFormat::Png,
+        }];
+        let policy = image_write_policy(ConversionTarget::Png, None);
+
+        let result = write_images(&temp_dir, "sample", images, &policy, WriteMode::BatchImages)
+            .expect("matching PNG should be written as-is");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Builds an Image write policy with a default Conversion policy for tests.
+    fn image_write_policy(
+        target: ConversionTarget,
+        gif_output: Option<PathBuf>,
+    ) -> ImageWritePolicy {
+        ImageWritePolicy {
+            conversion: Some(
+                ConversionPolicy::try_from(ConversionRequest {
+                    target,
+                    quality: None,
+                    lossless: false,
+                })
+                .expect("test conversion request should be valid"),
+            ),
+            gif_output,
+        }
     }
 }

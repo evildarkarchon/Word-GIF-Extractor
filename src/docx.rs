@@ -8,10 +8,10 @@ use std::path::Path;
 use zip::ZipArchive;
 
 use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
-use crate::common::{DocumentExtractionResult, ExtractionConfig};
+use crate::common::DocumentExtractionResult;
 use crate::extraction_warning::combine_document_warnings;
 use crate::image_format::ImageFormat;
-use crate::image_writer::{WriteMode, write_images};
+use crate::image_writer::{ImageWritePolicy, WriteMode, write_images};
 
 /// Processes a single .docx file, extracting images matching the allowed extensions.
 /// Uses the selected document base name for output files.
@@ -23,7 +23,7 @@ pub fn process_file(
     output_base_dir: &Path,
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     let file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
@@ -48,7 +48,7 @@ pub fn process_file(
         output_base_dir,
         base_name,
         discovered.images,
-        config,
+        policy,
         WriteMode::BatchImages,
     )?;
 
@@ -103,10 +103,8 @@ mod tests {
             &output_dir,
             "sample",
             &HashSet::from([ImageFormat::Png]),
-            &ExtractionConfig {
-                convert: None,
-                quality: 85,
-                lossless: false,
+            &ImageWritePolicy {
+                conversion: None,
                 gif_output: None,
             },
         )

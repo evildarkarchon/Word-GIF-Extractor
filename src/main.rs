@@ -5,7 +5,7 @@
 
 mod archive_image_discovery;
 mod common;
-mod convert;
+mod conversion;
 mod document_selection;
 mod docx;
 mod epub;
@@ -16,13 +16,35 @@ mod image_format;
 mod image_writer;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
 
-use crate::convert::OutputFormat;
+use crate::conversion::{ConversionPolicyError, ConversionTarget};
 use crate::extraction_run::{RunEvent, RunObserver, RunReport};
-use crate::extraction_run_intake::PreparedExtractionRun;
+use crate::extraction_run_intake::{ExtractionRunIntakeError, PreparedExtractionRun};
+
+/// Conversion target spelling accepted by the CLI adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ConversionTargetArg {
+    /// JPEG output.
+    Jpg,
+    /// PNG output.
+    Png,
+    /// WebP output.
+    Webp,
+}
+
+impl From<ConversionTargetArg> for ConversionTarget {
+    /// Maps CLI target spelling to the Clap-independent conversion target.
+    fn from(target: ConversionTargetArg) -> Self {
+        match target {
+            ConversionTargetArg::Jpg => ConversionTarget::Jpg,
+            ConversionTargetArg::Png => ConversionTarget::Png,
+            ConversionTargetArg::Webp => ConversionTarget::Webp,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
@@ -64,7 +86,7 @@ struct Args {
 
     /// Convert extracted images to specified format (jpg, png, webp)
     #[arg(short = 'C', long, conflicts_with = "gif_only")]
-    convert: Option<OutputFormat>,
+    convert: Option<ConversionTargetArg>,
 
     /// JPEG/WebP encoding quality override (1-100, default: 85)
     #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
@@ -98,23 +120,25 @@ fn create_spinner_style() -> ProgressStyle {
         .expect("Invalid spinner template")
 }
 
-/// Validates argument combinations that clap cannot check declaratively.
-///
-/// Clap's `requires` and `conflicts_with` attributes operate on argument
-/// presence/absence only. These checks validate against another argument's
-/// *value*:
-/// - `--quality` with `--convert png` (PNG is lossless, quality is meaningless)
-/// - `--lossless` with `--convert jpg` or `--convert png` (lossless only applies to WebP)
-fn validate_args(args: &Args) -> Result<()> {
-    if let Some(format) = &args.convert {
-        if args.quality.is_some() && *format == OutputFormat::Png {
-            anyhow::bail!("--quality cannot be used with --convert png (PNG is a lossless format)");
-        }
-        if args.lossless && *format != OutputFormat::Webp {
-            anyhow::bail!("--lossless can only be used with --convert webp");
-        }
+/// Renders typed Extraction run intake failures using CLI-specific wording.
+fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
+    match error {
+        ExtractionRunIntakeError::CurrentDirectory(error) => error.into(),
+        ExtractionRunIntakeError::ConversionPolicy(error) => match error {
+            ConversionPolicyError::QualityOutOfRange { quality } => {
+                anyhow::anyhow!("--quality must be between 1 and 100 (got {quality})")
+            }
+            ConversionPolicyError::QualityUnsupportedForPng => anyhow::anyhow!(
+                "--quality cannot be used with --convert png (PNG is a lossless format)"
+            ),
+            ConversionPolicyError::LosslessUnsupportedForTarget { .. } => {
+                anyhow::anyhow!("--lossless can only be used with --convert webp")
+            }
+            ConversionPolicyError::LosslessConflictsWithQuality => {
+                anyhow::anyhow!("--lossless cannot be used with --quality")
+            }
+        },
     }
-    Ok(())
 }
 
 /// Adapts extraction-run events to terminal progress bars.
@@ -338,7 +362,6 @@ fn final_summary_message(
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    validate_args(&args)?;
 
     let PreparedExtractionRun {
         options,
@@ -346,7 +369,7 @@ fn main() -> Result<()> {
         gif_output,
         defaulted_input,
         ignored_formats,
-    } = extraction_run_intake::prepare(args)?;
+    } = extraction_run_intake::prepare(args).map_err(render_intake_error)?;
 
     if let Some(cwd) = defaulted_input {
         println!(
@@ -384,17 +407,17 @@ mod tests {
     #[test]
     fn test_convert_flag_parses_all_formats() {
         let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
-        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+        assert_eq!(args.convert, Some(ConversionTargetArg::Jpg));
         let args = Args::try_parse_from(["test", "--convert", "png"]).unwrap();
-        assert_eq!(args.convert, Some(OutputFormat::Png));
+        assert_eq!(args.convert, Some(ConversionTargetArg::Png));
         let args = Args::try_parse_from(["test", "--convert", "webp"]).unwrap();
-        assert_eq!(args.convert, Some(OutputFormat::Webp));
+        assert_eq!(args.convert, Some(ConversionTargetArg::Webp));
     }
 
     #[test]
     fn test_convert_short_flag() {
         let args = Args::try_parse_from(["test", "-C", "jpg"]).unwrap();
-        assert_eq!(args.convert, Some(OutputFormat::Jpg));
+        assert_eq!(args.convert, Some(ConversionTargetArg::Jpg));
     }
 
     #[test]
@@ -427,9 +450,11 @@ mod tests {
     #[test]
     fn test_quality_with_png_error() {
         let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
-        let result = validate_args(&args);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = extraction_run_intake::prepare(args)
+            .err()
+            .map(render_intake_error)
+            .expect("PNG quality should fail semantic intake")
+            .to_string();
         assert!(
             err_msg.contains("--quality cannot be used with --convert png"),
             "Error was: {}",
@@ -482,9 +507,11 @@ mod tests {
     #[test]
     fn test_lossless_with_jpg_error() {
         let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
-        let result = validate_args(&args);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = extraction_run_intake::prepare(args)
+            .err()
+            .map(render_intake_error)
+            .expect("JPEG lossless should fail semantic intake")
+            .to_string();
         assert!(
             err_msg.contains("--lossless can only be used with --convert webp"),
             "Error was: {}",
@@ -495,9 +522,11 @@ mod tests {
     #[test]
     fn test_lossless_with_png_error() {
         let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
-        let result = validate_args(&args);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = extraction_run_intake::prepare(args)
+            .err()
+            .map(render_intake_error)
+            .expect("PNG lossless should fail semantic intake")
+            .to_string();
         assert!(
             err_msg.contains("--lossless can only be used with --convert webp"),
             "Error was: {}",
@@ -590,40 +619,54 @@ mod tests {
     }
 
     #[test]
-    fn test_conversion_message_format() {
-        let msg = format!(
-            "Extracted {} {}, converted {}, skipped {} from {} document(s)",
-            10, "image(s)", 7, 1, 3
+    fn conversion_summary_reports_preserved_matching_source_as_unconverted() {
+        let report = RunReport {
+            total_counts: ExtractionCounts {
+                extracted: 1,
+                converted: 0,
+                ..ExtractionCounts::default()
+            },
+            documents_with_output: 1,
+            ..RunReport::default()
+        };
+
+        let message = final_summary_message(&report, true, None);
+
+        assert_eq!(
+            message,
+            "Extracted 1 image(s), converted 0, skipped 0 from 1 document(s)"
         );
-        assert!(msg.contains("converted 7"));
-        assert!(msg.contains("skipped 1"));
-        assert!(msg.contains("Extracted 10 image(s)"));
-        assert!(msg.contains("from 3 document(s)"));
     }
 
     #[test]
-    fn test_combined_conversion_gif_message_format() {
+    fn combined_conversion_and_gif_summary_uses_run_report() {
         let gif_dir = std::path::PathBuf::from("/tmp/gifs");
-        let msg = format!(
-            "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
-            10,
-            "image(s)",
-            5,
-            2,
-            3,
-            gif_dir.display(),
-            4
+        let report = RunReport {
+            total_counts: ExtractionCounts {
+                extracted: 10,
+                converted: 5,
+                skipped: 2,
+                gifs_routed: 3,
+            },
+            documents_with_output: 4,
+            ..RunReport::default()
+        };
+
+        let message = final_summary_message(&report, true, Some(&gif_dir));
+
+        assert_eq!(
+            message,
+            format!(
+                "Extracted 10 image(s), converted 5, skipped 2, routed 3 GIF(s) to {} from 4 document(s)",
+                gif_dir.display()
+            )
         );
-        assert!(msg.contains("converted 5"));
-        assert!(msg.contains("skipped 2"));
-        assert!(msg.contains("routed 3 GIF(s)"));
-        assert!(msg.contains("/tmp/gifs"));
     }
 
     #[test]
     fn test_convert_and_lossless_args_threaded() {
         let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
-        assert_eq!(args.convert, Some(OutputFormat::Webp));
+        assert_eq!(args.convert, Some(ConversionTargetArg::Webp));
         assert!(args.lossless);
     }
 }

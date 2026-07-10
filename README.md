@@ -52,6 +52,12 @@ word-image-extractor book.epub -f png,jpg
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
 
+## Conversion
+
+Use `--convert jpg`, `--convert png`, or `--convert webp` to encode extracted images in a target format. JPEG and lossy WebP default to quality 85; `--quality <1-100>` requests a specific quality, and `--lossless` requests lossless WebP.
+
+When an image already matches the conversion target, its original bytes are preserved unless an encoding setting was explicit. JPEG and WebP are re-encoded when `--quality` is supplied, WebP is re-encoded when `--lossless` is supplied, and matching PNG files are always preserved.
+
 ## Output Naming
 
 ### Word Documents (.docx)

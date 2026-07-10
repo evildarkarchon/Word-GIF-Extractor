@@ -1,16 +1,44 @@
 //! Extraction run intake for turning parsed user options into a ready run.
 
-use anyhow::Result;
 use std::collections::HashSet;
+use std::fmt;
 use std::path::PathBuf;
 
 use crate::Args;
-use crate::common::ExtractionConfig;
+use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionRequest};
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::RunOptions;
 use crate::image_format::ImageFormat;
+use crate::image_writer::ImageWritePolicy;
 
-const DEFAULT_QUALITY: u8 = 85;
+/// Failure while turning parsed user options into a ready Extraction run.
+#[derive(Debug)]
+pub(crate) enum ExtractionRunIntakeError {
+    /// The fallback input directory could not be resolved.
+    CurrentDirectory(std::io::Error),
+    /// The requested conversion facts did not form a valid Conversion policy.
+    ConversionPolicy(ConversionPolicyError),
+}
+
+impl fmt::Display for ExtractionRunIntakeError {
+    /// Formats the underlying intake failure without CLI-specific flag wording.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtractionRunIntakeError::CurrentDirectory(error) => error.fmt(formatter),
+            ExtractionRunIntakeError::ConversionPolicy(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ExtractionRunIntakeError {
+    /// Returns the lower module failure that prevented intake from completing.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ExtractionRunIntakeError::CurrentDirectory(error) => Some(error),
+            ExtractionRunIntakeError::ConversionPolicy(error) => Some(error),
+        }
+    }
+}
 
 /// Prepared extraction run data consumed by the CLI adapter.
 ///
@@ -35,7 +63,7 @@ pub(crate) struct PreparedExtractionRun {
 /// This concentrates input fallback, format selection, GIF-only behavior,
 /// conversion defaults, EPUB filters, and post-run summary facts behind one
 /// intake interface.
-pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun> {
+pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
     let Args {
         inputs,
         named_inputs,
@@ -53,9 +81,21 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun> {
         gif_output,
     } = args;
 
+    let has_convert = convert.is_some();
+    let conversion = convert
+        .map(|target| {
+            ConversionPolicy::try_from(ConversionRequest {
+                target: target.into(),
+                quality,
+                lossless,
+            })
+        })
+        .transpose()
+        .map_err(ExtractionRunIntakeError::ConversionPolicy)?;
+
     let mut all_inputs: Vec<PathBuf> = inputs.into_iter().chain(named_inputs).collect();
     let defaulted_input = if all_inputs.is_empty() {
-        let cwd = std::env::current_dir()?;
+        let cwd = std::env::current_dir().map_err(ExtractionRunIntakeError::CurrentDirectory)?;
         all_inputs.push(cwd.clone());
         Some(cwd)
     } else {
@@ -63,8 +103,6 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun> {
     };
 
     let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
-    let quality = quality.unwrap_or(DEFAULT_QUALITY);
-    let has_convert = convert.is_some();
     let gif_output_for_summary = gif_output.clone();
 
     let options = RunOptions {
@@ -75,10 +113,8 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun> {
         cover_only,
         cover_fallback,
         epub_filter: EpubFilter { title, author },
-        extraction: ExtractionConfig {
-            convert,
-            quality,
-            lossless,
+        image_write: ImageWritePolicy {
+            conversion,
             gif_output,
         },
     };
@@ -185,10 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_conversion_quality_to_85() {
+    fn builds_default_conversion_policy() {
         let prepared = prepare_from(["test", "book.epub", "--convert", "jpg"]);
 
-        assert_eq!(prepared.options.extraction.quality, DEFAULT_QUALITY);
+        assert!(prepared.options.image_write.conversion.is_some());
     }
 
     #[test]
@@ -205,11 +241,30 @@ mod tests {
         ]);
 
         assert!(prepared.has_convert);
-        assert_eq!(prepared.options.extraction.quality, 90);
+        assert!(prepared.options.image_write.conversion.is_some());
         assert_eq!(prepared.gif_output, Some(PathBuf::from("gifs")));
         assert_eq!(
-            prepared.options.extraction.gif_output,
+            prepared.options.image_write.gif_output,
             Some(PathBuf::from("gifs"))
         );
+    }
+
+    #[test]
+    fn returns_typed_conversion_policy_error() {
+        let args =
+            Args::try_parse_from(["test", "book.epub", "--convert", "png", "--quality", "90"])
+                .expect("CLI syntax should parse before semantic validation");
+
+        let error = match prepare(args) {
+            Ok(_) => panic!("PNG quality should be rejected by intake"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            ExtractionRunIntakeError::ConversionPolicy(
+                ConversionPolicyError::QualityUnsupportedForPng
+            )
+        ));
     }
 }

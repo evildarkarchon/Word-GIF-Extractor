@@ -6,10 +6,10 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::archive_image_discovery::{ArchiveImageSource, discover_images};
-use crate::common::{DocumentExtractionResult, ExtractionConfig};
+use crate::common::DocumentExtractionResult;
 use crate::extraction_warning::combine_document_warnings;
 use crate::image_format::ImageFormat;
-use crate::image_writer::{WriteMode, write_images};
+use crate::image_writer::{ImageWritePolicy, WriteMode, write_images};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -44,7 +44,7 @@ pub fn process_file(
     allowed_formats: &HashSet<ImageFormat>,
     cover_only: bool,
     cover_fallback: bool,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     let mut doc =
         EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
@@ -56,7 +56,7 @@ pub fn process_file(
             base_name,
             allowed_formats,
             cover_fallback,
-            config,
+            policy,
         );
     }
 
@@ -65,7 +65,7 @@ pub fn process_file(
         output_base_dir,
         base_name,
         allowed_formats,
-        config,
+        policy,
     )
 }
 
@@ -75,7 +75,7 @@ fn extract_all_images(
     output_base_dir: &Path,
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     // Clone the resource keys and extract info to avoid borrow issues
     // Send every manifest resource through Archive image discovery so byte-first
@@ -108,7 +108,7 @@ fn extract_all_images(
         output_base_dir,
         base_name,
         discovered.images,
-        config,
+        policy,
         WriteMode::BatchImages,
     )?;
 
@@ -157,7 +157,7 @@ fn extract_cover_only(
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
     cover_fallback: bool,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     // Try to get the cover image using the epub crate's get_cover method
     let cover = doc.get_cover();
@@ -169,7 +169,7 @@ fn extract_cover_only(
             output_base_dir,
             base_name,
             allowed_formats,
-            config,
+            policy,
         ),
         None => {
             // Try fallback: look for a file named "cover" with JPEG extension
@@ -180,11 +180,11 @@ fn extract_cover_only(
                     output_base_dir,
                     base_name,
                     allowed_formats,
-                    config,
+                    policy,
                 )
             } else if cover_fallback {
                 // No cover found via metadata or filename, fall back to extracting all images
-                extract_all_images(doc, output_base_dir, base_name, allowed_formats, config)
+                extract_all_images(doc, output_base_dir, base_name, allowed_formats, policy)
             } else {
                 // No cover image found
                 Ok(DocumentExtractionResult::default())
@@ -200,7 +200,7 @@ fn write_cover_image(
     output_base_dir: &Path,
     base_name: &str,
     allowed_formats: &HashSet<ImageFormat>,
-    config: &ExtractionConfig,
+    policy: &ImageWritePolicy,
 ) -> Result<DocumentExtractionResult> {
     let discovered = discover_images(
         vec![ArchiveImageSource::required_cover(data, mime.to_string())],
@@ -211,7 +211,7 @@ fn write_cover_image(
         output_base_dir,
         base_name,
         discovered.images,
-        config,
+        policy,
         WriteMode::RequiredCover,
     )?;
 
@@ -334,10 +334,8 @@ mod tests {
         );
 
         let allowed_formats = HashSet::from([ImageFormat::Png]);
-        let config = ExtractionConfig {
-            convert: None,
-            quality: 85,
-            lossless: false,
+        let policy = ImageWritePolicy {
+            conversion: None,
             gif_output: None,
         };
 
@@ -348,7 +346,7 @@ mod tests {
             &allowed_formats,
             false,
             false,
-            &config,
+            &policy,
         )
         .expect("EPUB extraction should succeed");
 
@@ -375,10 +373,8 @@ mod tests {
         );
 
         let allowed_formats = HashSet::from([ImageFormat::Png]);
-        let config = ExtractionConfig {
-            convert: None,
-            quality: 85,
-            lossless: false,
+        let policy = ImageWritePolicy {
+            conversion: None,
             gif_output: None,
         };
 
@@ -389,7 +385,7 @@ mod tests {
             &allowed_formats,
             false,
             false,
-            &config,
+            &policy,
         )
         .expect("EPUB extraction should succeed");
 
