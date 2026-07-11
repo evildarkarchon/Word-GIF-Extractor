@@ -16,6 +16,18 @@ _Avoid_: Per-document execution, document processor
 The terminal result of Document extraction: either completed or failed with a document-local error, while retaining any image-write facts produced before completion or failure. A failed outcome does not end the Extraction run or imply that no files were emitted.
 _Avoid_: Per-file result, extraction return value
 
+**Document extraction facts**:
+The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings.
+_Avoid_: Image write result, extraction summary, raw counters
+
+**Document extraction warning**:
+A non-fatal, user-observable fact produced by Document extraction, exposed with stable wording while its Image write pipeline classification remains internal.
+_Avoid_: Image write warning, warning string
+
+**Document extraction error**:
+The document-local failure attached to a failed Document extraction outcome. It preserves its underlying cause without exposing document-adapter or Image write pipeline error types across the Document extraction seam.
+_Avoid_: Image write failure, raw anyhow error
+
 **Document extraction policy**:
 The valid per-run choices governing normal document images versus EPUB cover extraction and optional cover fallback. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
 _Avoid_: Cover flags, extraction booleans

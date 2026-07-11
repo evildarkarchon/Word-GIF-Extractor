@@ -360,15 +360,15 @@ fn final_summary_message(
     has_convert: bool,
     gif_output: Option<&Path>,
 ) -> String {
-    if report.total_counts.extracted > 0 {
+    if report.get_emitted_images() > 0 {
         // EPUB fallback and DOCX output are normal images even during a cover-only run.
         // Label output as covers only when every emitted file used required-cover purpose.
-        let item_name = if report.cover_only && !report.has_normal_image_output {
+        let item_name = if report.is_cover_only() && !report.is_normal_image_output_present() {
             "cover(s)"
         } else {
             "image(s)"
         };
-        let has_gif_routing = report.total_counts.gifs_routed > 0;
+        let has_gif_routing = report.get_gifs_routed() > 0;
 
         match (has_convert, has_gif_routing) {
             (true, true) => {
@@ -376,24 +376,24 @@ fn final_summary_message(
                 let gif_dir = gif_output.unwrap();
                 format!(
                     "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
-                    report.total_counts.extracted,
+                    report.get_emitted_images(),
                     item_name,
-                    report.total_counts.converted,
-                    report.total_counts.skipped,
-                    report.total_counts.gifs_routed,
+                    report.get_converted_images(),
+                    report.get_skipped_conversions(),
+                    report.get_gifs_routed(),
                     gif_dir.display(),
-                    report.documents_with_output
+                    report.get_documents_with_output()
                 )
             }
             (true, false) => {
                 // D-01: Conversion stats only
                 format!(
                     "Extracted {} {}, converted {}, skipped {} from {} document(s)",
-                    report.total_counts.extracted,
+                    report.get_emitted_images(),
                     item_name,
-                    report.total_counts.converted,
-                    report.total_counts.skipped,
-                    report.documents_with_output
+                    report.get_converted_images(),
+                    report.get_skipped_conversions(),
+                    report.get_documents_with_output()
                 )
             }
             (false, true) => {
@@ -401,22 +401,24 @@ fn final_summary_message(
                 let gif_dir = gif_output.unwrap();
                 format!(
                     "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
-                    report.total_counts.extracted,
+                    report.get_emitted_images(),
                     item_name,
-                    report.total_counts.gifs_routed,
+                    report.get_gifs_routed(),
                     gif_dir.display(),
-                    report.documents_with_output
+                    report.get_documents_with_output()
                 )
             }
             (false, false) => {
                 // Existing default message -- unchanged
                 format!(
                     "Extracted {} {} from {} document(s)",
-                    report.total_counts.extracted, item_name, report.documents_with_output
+                    report.get_emitted_images(),
+                    item_name,
+                    report.get_documents_with_output()
                 )
             }
         }
-    } else if report.cover_only && !report.has_normal_image_output {
+    } else if report.is_cover_only() && !report.is_normal_image_output_present() {
         "No cover images found".to_string()
     } else {
         "No images found".to_string()
@@ -448,7 +450,7 @@ fn main() -> Result<()> {
     let mut observer = IndicatifRunObserver::new();
     let report = extraction_run::run(options, &mut observer)?;
 
-    if report.documents_to_process == 0 {
+    if report.get_documents_to_process() == 0 {
         println!("No documents found to process.");
         return Ok(());
     }
@@ -465,7 +467,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image_write_pipeline::ImageWriteCounts;
+    use crate::extraction_run::RunReportFixture;
 
     #[test]
     fn test_convert_flag_parses_all_formats() {
@@ -634,24 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_counts_split_message_logic() {
-        let counts = ImageWriteCounts {
-            extracted: 5,
-            gifs_routed: 2,
-            converted: 0,
-            skipped: 0,
-        };
-        assert!(counts.gifs_routed > 0);
-        let counts = ImageWriteCounts {
-            extracted: 3,
-            gifs_routed: 0,
-            converted: 0,
-            skipped: 0,
-        };
-        assert!(counts.gifs_routed == 0);
-    }
-
-    #[test]
     fn test_gif_only_and_gif_output_both_set() {
         let args =
             Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();
@@ -674,35 +658,12 @@ mod tests {
     }
 
     #[test]
-    fn test_extraction_counts_conversion_fields() {
-        let mut total = ImageWriteCounts::default();
-        let counts = ImageWriteCounts {
-            extracted: 10,
-            gifs_routed: 2,
-            converted: 7,
-            skipped: 1,
-        };
-        total.extracted += counts.extracted;
-        total.gifs_routed += counts.gifs_routed;
-        total.converted += counts.converted;
-        total.skipped += counts.skipped;
-        assert_eq!(total.extracted, 10);
-        assert_eq!(total.gifs_routed, 2);
-        assert_eq!(total.converted, 7);
-        assert_eq!(total.skipped, 1);
-    }
-
-    #[test]
     fn conversion_summary_reports_preserved_matching_source_as_unconverted() {
-        let report = RunReport {
-            total_counts: ImageWriteCounts {
-                extracted: 1,
-                converted: 0,
-                ..ImageWriteCounts::default()
-            },
+        let report = RunReport::from_fixture(RunReportFixture {
+            emitted_images: 1,
             documents_with_output: 1,
-            ..RunReport::default()
-        };
+            ..RunReportFixture::default()
+        });
 
         let message = final_summary_message(&report, true, None);
 
@@ -715,16 +676,14 @@ mod tests {
     #[test]
     fn combined_conversion_and_gif_summary_uses_run_report() {
         let gif_dir = std::path::PathBuf::from("/tmp/gifs");
-        let report = RunReport {
-            total_counts: ImageWriteCounts {
-                extracted: 10,
-                converted: 5,
-                skipped: 2,
-                gifs_routed: 3,
-            },
+        let report = RunReport::from_fixture(RunReportFixture {
+            emitted_images: 10,
+            converted_images: 5,
+            skipped_conversions: 2,
+            gifs_routed: 3,
             documents_with_output: 4,
-            ..RunReport::default()
-        };
+            ..RunReportFixture::default()
+        });
 
         let message = final_summary_message(&report, true, Some(&gif_dir));
 
@@ -739,16 +698,14 @@ mod tests {
 
     #[test]
     fn epub_cover_fallback_summary_reports_normal_images() {
-        let report = RunReport {
-            total_counts: ImageWriteCounts {
-                extracted: 2,
-                ..ImageWriteCounts::default()
-            },
+        let report = RunReport::from_fixture(RunReportFixture {
+            emitted_images: 2,
             documents_with_output: 1,
             has_normal_image_output: true,
             cover_only: true,
             documents_to_process: 1,
-        };
+            ..RunReportFixture::default()
+        });
 
         let message = final_summary_message(&report, false, None);
 

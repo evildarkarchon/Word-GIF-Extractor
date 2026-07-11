@@ -176,8 +176,9 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document_extraction::DocumentExtractionOutcome;
-    use crate::document_extraction::SelectedDocument;
+    use crate::document_extraction::{
+        DocumentExtractionFacts, DocumentExtractionOutcome, SelectedDocument,
+    };
     use clap::Parser;
     use image::DynamicImage;
     use std::fs;
@@ -207,7 +208,7 @@ mod tests {
         prepared: &PreparedExtractionRun,
         output_dir: &Path,
         sources: Vec<(&str, Vec<u8>)>,
-    ) -> crate::image_write_pipeline::ImageWriteResult {
+    ) -> DocumentExtractionFacts {
         fs::create_dir_all(output_dir).expect("temporary output directory should be creatable");
         let input_path = output_dir.join("input.docx");
         let file = fs::File::create(&input_path).expect("test DOCX should be creatable");
@@ -273,7 +274,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(result.counts.extracted, 2);
+        assert_eq!(result.get_emitted_images(), 2);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
         assert!(temp_dir.join("sample_1.png").exists());
         assert!(temp_dir.join("sample_2.jpg").exists());
@@ -293,7 +294,7 @@ mod tests {
             vec![("vector.bin", b"<svg/>".to_vec())],
         );
 
-        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.get_emitted_images(), 1);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
         assert!(temp_dir.join("sample.svg").exists());
 
@@ -314,7 +315,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.get_emitted_images(), 1);
         assert!(temp_dir.join("sample.gif").exists());
         assert!(!temp_dir.join("sample.png").exists());
 
@@ -328,8 +329,8 @@ mod tests {
 
         let result = write_sources(&prepared, &temp_dir, vec![("image.png", valid_png())]);
 
-        assert_eq!(result.counts.extracted, 1);
-        assert_eq!(result.counts.converted, 1);
+        assert_eq!(result.get_emitted_images(), 1);
+        assert_eq!(result.get_converted_images(), 1);
         assert!(temp_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");

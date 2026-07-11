@@ -5,9 +5,10 @@ mod docx;
 #[path = "epub.rs"]
 mod epub;
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult};
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
 
 /// Opaque handoff from Document selection to Document extraction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,25 +151,137 @@ impl DocumentExtraction {
         };
 
         match result {
-            Ok(result) => DocumentExtractionOutcome::Completed(result),
+            Ok(result) => DocumentExtractionOutcome::Completed(
+                DocumentExtractionFacts::from_image_write_result(result),
+            ),
             Err(failure) => DocumentExtractionOutcome::Failed {
-                partial: failure.partial,
-                error: failure.error,
+                facts: DocumentExtractionFacts::from_image_write_result(failure.partial),
+                error: DocumentExtractionError::from_source(failure.error),
             },
         }
     }
 }
 
+/// Opaque facts retained by one completed or failed Document extraction.
+///
+/// The value translates Image write pipeline accounting and warnings at the
+/// Document extraction seam so callers do not depend on inner pipeline types.
+#[derive(Debug)]
+pub(crate) struct DocumentExtractionFacts {
+    emitted_images: usize,
+    gifs_routed: usize,
+    converted_images: usize,
+    skipped_conversions: usize,
+    has_normal_image_output: bool,
+    warnings: Vec<DocumentExtractionWarning>,
+}
+
+impl DocumentExtractionFacts {
+    /// Translates inner Image write facts at the Document extraction seam.
+    fn from_image_write_result(result: ImageWriteResult) -> Self {
+        let has_normal_image_output = result.has_normal_image_output();
+        Self {
+            emitted_images: result.counts.extracted,
+            gifs_routed: result.counts.gifs_routed,
+            converted_images: result.counts.converted,
+            skipped_conversions: result.counts.skipped,
+            has_normal_image_output,
+            warnings: result
+                .warnings
+                .into_iter()
+                .map(DocumentExtractionWarning::from_image_write_warning)
+                .collect(),
+        }
+    }
+
+    /// Returns the number of images successfully emitted before the outcome ended.
+    pub(crate) fn get_emitted_images(&self) -> usize {
+        self.emitted_images
+    }
+
+    /// Returns the number of emitted GIFs routed to the configured destination.
+    pub(crate) fn get_gifs_routed(&self) -> usize {
+        self.gifs_routed
+    }
+
+    /// Returns the number of images successfully converted before emission.
+    pub(crate) fn get_converted_images(&self) -> usize {
+        self.converted_images
+    }
+
+    /// Returns the number of conversion attempts skipped while preserving source bytes.
+    pub(crate) fn get_skipped_conversions(&self) -> usize {
+        self.skipped_conversions
+    }
+
+    /// Returns whether any emitted file came from normal-image extraction.
+    pub(crate) fn is_normal_image_output_present(&self) -> bool {
+        self.has_normal_image_output
+    }
+
+    /// Returns ordered non-fatal warnings produced before the outcome ended.
+    pub(crate) fn get_warnings(&self) -> &[DocumentExtractionWarning] {
+        &self.warnings
+    }
+}
+
+/// Opaque non-fatal warning exposed by Document extraction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentExtractionWarning {
+    message: String,
+}
+
+impl DocumentExtractionWarning {
+    /// Seals an inner warning classification while preserving exact wording.
+    fn from_image_write_warning(warning: ImageWriteWarning) -> Self {
+        Self {
+            message: warning.message(),
+        }
+    }
+
+    /// Returns the stable user-visible wording for this warning fact.
+    pub(crate) fn get_message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Opaque document-local failure exposed by Document extraction.
+#[derive(Debug)]
+pub(crate) struct DocumentExtractionError {
+    source: anyhow::Error,
+}
+
+impl DocumentExtractionError {
+    /// Preserves the contextual source chain while sealing its concrete type.
+    fn from_source(source: anyhow::Error) -> Self {
+        Self { source }
+    }
+}
+
+impl fmt::Display for DocumentExtractionError {
+    /// Formats the preserved document-local error context.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DocumentExtractionError {
+    /// Returns the preserved underlying error chain.
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 /// Terminal result of extracting one selected document.
 pub(crate) enum DocumentExtractionOutcome {
-    /// Extraction completed with its Image write facts.
-    Completed(ImageWriteResult),
-    /// Extraction failed after retaining any Image write facts already produced.
+    /// Extraction completed with its retained document-level facts.
+    Completed(DocumentExtractionFacts),
+    /// Extraction failed after retaining document-level facts already produced.
     Failed {
-        /// Image write facts produced before the document-local failure.
-        partial: ImageWriteResult,
-        /// Contextual document-local error.
-        error: anyhow::Error,
+        /// Document extraction facts produced before the failure.
+        facts: DocumentExtractionFacts,
+        /// Opaque contextual document-local error.
+        error: DocumentExtractionError,
     },
 }
 
@@ -176,7 +289,7 @@ pub(crate) enum DocumentExtractionOutcome {
 mod tests {
     use super::*;
     use crate::image_format::ImageFormat;
-    use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy, ImageWriteWarning};
+    use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
     use std::collections::HashSet;
     use std::fs;
     use std::io::Write;
@@ -282,17 +395,19 @@ mod tests {
 
         let outcome = extraction.extract(&document);
 
-        let DocumentExtractionOutcome::Completed(result) = outcome else {
+        let DocumentExtractionOutcome::Completed(facts) = outcome else {
             panic!("valid DOCX extraction should complete");
         };
-        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(facts.get_emitted_images(), 1);
+        assert!(facts.is_normal_image_output_present());
+        assert!(facts.get_warnings().is_empty());
         assert!(output_dir.join("sample.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
 
     #[test]
-    fn failed_extraction_retains_partial_image_write_facts() {
+    fn failed_extraction_retains_document_extraction_facts() {
         let temp_dir = temp_test_dir("partial-failure");
         fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
         let input_path = temp_dir.join("sample.docx");
@@ -319,19 +434,20 @@ mod tests {
         let document =
             SelectedDocument::docx(input_path, output_dir.clone(), "sample", "sample.docx");
 
-        let DocumentExtractionOutcome::Failed { partial, error } = extraction.extract(&document)
+        let DocumentExtractionOutcome::Failed { facts, error } = extraction.extract(&document)
         else {
             panic!("blocked GIF destination should fail Document extraction");
         };
 
-        assert_eq!(partial.counts.extracted, 1);
-        assert!(partial.has_normal_image_output());
+        assert_eq!(facts.get_emitted_images(), 1);
+        assert!(facts.is_normal_image_output_present());
         assert_eq!(
-            partial.warnings,
-            vec![ImageWriteWarning::ExtensionFallback {
-                source_name: "word/media/first.png".to_string(),
-                format: ImageFormat::Png,
-            }]
+            facts
+                .get_warnings()
+                .iter()
+                .map(DocumentExtractionWarning::get_message)
+                .collect::<Vec<_>>(),
+            vec!["Magic detection failed for word/media/first.png; falling back to .png extension"]
         );
         assert!(
             error
@@ -371,8 +487,8 @@ mod tests {
             panic!("valid EPUB cover extraction should complete");
         };
 
-        assert_eq!(result.counts.extracted, 1);
-        assert!(!result.has_normal_image_output());
+        assert_eq!(result.get_emitted_images(), 1);
+        assert!(!result.is_normal_image_output_present());
         assert!(output_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
@@ -401,8 +517,8 @@ mod tests {
             panic!("EPUB cover fallback should complete");
         };
 
-        assert_eq!(result.counts.extracted, 1);
-        assert!(result.has_normal_image_output());
+        assert_eq!(result.get_emitted_images(), 1);
+        assert!(result.is_normal_image_output_present());
         assert!(output_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
@@ -434,8 +550,8 @@ mod tests {
             panic!("normal EPUB extraction should complete");
         };
 
-        assert_eq!(result.counts.extracted, 1);
-        assert!(result.has_normal_image_output());
+        assert_eq!(result.get_emitted_images(), 1);
+        assert!(result.is_normal_image_output_present());
         assert!(output_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
