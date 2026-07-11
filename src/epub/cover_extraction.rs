@@ -2,22 +2,21 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
-use zip::ZipArchive;
 
 use crate::image_write_pipeline::{
     ArchiveImageSource, ImageWritePipeline, ImageWriteResult, RequiredCoverWriteOutcome,
     RequiredCoverWriteRequest,
 };
 
-use super::{EpubResourceCandidate, append_result, candidate_resource_index, extract_all_images};
+use super::resource_archive::{EpubResource, EpubResourceArchive};
+use super::{append_result, extract_all_images};
 
 /// EPUB facts needed to resolve and write one required cover.
 pub(super) struct EpubCoverRequest<'request> {
-    pub(super) resources: &'request [EpubResourceCandidate],
-    pub(super) metadata_cover: Option<&'request EpubResourceCandidate>,
-    pub(super) filename_cover: Option<&'request EpubResourceCandidate>,
+    pub(super) resources: &'request [EpubResource],
+    pub(super) metadata_cover: Option<&'request EpubResource>,
+    pub(super) filename_cover: Option<&'request EpubResource>,
     pub(super) cover_fallback: bool,
     pub(super) output_dir: &'request Path,
     pub(super) base_name: &'request str,
@@ -30,7 +29,7 @@ pub(super) struct EpubCoverRequest<'request> {
 /// Only a retry disposition advances to another candidate. Image file emission
 /// failures remain fatal and abort the document.
 pub(super) fn extract_required_cover(
-    archive: &mut ZipArchive<fs::File>,
+    archive: &mut EpubResourceArchive,
     request: EpubCoverRequest<'_>,
 ) -> Result<ImageWriteResult> {
     let EpubCoverRequest {
@@ -46,26 +45,21 @@ pub(super) fn extract_required_cover(
     let mut aggregate = ImageWriteResult::default();
 
     for candidate in [metadata_cover, filename_cover].into_iter().flatten() {
-        if !attempted_identities.insert(candidate.archive_identity.clone()) {
+        if !attempted_identities.insert(candidate.identity().clone()) {
             continue;
         }
 
         let outcome = pipeline.write_required_cover(
             RequiredCoverWriteRequest::new(output_dir, base_name),
             |visitor| {
-                let source = ArchiveImageSource::required_cover(
-                    candidate.source_name.clone(),
-                    candidate.mime.clone(),
-                );
-                let index = match candidate_resource_index(candidate) {
-                    Ok(index) => index,
-                    Err(error) => return visitor.unreadable(source, error),
-                };
-
-                match archive.by_index(index) {
-                    Ok(mut entry) => visitor.visit(source, &mut entry),
-                    Err(error) => visitor.unreadable(source, error),
+                let source =
+                    ArchiveImageSource::required_cover(candidate.manifest_path(), candidate.mime());
+                let acquisition = archive
+                    .with_reader(candidate, |reader| visitor.visit(source.clone(), reader))?;
+                if let Err(error) = acquisition {
+                    visitor.unreadable(source, error)?;
                 }
+                Ok(())
             },
         )?;
 

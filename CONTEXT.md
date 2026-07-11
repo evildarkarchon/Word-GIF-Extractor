@@ -48,6 +48,14 @@ _Avoid_: Cover pipeline, cover selection, cover helper
 The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
 
+**Archive resource identity**:
+The stable identity of one archive payload across multiple document references, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. References that cannot be resolved to a payload remain distinct.
+_Avoid_: ZIP index, resource path
+
+**EPUB resource archive**:
+The ordered set of resources declared by an EPUB together with their available archive payloads. It preserves document-facing resource facts while distinguishing references from Archive resource identity.
+_Avoid_: Direct ZIP adapter, resource list
+
 **Image format**:
 The project-normalized identity of image bytes used to decide whether an image is extractable, writable, and convertible, independent of how a document labels it.
 _Avoid_: Raw extension, MIME type, detected kind

@@ -1,14 +1,12 @@
 //! EPUB file processing module
 
 mod cover_extraction;
+mod resource_archive;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use epub::doc::EpubDoc;
-use percent_encoding::percent_decode;
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
-use zip::ZipArchive;
 
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWritePipeline, ImageWriteRequest,
@@ -16,6 +14,9 @@ use crate::image_write_pipeline::{
 };
 
 use self::cover_extraction::{EpubCoverRequest, extract_required_cover};
+use self::resource_archive::{
+    ArchiveResourceIdentity, EpubManifestResource, EpubResource, EpubResourceArchive,
+};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -31,21 +32,6 @@ pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>
     let author = doc.mdata("creator").map(|m| m.value.clone());
 
     Ok((author, title))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum EpubArchiveIdentity {
-    Resolved(usize),
-    Unresolved(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EpubResourceCandidate {
-    id: String,
-    source_name: String,
-    sort_name: String,
-    mime: String,
-    archive_identity: EpubArchiveIdentity,
 }
 
 /// Processes a single .epub file, extracting images accepted by the requested Image formats.
@@ -71,42 +57,17 @@ pub fn process_file(
     let doc =
         EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
     let cover_id = doc.get_cover_id();
-    let mut resources: Vec<EpubResourceCandidate> = doc
+    let manifest_resources: Vec<EpubManifestResource> = doc
         .resources
         .iter()
-        .map(|(id, item)| {
-            let source_name = archive_path(&item.path);
-            EpubResourceCandidate {
-                id: id.clone(),
-                sort_name: String::new(),
-                source_name,
-                mime: item.mime.clone(),
-                archive_identity: EpubArchiveIdentity::Unresolved(String::new()),
-            }
-        })
+        .map(|(id, item)| EpubManifestResource::new(id, &item.path, &item.mime))
         .collect();
     // EpubDoc exposes the manifest facts we need but only offers eager payload reads.
     // Release it before opening the independent read-only ZIP handle recorded in ADR-0001.
     drop(doc);
 
-    let file = fs::File::open(input_path)
-        .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
-    let mut archive = ZipArchive::new(file)
-        .with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
-    for candidate in &mut resources {
-        // Missing resources keep their manifest spelling for stable ordering and diagnostics.
-        // Resolved ZIP indices are the identity shared by cover and batch traversal.
-        let resolved_index = resource_index(&archive, &candidate.source_name).ok();
-        let resolved_name = resolved_index
-            .and_then(|index| archive.name_for_index(index).map(str::to_owned))
-            .unwrap_or_else(|| candidate.source_name.clone());
-        candidate.sort_name = normalized_sort_path(&resolved_name);
-        candidate.archive_identity = resolved_index
-            .map(EpubArchiveIdentity::Resolved)
-            .unwrap_or_else(|| EpubArchiveIdentity::Unresolved(candidate.source_name.clone()));
-    }
-    resources
-        .sort_by(|left, right| (&left.sort_name, &left.id).cmp(&(&right.sort_name, &right.id)));
+    let mut archive = EpubResourceArchive::open(input_path, manifest_resources)?;
+    let resources = archive.resources().to_vec();
 
     if cover_only {
         return extract_cover_only(
@@ -140,9 +101,9 @@ pub fn process_file(
 /// Returns an error only when output emission fails; per-resource lookup and read
 /// failures become warning facts and traversal continues.
 fn extract_all_images(
-    archive: &mut ZipArchive<fs::File>,
-    resources: &[EpubResourceCandidate],
-    excluded_identities: &HashSet<EpubArchiveIdentity>,
+    archive: &mut EpubResourceArchive,
+    resources: &[EpubResource],
+    excluded_identities: &HashSet<ArchiveResourceIdentity>,
     output_base_dir: &Path,
     base_name: &str,
     pipeline: &ImageWritePipeline,
@@ -151,11 +112,11 @@ fn extract_all_images(
         ImageWriteRequest::normal_images(output_base_dir, base_name),
         |visitor| {
             for candidate in resources {
-                if excluded_identities.contains(&candidate.archive_identity) {
+                if excluded_identities.contains(candidate.identity()) {
                     continue;
                 }
-                let source = ArchiveImageSource::named(candidate.source_name.clone())
-                    .with_mime(candidate.mime.clone());
+                let source = ArchiveImageSource::named(candidate.manifest_path())
+                    .with_mime(candidate.mime());
                 visit_resource(archive, candidate, source, visitor)?;
             }
             Ok(())
@@ -166,9 +127,9 @@ fn extract_all_images(
 /// Searches for a cover image by filename when metadata-based detection fails.
 /// Looks for files named "cover" (case-insensitive) with common JPEG extensions.
 /// Returns the first matching deterministic manifest candidate.
-fn find_cover_by_filename(resources: &[EpubResourceCandidate]) -> Option<&EpubResourceCandidate> {
+fn find_cover_by_filename(resources: &[EpubResource]) -> Option<&EpubResource> {
     resources.iter().find(|candidate| {
-        let path = Path::new(&candidate.source_name);
+        let path = Path::new(candidate.manifest_path());
         let file_stem = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -193,15 +154,15 @@ fn find_cover_by_filename(resources: &[EpubResourceCandidate]) -> Option<&EpubRe
 /// Returns an error when output emission fails. Unreadable cover resources become
 /// warnings and advance through metadata, filename, then optional batch fallback.
 fn extract_cover_only(
-    archive: &mut ZipArchive<fs::File>,
-    resources: &[EpubResourceCandidate],
+    archive: &mut EpubResourceArchive,
+    resources: &[EpubResource],
     cover_id: Option<&str>,
     output_base_dir: &Path,
     base_name: &str,
     cover_fallback: bool,
     pipeline: &ImageWritePipeline,
 ) -> Result<ImageWriteResult> {
-    let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id == id));
+    let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id() == id));
     let filename_cover = find_cover_by_filename(resources);
     extract_required_cover(
         archive,
@@ -224,74 +185,18 @@ fn extract_cover_only(
 /// Returns an error when the pipeline cannot emit an accepted image. Resource
 /// lookup, open, and read failures are recorded on the visitor and return `Ok(())`.
 fn visit_resource(
-    archive: &mut ZipArchive<fs::File>,
-    candidate: &EpubResourceCandidate,
+    archive: &mut EpubResourceArchive,
+    candidate: &EpubResource,
     source: ArchiveImageSource,
     visitor: &mut ArchiveImageVisitor<'_, '_>,
 ) -> Result<()> {
-    let index = match candidate_resource_index(candidate) {
-        Ok(index) => index,
-        Err(error) => {
-            visitor.unreadable(source, error);
-            return Ok(());
-        }
-    };
-
-    match archive.by_index(index) {
-        Ok(mut entry) => visitor.visit(source, &mut entry),
-        Err(error) => {
-            visitor.unreadable(source, error);
-            Ok(())
-        }
-    }
-}
-
-/// Returns the resolved ZIP index recorded while the archive adapter was opened.
-///
-/// Unresolved candidates preserve the original lookup failure as a typed
-/// acquisition diagnostic when traversal reaches them.
-fn candidate_resource_index(candidate: &EpubResourceCandidate) -> Result<usize> {
-    match &candidate.archive_identity {
-        EpubArchiveIdentity::Resolved(index) => Ok(*index),
-        EpubArchiveIdentity::Unresolved(_) => {
-            anyhow::bail!("EPUB resource not found: {}", candidate.source_name)
-        }
-    }
-}
-
-/// Resolves a manifest path using the EPUB crate's exact-then-decoded behavior.
-///
-/// # Errors
-///
-/// Returns an error when percent-decoding is not valid UTF-8 or neither lookup
-/// spelling names a ZIP entry.
-fn resource_index(archive: &ZipArchive<fs::File>, source_name: &str) -> Result<usize> {
-    if let Some(index) = archive.index_for_name(source_name) {
-        return Ok(index);
+    let acquisition =
+        archive.with_reader(candidate, |reader| visitor.visit(source.clone(), reader))?;
+    if let Err(error) = acquisition {
+        visitor.unreadable(source, error);
     }
 
-    let decoded = percent_decode(source_name.as_bytes())
-        .decode_utf8()
-        .with_context(|| {
-            format!("Invalid UTF-8 percent encoding in EPUB resource {source_name}")
-        })?;
-    archive
-        .index_for_name(&decoded)
-        .ok_or_else(|| anyhow::anyhow!("EPUB resource not found: {source_name}"))
-}
-
-/// Converts an EPUB manifest path to the ZIP lookup spelling used by the adapter.
-fn archive_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-/// Builds a stable lexical sort key without changing the ZIP lookup path.
-fn normalized_sort_path(source_name: &str) -> String {
-    source_name
-        .split('/')
-        .filter(|segment| !segment.is_empty() && *segment != ".")
-        .collect::<Vec<_>>()
-        .join("/")
+    Ok(())
 }
 
 /// Appends one fallback attempt while preserving counts and warning order.
