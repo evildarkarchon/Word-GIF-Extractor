@@ -40,18 +40,6 @@ impl ArchiveImageSource {
         self.mime = Some(mime.into());
         self
     }
-
-    /// Creates a required EPUB cover source without using its path as format evidence.
-    pub(crate) fn required_epub_cover(
-        diagnostic_name: impl Into<String>,
-        mime: impl Into<String>,
-    ) -> Self {
-        Self {
-            diagnostic_name: diagnostic_name.into(),
-            format_source_name: None,
-            mime: Some(mime.into()),
-        }
-    }
 }
 
 /// Valid per-run choices interpreted by the Image write pipeline.
@@ -121,7 +109,7 @@ pub(crate) enum ImageWriteWarning {
 
 impl ImageWriteWarning {
     /// Creates one non-fatal archive resource acquisition warning fact.
-    fn archive_image_acquisition_failed(
+    pub(crate) fn archive_image_acquisition_failed(
         source_name: impl Into<String>,
         error: impl fmt::Display,
     ) -> Self {
@@ -184,35 +172,17 @@ pub(crate) struct ImageWriteResult {
 }
 
 impl ImageWriteResult {
-    /// Returns whether this result contains an archive resource acquisition failure.
-    pub(crate) fn is_archive_image_acquisition_failure(&self) -> bool {
-        self.warnings.iter().any(|warning| {
-            matches!(
-                warning,
-                ImageWriteWarning::ArchiveImageAcquisitionFailed { .. }
-            )
-        })
-    }
-}
-
-/// Role of one source traversal inside the Image write pipeline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ImageWritePurpose {
-    /// Normal batch images preserve original bytes after conversion failure.
-    NormalImages,
-    /// A required EPUB cover may be omitted when conversion cannot complete.
-    RequiredEpubCover,
-}
-
-impl ImageWritePurpose {
-    /// Returns whether conversion failure preserves and writes original bytes.
-    fn preserves_original_on_conversion_failure(self) -> bool {
-        self == ImageWritePurpose::NormalImages
+    /// Creates an outcome containing one typed warning fact and no emitted files.
+    pub(crate) fn from_warning(warning: ImageWriteWarning) -> Self {
+        Self::from_warnings(vec![warning])
     }
 
-    /// Returns whether this invocation requires cover-specific discovery behavior.
-    pub(super) fn is_required_epub_cover(self) -> bool {
-        self == ImageWritePurpose::RequiredEpubCover
+    /// Creates an outcome containing typed warning facts and no emitted files.
+    pub(crate) fn from_warnings(warnings: Vec<ImageWriteWarning>) -> Self {
+        Self {
+            counts: ImageWriteCounts::default(),
+            warnings,
+        }
     }
 }
 
@@ -234,7 +204,6 @@ struct PreparedImage {
 pub(crate) struct ImageWriteRequest<'a> {
     output_dir: &'a Path,
     base_name: &'a str,
-    purpose: ImageWritePurpose,
 }
 
 impl<'a> ImageWriteRequest<'a> {
@@ -243,16 +212,6 @@ impl<'a> ImageWriteRequest<'a> {
         Self {
             output_dir,
             base_name,
-            purpose: ImageWritePurpose::NormalImages,
-        }
-    }
-
-    /// Creates a request for one required EPUB cover source.
-    pub(crate) fn required_epub_cover(output_dir: &'a Path, base_name: &'a str) -> Self {
-        Self {
-            output_dir,
-            base_name,
-            purpose: ImageWritePurpose::RequiredEpubCover,
         }
     }
 }
@@ -266,6 +225,56 @@ impl ImageWritePipeline {
     /// Binds one Image write policy for every document in an Extraction run.
     pub(crate) fn new(policy: ImageWritePolicy) -> Self {
         Self { policy }
+    }
+
+    /// Returns whether one identified Image format is accepted by this run.
+    pub(crate) fn accepts_format(&self, format: ImageFormat) -> bool {
+        self.policy.allowed_formats.contains(&format)
+    }
+
+    /// Lends the optional Conversion policy without interpreting document behavior.
+    pub(crate) fn conversion_policy(&self) -> Option<&ConversionPolicy> {
+        self.policy.conversion.as_ref()
+    }
+
+    /// Returns whether an image will be routed to the configured GIF destination.
+    pub(crate) fn routes_gif(&self, format: ImageFormat) -> bool {
+        format == ImageFormat::Gif && self.policy.gif_output.is_some()
+    }
+
+    /// Emits one fully decided image and returns counts for the completed file.
+    ///
+    /// GIF destination routing remains a generic Image write policy. Create,
+    /// write, flush, and collision failures are returned and abort the document.
+    pub(crate) fn emit_single_image(
+        &self,
+        output_dir: &Path,
+        base_name: &str,
+        data: Vec<u8>,
+        format: ImageFormat,
+        converted: bool,
+    ) -> Result<ImageWriteResult> {
+        let routed_gif = self.routes_gif(format);
+        let destination = if routed_gif {
+            self.policy
+                .gif_output
+                .as_deref()
+                .expect("routed GIF should have a configured destination")
+        } else {
+            output_dir
+        };
+        let mut emission = ImageFileEmission::new(base_name, false);
+        emission.emit(destination, format, &data)?;
+
+        Ok(ImageWriteResult {
+            counts: ImageWriteCounts {
+                extracted: 1,
+                gifs_routed: usize::from(routed_gif),
+                converted: usize::from(converted),
+                skipped: 0,
+            },
+            warnings: Vec::new(),
+        })
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
@@ -293,7 +302,6 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     policy: &'policy ImageWritePolicy,
     output_dir: &'request Path,
     base_name: &'request str,
-    purpose: ImageWritePurpose,
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
@@ -308,7 +316,6 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             policy,
             output_dir: request.output_dir,
             base_name: request.base_name,
-            purpose: request.purpose,
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
@@ -326,8 +333,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         source: ArchiveImageSource,
         reader: &mut dyn Read,
     ) -> Result<()> {
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, self.purpose);
+        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         self.discovery_warnings.extend(discovered.warnings);
 
         let Some(image) = discovered.image else {
@@ -337,7 +343,6 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             image,
             self.base_name,
             self.policy,
-            self.purpose,
             &mut self.conversion_warnings,
         ) else {
             return Ok(());
@@ -350,7 +355,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     ///
     /// Unsafe normal-image names remain silent skips, matching discovery behavior.
     pub(crate) fn unreadable(&mut self, source: ArchiveImageSource, error: impl fmt::Display) {
-        if is_source_safe(&source, self.purpose) {
+        if is_source_safe(&source) {
             self.discovery_warnings
                 .push(ImageWriteWarning::archive_image_acquisition_failed(
                     source.diagnostic_name,
@@ -434,15 +439,13 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     }
 }
 
-/// Applies conversion and Image write purpose semantics before one file write.
+/// Applies normal-image conversion semantics before one file write.
 ///
-/// Returns `None` when a required cover cannot be converted and must therefore
-/// be omitted. Conversion warning facts are appended in accepted-source order.
+/// Conversion warning facts are appended in accepted-source order.
 fn prepare_image_for_write(
     image: AcceptedImage,
     base_name: &str,
     policy: &ImageWritePolicy,
-    purpose: ImageWritePurpose,
     warnings: &mut Vec<ImageWriteWarning>,
 ) -> Option<PreparedImage> {
     let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
@@ -474,44 +477,30 @@ fn prepare_image_for_write(
                 skipped_conversion: false,
             }),
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                if purpose.preserves_original_on_conversion_failure() {
-                    warnings.push(ImageWriteWarning::ConversionSkipped {
-                        base_name: base_name.to_string(),
-                        format: original_format,
-                    });
-                    Some(PreparedImage {
-                        data: image.data,
-                        format: original_format,
-                        routed_gif: false,
-                        converted: false,
-                        skipped_conversion: true,
-                    })
-                } else {
-                    warnings.push(ImageWriteWarning::CoverConversionSkipped {
-                        format: original_format,
-                    });
-                    None
-                }
+                warnings.push(ImageWriteWarning::ConversionSkipped {
+                    base_name: base_name.to_string(),
+                    format: original_format,
+                });
+                Some(PreparedImage {
+                    data: image.data,
+                    format: original_format,
+                    routed_gif: false,
+                    converted: false,
+                    skipped_conversion: true,
+                })
             }
             Err(error) => {
-                if purpose.preserves_original_on_conversion_failure() {
-                    warnings.push(ImageWriteWarning::ConversionFailed {
-                        base_name: base_name.to_string(),
-                        message: error.to_string(),
-                    });
-                    Some(PreparedImage {
-                        data: image.data,
-                        format: image.format,
-                        routed_gif: false,
-                        converted: false,
-                        skipped_conversion: true,
-                    })
-                } else {
-                    warnings.push(ImageWriteWarning::CoverConversionFailed {
-                        message: error.to_string(),
-                    });
-                    None
-                }
+                warnings.push(ImageWriteWarning::ConversionFailed {
+                    base_name: base_name.to_string(),
+                    message: error.to_string(),
+                });
+                Some(PreparedImage {
+                    data: image.data,
+                    format: image.format,
+                    routed_gif: false,
+                    converted: false,
+                    skipped_conversion: true,
+                })
             }
         }
     } else {
@@ -637,18 +626,6 @@ mod tests {
     ) -> (ArchiveImageSource, Vec<u8>) {
         (
             ArchiveImageSource::named(source_name).with_mime(mime),
-            data.into(),
-        )
-    }
-
-    /// Creates one required-cover buffered source without filename format evidence.
-    fn cover_source(
-        data: impl Into<Vec<u8>>,
-        source_name: &str,
-        mime: &str,
-    ) -> (ArchiveImageSource, Vec<u8>) {
-        (
-            ArchiveImageSource::required_epub_cover(source_name, mime),
             data.into(),
         )
     }
@@ -1075,103 +1052,6 @@ mod tests {
         assert_eq!(source.position(), 0);
         assert_eq!(result.counts.extracted, 0);
         assert!(result.warnings.is_empty());
-        assert!(!temp_dir.exists());
-    }
-
-    #[test]
-    fn required_cover_defaults_to_jpeg_through_pipeline_interface() {
-        let temp_dir = temp_test_dir("cover-default");
-        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        ));
-
-        let result = write_sources(
-            &pipeline,
-            ImageWriteRequest::required_epub_cover(&temp_dir, "cover"),
-            vec![cover_source(
-                b"unknown cover bytes".as_slice(),
-                "OEBPS/cover.png",
-                "application/octet-stream",
-            )],
-        )
-        .expect("cover fallback should be written");
-
-        assert_eq!(result.counts.extracted, 1);
-        assert_eq!(
-            result.warnings,
-            vec![ImageWriteWarning::CoverDefaultToJpeg {
-                mime: "application/octet-stream".to_string(),
-            }]
-        );
-        assert!(temp_dir.join("cover.jpg").exists());
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn required_cover_filtered_out_returns_warnings_without_creating_output() {
-        let temp_dir = temp_test_dir("cover-filtered");
-        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Png]),
-            None,
-            None,
-        ));
-
-        let result = write_sources(
-            &pipeline,
-            ImageWriteRequest::required_epub_cover(&temp_dir, "cover"),
-            vec![cover_source(
-                b"unknown cover bytes".as_slice(),
-                "OEBPS/cover.bin",
-                "application/octet-stream",
-            )],
-        )
-        .expect("filtered cover should be a normal pipeline outcome");
-
-        assert_eq!(result.counts.extracted, 0);
-        assert_eq!(
-            result.warnings,
-            vec![
-                ImageWriteWarning::CoverDefaultToJpeg {
-                    mime: "application/octet-stream".to_string(),
-                },
-                ImageWriteWarning::UnsupportedCoverFormat {
-                    format: ImageFormat::Jpg,
-                },
-            ]
-        );
-        assert!(!temp_dir.exists());
-    }
-
-    #[test]
-    fn required_cover_conversion_skip_writes_nothing() {
-        let temp_dir = temp_test_dir("cover-conversion-skip");
-        let pipeline = pipeline_with_conversion(
-            HashSet::from([ImageFormat::Svg]),
-            ConversionTarget::Png,
-            None,
-        );
-
-        let result = write_sources(
-            &pipeline,
-            ImageWriteRequest::required_epub_cover(&temp_dir, "cover"),
-            vec![cover_source(
-                b"<svg/>".as_slice(),
-                "OEBPS/cover.svg",
-                "image/svg+xml",
-            )],
-        )
-        .expect("unsupported cover conversion should be a normal outcome");
-
-        assert_eq!(result.counts.extracted, 0);
-        assert_eq!(
-            result.warnings,
-            vec![ImageWriteWarning::CoverConversionSkipped {
-                format: ImageFormat::Svg,
-            }]
-        );
         assert!(!temp_dir.exists());
     }
 

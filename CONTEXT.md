@@ -40,6 +40,10 @@ _Avoid_: Extraction config, writer options
 The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It distinguishes cover-specific outcomes from per-run Image write policy.
 _Avoid_: Write mode, archive image purpose, extraction kind
 
+**EPUB cover extraction**:
+The EPUB-only responsibility for turning ordered cover candidates into one required-cover outcome, including acquisition fallback, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes archive resource reading mechanics and Image file emission.
+_Avoid_: Cover pipeline, cover selection, cover helper
+
 **Archive image discovery**:
 The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter

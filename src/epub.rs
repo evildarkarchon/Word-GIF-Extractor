@@ -1,10 +1,13 @@
 //! EPUB file processing module
 
+mod cover_extraction;
+
 use anyhow::{Context, Result};
 use epub::doc::EpubDoc;
 use percent_encoding::percent_decode;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use zip::ZipArchive;
 
@@ -13,8 +16,16 @@ use crate::image_write_pipeline::{
     ImageWriteResult,
 };
 
+use self::cover_extraction::{
+    CoverAcquisitionOutcome, CoverEvidence, CoverEvidenceDecision, CoverEvidencePolicy,
+    CoverResourceAdapter, CoverWriteRequest, extract_required_cover,
+};
+
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
+
+// SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
+const COVER_FORMAT_EVIDENCE_LIMIT: u64 = 1027;
 
 /// Gets the metadata (author, title) from an EPUB file.
 /// Returns a tuple of (author, title) where either may be None if not present.
@@ -29,12 +40,19 @@ pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>
     Ok((author, title))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum EpubArchiveIdentity {
+    Resolved(usize),
+    Unresolved(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EpubResourceCandidate {
     id: String,
     source_name: String,
     sort_name: String,
     mime: String,
+    archive_identity: EpubArchiveIdentity,
 }
 
 /// Processes a single .epub file, extracting images accepted by the requested Image formats.
@@ -70,6 +88,7 @@ pub fn process_file(
                 sort_name: String::new(),
                 source_name,
                 mime: item.mime.clone(),
+                archive_identity: EpubArchiveIdentity::Unresolved(String::new()),
             }
         })
         .collect();
@@ -82,13 +101,16 @@ pub fn process_file(
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
     for candidate in &mut resources {
-        // Missing resources keep their manifest spelling for a stable position; traversal
-        // performs the same lookup again so its failure becomes an observable warning.
-        let resolved_name = resource_index(&archive, &candidate.source_name)
-            .ok()
+        // Missing resources keep their manifest spelling for stable ordering and diagnostics.
+        // Resolved ZIP indices are the identity shared by cover and batch traversal.
+        let resolved_index = resource_index(&archive, &candidate.source_name).ok();
+        let resolved_name = resolved_index
             .and_then(|index| archive.name_for_index(index).map(str::to_owned))
             .unwrap_or_else(|| candidate.source_name.clone());
         candidate.sort_name = normalized_sort_path(&resolved_name);
+        candidate.archive_identity = resolved_index
+            .map(EpubArchiveIdentity::Resolved)
+            .unwrap_or_else(|| EpubArchiveIdentity::Unresolved(candidate.source_name.clone()));
     }
     resources
         .sort_by(|left, right| (&left.sort_name, &left.id).cmp(&(&right.sort_name, &right.id)));
@@ -127,7 +149,7 @@ pub fn process_file(
 fn extract_all_images(
     archive: &mut ZipArchive<fs::File>,
     resources: &[EpubResourceCandidate],
-    excluded_sources: &HashSet<String>,
+    excluded_identities: &HashSet<EpubArchiveIdentity>,
     output_base_dir: &Path,
     base_name: &str,
     pipeline: &ImageWritePipeline,
@@ -136,7 +158,7 @@ fn extract_all_images(
         ImageWriteRequest::normal_images(output_base_dir, base_name),
         |visitor| {
             for candidate in resources {
-                if excluded_sources.contains(&candidate.source_name) {
+                if excluded_identities.contains(&candidate.archive_identity) {
                     continue;
                 }
                 let source = ArchiveImageSource::named(candidate.source_name.clone())
@@ -188,61 +210,107 @@ fn extract_cover_only(
 ) -> Result<ImageWriteResult> {
     let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id == id));
     let filename_cover = find_cover_by_filename(resources);
-    let mut attempted_sources = HashSet::new();
-    let mut aggregate = ImageWriteResult::default();
+    let mut adapter = EpubCoverArchiveAdapter {
+        archive,
+        resources,
+        output_base_dir,
+        base_name,
+        pipeline,
+    };
 
-    for candidate in [metadata_cover, filename_cover].into_iter().flatten() {
-        if !attempted_sources.insert(candidate.source_name.clone()) {
-            continue;
-        }
-
-        let result = write_cover_image(archive, candidate, output_base_dir, base_name, pipeline)?;
-        let acquisition_failed = result.is_archive_image_acquisition_failure();
-        append_result(&mut aggregate, result);
-        if !acquisition_failed {
-            return Ok(aggregate);
-        }
-    }
-
-    if cover_fallback {
-        // Re-reading a deterministically unreadable cover would only duplicate its warning.
-        let fallback = extract_all_images(
-            archive,
-            resources,
-            &attempted_sources,
-            output_base_dir,
+    extract_required_cover(
+        metadata_cover,
+        filename_cover,
+        cover_fallback,
+        CoverWriteRequest {
+            output_dir: output_base_dir,
             base_name,
             pipeline,
-        )?;
-        append_result(&mut aggregate, fallback);
-    }
-
-    Ok(aggregate)
+        },
+        &mut adapter,
+    )
 }
 
-/// Writes one cover candidate through cover-specific Image write purpose semantics.
-///
-/// # Errors
-///
-/// Returns an error when output emission fails. Candidate lookup and read failures
-/// are returned as non-fatal warning facts in the result.
-fn write_cover_image(
-    archive: &mut ZipArchive<fs::File>,
-    candidate: &EpubResourceCandidate,
-    output_base_dir: &Path,
-    base_name: &str,
-    pipeline: &ImageWritePipeline,
-) -> Result<ImageWriteResult> {
-    pipeline.write_from(
-        ImageWriteRequest::required_epub_cover(output_base_dir, base_name),
-        |visitor| {
-            let source = ArchiveImageSource::required_epub_cover(
+/// Direct ZIP adapter retained by ADR-0001 for scoped EPUB cover resource reads.
+struct EpubCoverArchiveAdapter<'archive, 'facts, 'request> {
+    archive: &'archive mut ZipArchive<fs::File>,
+    resources: &'facts [EpubResourceCandidate],
+    output_base_dir: &'request Path,
+    base_name: &'request str,
+    pipeline: &'request ImageWritePipeline,
+}
+
+impl CoverResourceAdapter for EpubCoverArchiveAdapter<'_, '_, '_> {
+    /// Acquires one candidate incrementally and passes only bounded evidence to policy.
+    fn acquire_cover(
+        &mut self,
+        candidate: &EpubResourceCandidate,
+        policy: &mut dyn CoverEvidencePolicy,
+    ) -> Result<CoverAcquisitionOutcome> {
+        let index = match candidate_resource_index(candidate) {
+            Ok(index) => index,
+            Err(error) => {
+                return Ok(CoverAcquisitionOutcome::acquisition_failed(
+                    candidate.source_name.clone(),
+                    error,
+                ));
+            }
+        };
+
+        match self.archive.by_index(index) {
+            Ok(mut entry) => {
+                let mut data = Vec::new();
+                if let Err(error) = entry
+                    .by_ref()
+                    .take(COVER_FORMAT_EVIDENCE_LIMIT)
+                    .read_to_end(&mut data)
+                {
+                    return Ok(CoverAcquisitionOutcome::acquisition_failed(
+                        candidate.source_name.clone(),
+                        error,
+                    ));
+                }
+
+                match policy.decide(CoverEvidence {
+                    data: &data,
+                    mime: &candidate.mime,
+                }) {
+                    CoverEvidenceDecision::Completed(result) => {
+                        Ok(CoverAcquisitionOutcome::Completed(result))
+                    }
+                    CoverEvidenceDecision::Acquire { format, warnings } => {
+                        if let Err(error) = entry.read_to_end(&mut data) {
+                            return Ok(CoverAcquisitionOutcome::acquisition_failed_after_evidence(
+                                warnings,
+                                candidate.source_name.clone(),
+                                error,
+                            ));
+                        }
+                        Ok(CoverAcquisitionOutcome::acquired(data, format, warnings))
+                    }
+                }
+            }
+            Err(error) => Ok(CoverAcquisitionOutcome::acquisition_failed(
                 candidate.source_name.clone(),
-                candidate.mime.clone(),
-            );
-            visit_resource(archive, candidate, source, visitor)
-        },
-    )
+                error,
+            )),
+        }
+    }
+
+    /// Traverses normal images while excluding resolved cover identities.
+    fn extract_normal_images(
+        &mut self,
+        excluded_identities: &HashSet<EpubArchiveIdentity>,
+    ) -> Result<ImageWriteResult> {
+        extract_all_images(
+            self.archive,
+            self.resources,
+            excluded_identities,
+            self.output_base_dir,
+            self.base_name,
+            self.pipeline,
+        )
+    }
 }
 
 /// Visits one manifest resource while keeping its `ZipFile` borrow scoped.
@@ -257,7 +325,7 @@ fn visit_resource(
     source: ArchiveImageSource,
     visitor: &mut ArchiveImageVisitor<'_, '_>,
 ) -> Result<()> {
-    let index = match resource_index(archive, &candidate.source_name) {
+    let index = match candidate_resource_index(candidate) {
         Ok(index) => index,
         Err(error) => {
             visitor.unreadable(source, error);
@@ -270,6 +338,19 @@ fn visit_resource(
         Err(error) => {
             visitor.unreadable(source, error);
             Ok(())
+        }
+    }
+}
+
+/// Returns the resolved ZIP index recorded while the archive adapter was opened.
+///
+/// Unresolved candidates preserve the original lookup failure as a typed
+/// acquisition diagnostic when traversal reaches them.
+fn candidate_resource_index(candidate: &EpubResourceCandidate) -> Result<usize> {
+    match &candidate.archive_identity {
+        EpubArchiveIdentity::Resolved(index) => Ok(*index),
+        EpubArchiveIdentity::Unresolved(_) => {
+            anyhow::bail!("EPUB resource not found: {}", candidate.source_name)
         }
     }
 }
@@ -411,7 +492,8 @@ mod tests {
     ) {
         let file = fs::File::create(path).expect("test EPUB should be creatable");
         let mut zip = zip::ZipWriter::new(file);
-        let options = SimpleFileOptions::default();
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("mimetype", options)
             .expect("mimetype entry should start");
@@ -469,6 +551,25 @@ mod tests {
             zip.write_all(data).expect("resource should be writable");
         }
         zip.finish().expect("EPUB archive should finish");
+    }
+
+    /// Corrupts one uniquely identifiable stored payload without changing ZIP metadata.
+    fn corrupt_stored_payload(path: &Path, payload: &[u8]) {
+        let mut archive_bytes = fs::read(path).expect("test EPUB should be readable");
+        let payload_start = archive_bytes
+            .windows(payload.len())
+            .position(|window| window == payload)
+            .expect("stored test payload should occur in the EPUB");
+        assert_eq!(
+            archive_bytes
+                .windows(payload.len())
+                .filter(|window| *window == payload)
+                .count(),
+            1,
+            "test payload must uniquely identify one archive entry"
+        );
+        archive_bytes[payload_start] ^= 0xff;
+        fs::write(path, archive_bytes).expect("corrupted test EPUB should be writable");
     }
 
     /// Builds a pipeline with a default Conversion policy for EPUB adapter tests.
@@ -861,6 +962,60 @@ mod tests {
     }
 
     #[test]
+    fn resolved_archive_identity_prevents_duplicate_cover_attempts() {
+        let temp_dir = temp_test_dir("resolved-cover-identity");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        let corrupt_cover = b"uniquely corrupt cover payload";
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/cover%2Ejpg",
+                    "image/jpeg",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.png", "image/png", None),
+            ],
+            &[
+                ("OEBPS/images/cover.jpg", corrupt_cover),
+                ("OEBPS/images/page.png", MINIMAL_PNG),
+            ],
+        );
+        corrupt_stored_payload(&input_path, corrupt_cover);
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
+            None,
+            None,
+        ));
+
+        let result = process_file(&input_path, &output_dir, "sample", true, true, &pipeline)
+            .expect("one failed resolved cover should allow batch fallback");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(
+            result
+                .warnings
+                .iter()
+                .filter(|warning| matches!(
+                    warning,
+                    ImageWriteWarning::ArchiveImageAcquisitionFailed { .. }
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            fs::read(output_dir.join("sample.png")).unwrap(),
+            MINIMAL_PNG
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
     fn filtered_cover_does_not_trigger_batch_fallback() {
         let temp_dir = temp_test_dir("filtered-cover-no-fallback");
         let input_path = temp_dir.join("sample.epub");
@@ -904,6 +1059,90 @@ mod tests {
     }
 
     #[test]
+    fn unidentified_cover_defaults_to_jpeg_as_a_document_outcome() {
+        let temp_dir = temp_test_dir("cover-default-jpeg");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        let cover = b"unknown cover bytes";
+        write_epub_fixture(
+            &input_path,
+            &[(
+                "cover",
+                "images/art.bin",
+                "application/octet-stream",
+                Some("cover-image"),
+            )],
+            &[("OEBPS/images/art.bin", cover)],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg]),
+            None,
+            None,
+        ));
+
+        let result = process_file(&input_path, &output_dir, "sample", true, false, &pipeline)
+            .expect("unidentified required cover should use the JPEG compatibility default");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::CoverDefaultToJpeg {
+                mime: "application/octet-stream".to_string(),
+            }]
+        );
+        assert_eq!(fs::read(output_dir.join("sample.jpg")).unwrap(), cover);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn cover_emission_failure_aborts_the_document() {
+        let temp_dir = temp_test_dir("cover-emission-failure");
+        let input_path = temp_dir.join("sample.epub");
+        let blocked_output = temp_dir.join("not-a-directory");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::write(&blocked_output, b"occupied").expect("blocking file should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/art.jpg",
+                    "image/jpeg",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.png", "image/png", None),
+            ],
+            &[
+                ("OEBPS/images/art.jpg", b"\xFF\xD8\xFFcover"),
+                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfallback"),
+                ("OEBPS/images/page.png", MINIMAL_PNG),
+            ],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
+            None,
+            None,
+        ));
+
+        let error = process_file(
+            &input_path,
+            &blocked_output,
+            "sample",
+            true,
+            true,
+            &pipeline,
+        )
+        .expect_err("Image file emission failure must abort cover extraction");
+
+        assert!(format!("{error:#}").contains("Failed to create output directory"));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
     fn conversion_skipped_cover_does_not_trigger_batch_fallback() {
         let temp_dir = temp_test_dir("conversion-skipped-cover-no-fallback");
         let input_path = temp_dir.join("sample.epub");
@@ -940,6 +1179,44 @@ mod tests {
                 format: ImageFormat::Svg,
             }]
         );
+        assert!(!output_dir.join("sample.png").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn routed_gif_cover_bypasses_conversion() {
+        let temp_dir = temp_test_dir("routed-gif-cover");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        let gif_output = temp_dir.join("gifs");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        let cover = b"GIF89a";
+        write_epub_fixture(
+            &input_path,
+            &[("cover", "images/art.gif", "image/gif", Some("cover-image"))],
+            &[("OEBPS/images/art.gif", cover)],
+        );
+        let conversion = ConversionPolicy::try_from(ConversionRequest {
+            target: ConversionTarget::Png,
+            quality: None,
+            lossless: false,
+        })
+        .expect("test conversion request should be valid");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Gif]),
+            Some(conversion),
+            Some(gif_output.clone()),
+        ));
+
+        let result = process_file(&input_path, &output_dir, "sample", true, false, &pipeline)
+            .expect("routed GIF cover should bypass conversion");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.gifs_routed, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert!(result.warnings.is_empty());
+        assert_eq!(fs::read(gif_output.join("sample.gif")).unwrap(), cover);
         assert!(!output_dir.join("sample.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");

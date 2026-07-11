@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 use std::io::Read;
 
-use crate::image_format::{FormatConfidence, FormatFallbackPolicy, ImageFormat, ImageFormatSource};
+use crate::image_format::{FormatConfidence, ImageFormat, ImageFormatSource};
 
-use super::{AcceptedImage, ArchiveImageSource, ImageWritePurpose, ImageWriteWarning};
+use super::{AcceptedImage, ArchiveImageSource, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
 const FORMAT_EVIDENCE_LIMIT: u64 = 1027;
@@ -25,9 +25,8 @@ pub(super) fn discover_image(
     source: &ArchiveImageSource,
     reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
-    purpose: ImageWritePurpose,
 ) -> DiscoveredImage {
-    if !is_source_safe(source, purpose) {
+    if !is_source_safe(source) {
         return DiscoveredImage {
             image: None,
             warnings: Vec::new(),
@@ -47,16 +46,10 @@ pub(super) fn discover_image(
         };
     }
 
-    let fallback_policy = if purpose.is_required_epub_cover() {
-        FormatFallbackPolicy::DefaultCoverToJpeg
-    } else {
-        FormatFallbackPolicy::SkipUnknown
-    };
     let Some(identified) = ImageFormat::identify_source(ImageFormatSource {
         data: &data,
         source_name: source.format_source_name.as_deref(),
         mime: source.mime.as_deref(),
-        fallback_policy,
     }) else {
         return DiscoveredImage {
             image: None,
@@ -73,20 +66,10 @@ pub(super) fn discover_image(
                 });
             }
         }
-        FormatConfidence::CoverDefault => {
-            warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
-                mime: source.mime.clone().unwrap_or_default(),
-            });
-        }
         FormatConfidence::Magic | FormatConfidence::MimeFallback => {}
     }
 
     if !allowed_formats.contains(&identified.format) {
-        if purpose.is_required_epub_cover() {
-            warnings.push(ImageWriteWarning::UnsupportedCoverFormat {
-                format: identified.format,
-            });
-        }
         return DiscoveredImage {
             image: None,
             warnings,
@@ -114,14 +97,11 @@ pub(super) fn discover_image(
 }
 
 /// Returns whether discovery would inspect this source.
-pub(super) fn is_source_safe(source: &ArchiveImageSource, purpose: ImageWritePurpose) -> bool {
-    // Required cover paths remain lookup/diagnostic facts, preserving the legacy
-    // cover policy that evaluated only bytes, MIME, and the JPEG default.
-    purpose.is_required_epub_cover()
-        || source
-            .format_source_name
-            .as_deref()
-            .is_some_and(is_safe_archive_path)
+pub(super) fn is_source_safe(source: &ArchiveImageSource) -> bool {
+    source
+        .format_source_name
+        .as_deref()
+        .is_some_and(is_safe_archive_path)
 }
 
 /// Returns whether an archive path is safe to use as image source evidence.
