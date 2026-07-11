@@ -4,9 +4,8 @@
 //! matching specified formats.
 
 mod conversion;
+mod document_extraction;
 mod document_selection;
-mod docx;
-mod epub;
 mod extraction_run;
 mod extraction_run_intake;
 mod image_format;
@@ -362,9 +361,9 @@ fn final_summary_message(
     gif_output: Option<&Path>,
 ) -> String {
     if report.total_counts.extracted > 0 {
-        // Only label as "cover(s)" if in cover-only mode AND no DOCX images were extracted
-        // (DOCX files always extract all images regardless of cover_only flag)
-        let item_name = if report.cover_only && !report.has_docx_images {
+        // EPUB fallback and DOCX output are normal images even during a cover-only run.
+        // Label output as covers only when every emitted file used required-cover purpose.
+        let item_name = if report.cover_only && !report.has_normal_image_output {
             "cover(s)"
         } else {
             "image(s)"
@@ -417,7 +416,7 @@ fn final_summary_message(
                 )
             }
         }
-    } else if report.cover_only && !report.has_docx_images {
+    } else if report.cover_only && !report.has_normal_image_output {
         "No cover images found".to_string()
     } else {
         "No images found".to_string()
@@ -736,6 +735,24 @@ mod tests {
                 gif_dir.display()
             )
         );
+    }
+
+    #[test]
+    fn epub_cover_fallback_summary_reports_normal_images() {
+        let report = RunReport {
+            total_counts: ImageWriteCounts {
+                extracted: 2,
+                ..ImageWriteCounts::default()
+            },
+            documents_with_output: 1,
+            has_normal_image_output: true,
+            cover_only: true,
+            documents_to_process: 1,
+        };
+
+        let message = final_summary_message(&report, false, None);
+
+        assert_eq!(message, "Extracted 2 image(s) from 1 document(s)");
     }
 
     #[test]

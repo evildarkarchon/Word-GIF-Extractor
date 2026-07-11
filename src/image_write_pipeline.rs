@@ -3,7 +3,7 @@
 mod discovery;
 mod emission;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Error, Result, anyhow};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
@@ -86,6 +86,13 @@ pub(crate) struct ImageWriteCounts {
     pub(crate) gifs_routed: usize,
     pub(crate) converted: usize,
     pub(crate) skipped: usize,
+}
+
+/// Counts successfully emitted files by their Image write purpose.
+#[derive(Debug, Default, Clone, Copy)]
+struct ImageWritePurposeCounts {
+    normal_images: usize,
+    required_covers: usize,
 }
 
 /// Structured warning facts produced by the Image write pipeline.
@@ -183,22 +190,70 @@ impl ImageWriteWarning {
 pub(crate) struct ImageWriteResult {
     pub(crate) counts: ImageWriteCounts,
     pub(crate) warnings: Vec<ImageWriteWarning>,
+    purpose_counts: ImageWritePurposeCounts,
 }
 
 impl ImageWriteResult {
-    /// Creates an outcome containing one typed warning fact and no emitted files.
-    pub(crate) fn from_warning(warning: ImageWriteWarning) -> Self {
-        Self::from_warnings(vec![warning])
+    /// Returns whether at least one normal batch image was emitted.
+    pub(crate) fn has_normal_image_output(&self) -> bool {
+        self.purpose_counts.normal_images > 0
     }
 
-    /// Creates an outcome containing typed warning facts and no emitted files.
-    pub(crate) fn from_warnings(warnings: Vec<ImageWriteWarning>) -> Self {
-        Self {
-            counts: ImageWriteCounts::default(),
-            warnings,
-        }
+    /// Appends later Image write facts while preserving warning order.
+    pub(crate) fn append(&mut self, mut later: Self) {
+        self.counts.extracted += later.counts.extracted;
+        self.counts.gifs_routed += later.counts.gifs_routed;
+        self.counts.converted += later.counts.converted;
+        self.counts.skipped += later.counts.skipped;
+        self.purpose_counts.normal_images += later.purpose_counts.normal_images;
+        self.purpose_counts.required_covers += later.purpose_counts.required_covers;
+        self.warnings.append(&mut later.warnings);
     }
 }
+
+/// Document-local Image write failure with facts retained before the error.
+#[derive(Debug)]
+pub(crate) struct ImageWriteFailure {
+    pub(crate) partial: ImageWriteResult,
+    pub(crate) error: Error,
+}
+
+impl ImageWriteFailure {
+    /// Creates a failure before any Image write facts have been produced.
+    pub(crate) fn empty(error: impl Into<Error>) -> Self {
+        Self {
+            partial: ImageWriteResult::default(),
+            error: error.into(),
+        }
+    }
+
+    /// Prepends facts from earlier attempts to this failure.
+    pub(crate) fn prepend(&mut self, mut earlier: ImageWriteResult) {
+        earlier.append(std::mem::take(&mut self.partial));
+        self.partial = earlier;
+    }
+}
+
+impl From<Error> for ImageWriteFailure {
+    fn from(error: Error) -> Self {
+        Self::empty(error)
+    }
+}
+
+impl fmt::Display for ImageWriteFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ImageWriteFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+/// Result of an Image write operation that retains partial facts on failure.
+pub(crate) type ImageWriteOutcome<T = ImageWriteResult> = std::result::Result<T, ImageWriteFailure>;
 
 #[derive(Debug)]
 struct AcceptedImage {
@@ -262,6 +317,12 @@ pub(crate) enum RequiredCoverWriteOutcome {
     Completed(ImageWriteResult),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RequiredCoverWriteDisposition {
+    Retry,
+    Completed,
+}
+
 /// Immutable Image write pipeline configured for one Extraction run.
 pub(crate) struct ImageWritePipeline {
     policy: ImageWritePolicy,
@@ -276,14 +337,17 @@ impl ImageWritePipeline {
     /// Discovers and writes one required EPUB cover through a scoped source reader.
     ///
     /// Acquisition failures return a retry disposition. Filtering and other Image
-    /// write policy decisions complete the attempt, while emission failures remain errors.
+    /// write policy decisions complete the attempt, while emission failures retain
+    /// facts accumulated before returning the error.
     pub(crate) fn write_required_cover(
         &self,
         request: RequiredCoverWriteRequest<'_>,
         traverse: impl FnOnce(&mut RequiredCoverWriteVisitor<'_, '_>) -> Result<()>,
-    ) -> Result<RequiredCoverWriteOutcome> {
+    ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
         let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request);
-        traverse(&mut visitor)?;
+        if let Err(error) = traverse(&mut visitor) {
+            return Err(visitor.into_failure(error));
+        }
         visitor.finish()
     }
 
@@ -295,14 +359,16 @@ impl ImageWritePipeline {
     ///
     /// Returns phase-ordered warning facts and counts for files actually written.
     /// Filesystem setup, collision exhaustion, create, write, and flush failures
-    /// abort the document with an error; earlier successful writes are not rolled back.
+    /// retain those facts with the error; earlier successful writes are not rolled back.
     pub(crate) fn write_from(
         &self,
         request: ImageWriteRequest<'_>,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
-    ) -> Result<ImageWriteResult> {
+    ) -> ImageWriteOutcome {
         let mut visitor = ArchiveImageVisitor::new(&self.policy, request);
-        traverse(&mut visitor)?;
+        if let Err(error) = traverse(&mut visitor) {
+            return Err(visitor.into_failure(error));
+        }
         visitor.finish()
     }
 }
@@ -311,7 +377,8 @@ impl ImageWritePipeline {
 pub(crate) struct RequiredCoverWriteVisitor<'policy, 'request> {
     policy: &'policy ImageWritePolicy,
     request: RequiredCoverWriteRequest<'request>,
-    outcome: Option<RequiredCoverWriteOutcome>,
+    disposition: Option<RequiredCoverWriteDisposition>,
+    result: ImageWriteResult,
 }
 
 impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
@@ -323,7 +390,8 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
         Self {
             policy,
             request,
-            outcome: None,
+            disposition: None,
+            result: ImageWriteResult::default(),
         }
     }
 
@@ -338,24 +406,40 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
     ) -> Result<()> {
         self.ensure_empty()?;
         let discovered = discover_required_cover(&source, reader, &self.policy.allowed_formats);
+        self.result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
             ArchiveImageDiscoveryOutcome::Completed => {
-                self.outcome = Some(RequiredCoverWriteOutcome::Completed(
-                    ImageWriteResult::from_warnings(discovered.warnings),
-                ));
+                self.disposition = Some(RequiredCoverWriteDisposition::Completed);
                 return Ok(());
             }
             ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
-                self.outcome = Some(RequiredCoverWriteOutcome::Retry(
-                    ImageWriteResult::from_warnings(discovered.warnings),
-                ));
+                self.disposition = Some(RequiredCoverWriteDisposition::Retry);
                 return Ok(());
             }
         };
 
-        let result = emit_required_cover(self.policy, &self.request, image, discovered.warnings)?;
-        self.outcome = Some(RequiredCoverWriteOutcome::Completed(result));
+        let Some(prepared) = prepare_image_for_write(
+            image,
+            self.request.base_name,
+            self.policy,
+            ImageWritePurpose::RequiredCover,
+            &mut self.result.warnings,
+        ) else {
+            self.disposition = Some(RequiredCoverWriteDisposition::Completed);
+            return Ok(());
+        };
+        let mut emission = ImageFileEmission::new(self.request.base_name, false);
+        emit_prepared_image(
+            self.policy,
+            self.request.output_dir,
+            &mut emission,
+            prepared,
+            ImageWritePurpose::RequiredCover,
+            &mut self.result.counts,
+            &mut self.result.purpose_counts,
+        )?;
+        self.disposition = Some(RequiredCoverWriteDisposition::Completed);
         Ok(())
     }
 
@@ -366,18 +450,19 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
         error: impl fmt::Display,
     ) -> Result<()> {
         self.ensure_empty()?;
-        self.outcome = Some(RequiredCoverWriteOutcome::Retry(
-            ImageWriteResult::from_warning(ImageWriteWarning::archive_image_acquisition_failed(
+        self.result
+            .warnings
+            .push(ImageWriteWarning::archive_image_acquisition_failed(
                 source.diagnostic_name,
                 error,
-            )),
-        ));
+            ));
+        self.disposition = Some(RequiredCoverWriteDisposition::Retry);
         Ok(())
     }
 
     /// Returns an error when a traversal attempts to supply more than one cover source.
     fn ensure_empty(&self) -> Result<()> {
-        if self.outcome.is_some() {
+        if self.disposition.is_some() {
             return Err(anyhow!(
                 "required-cover traversal supplied more than one source"
             ));
@@ -386,39 +471,25 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
     }
 
     /// Completes the required-cover traversal after exactly one source attempt.
-    fn finish(self) -> Result<RequiredCoverWriteOutcome> {
-        self.outcome
-            .ok_or_else(|| anyhow!("required-cover traversal supplied no source"))
+    fn finish(self) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
+        match self.disposition {
+            Some(RequiredCoverWriteDisposition::Retry) => {
+                Ok(RequiredCoverWriteOutcome::Retry(self.result))
+            }
+            Some(RequiredCoverWriteDisposition::Completed) => {
+                Ok(RequiredCoverWriteOutcome::Completed(self.result))
+            }
+            None => Err(self.into_failure(anyhow!("required-cover traversal supplied no source"))),
+        }
     }
-}
 
-/// Applies required-cover conversion, routing, singular emission, and outcome policy.
-fn emit_required_cover(
-    policy: &ImageWritePolicy,
-    request: &RequiredCoverWriteRequest<'_>,
-    image: AcceptedImage,
-    mut warnings: Vec<ImageWriteWarning>,
-) -> Result<ImageWriteResult> {
-    let Some(prepared) = prepare_image_for_write(
-        image,
-        request.base_name,
-        policy,
-        ImageWritePurpose::RequiredCover,
-        &mut warnings,
-    ) else {
-        return Ok(ImageWriteResult::from_warnings(warnings));
-    };
-    let mut counts = ImageWriteCounts::default();
-    let mut emission = ImageFileEmission::new(request.base_name, false);
-    emit_prepared_image(
-        policy,
-        request.output_dir,
-        &mut emission,
-        prepared,
-        &mut counts,
-    )?;
-
-    Ok(ImageWriteResult { counts, warnings })
+    /// Retains facts accumulated before a required-cover failure.
+    fn into_failure(self, error: Error) -> ImageWriteFailure {
+        ImageWriteFailure {
+            partial: self.result,
+            error,
+        }
+    }
 }
 
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
@@ -429,6 +500,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
+    purpose_counts: ImageWritePurposeCounts,
     pending_first: Option<PreparedImage>,
     multiple_emission: Option<ImageFileEmission<'request>>,
 }
@@ -443,6 +515,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
+            purpose_counts: ImageWritePurposeCounts::default(),
             pending_first: None,
             multiple_emission: None,
         }
@@ -524,27 +597,45 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             self.output_dir,
             emission,
             prepared,
+            ImageWritePurpose::NormalImages,
             &mut self.counts,
+            &mut self.purpose_counts,
         )
     }
 
     /// Completes singular lookahead and returns phase-ordered warning facts.
     ///
     /// Returns an error if the lone pending image cannot be emitted.
-    fn finish(mut self) -> Result<ImageWriteResult> {
+    fn finish(mut self) -> ImageWriteOutcome {
         if let Some(prepared) = self.pending_first.take() {
             let mut emission = ImageFileEmission::new(self.base_name, false);
-            self.emit_prepared(&mut emission, prepared)?;
+            if let Err(error) = self.emit_prepared(&mut emission, prepared) {
+                return Err(self.into_failure(error));
+            }
         }
 
-        Ok(ImageWriteResult {
+        Ok(self.into_result())
+    }
+
+    /// Collects phase-ordered facts after traversal succeeds.
+    fn into_result(self) -> ImageWriteResult {
+        ImageWriteResult {
             counts: self.counts,
             warnings: self
                 .discovery_warnings
                 .into_iter()
                 .chain(self.conversion_warnings)
                 .collect(),
-        })
+            purpose_counts: self.purpose_counts,
+        }
+    }
+
+    /// Retains facts accumulated before a traversal or emission failure.
+    fn into_failure(self, error: Error) -> ImageWriteFailure {
+        ImageWriteFailure {
+            partial: self.into_result(),
+            error,
+        }
     }
 }
 
@@ -652,7 +743,9 @@ fn emit_prepared_image(
     output_dir: &Path,
     emission: &mut ImageFileEmission<'_>,
     prepared: PreparedImage,
+    purpose: ImageWritePurpose,
     counts: &mut ImageWriteCounts,
+    purpose_counts: &mut ImageWritePurposeCounts,
 ) -> Result<()> {
     let destination = if prepared.routed_gif {
         // Preparation only marks routing when the immutable policy has a destination.
@@ -674,6 +767,10 @@ fn emit_prepared_image(
     }
     if prepared.skipped_conversion {
         counts.skipped += 1;
+    }
+    match purpose {
+        ImageWritePurpose::NormalImages => purpose_counts.normal_images += 1,
+        ImageWritePurpose::RequiredCover => purpose_counts.required_covers += 1,
     }
 
     Ok(())
@@ -769,7 +866,7 @@ mod tests {
         pipeline: &ImageWritePipeline,
         request: ImageWriteRequest<'_>,
         sources: Vec<(ArchiveImageSource, Vec<u8>)>,
-    ) -> Result<ImageWriteResult> {
+    ) -> ImageWriteOutcome {
         pipeline.write_from(request, |visitor| {
             for (source, data) in sources {
                 visitor.visit(source, &mut Cursor::new(data))?;

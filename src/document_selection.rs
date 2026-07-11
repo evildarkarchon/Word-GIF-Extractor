@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::epub;
+use crate::document_extraction::{DocumentExtractionPolicy, SelectedDocument};
+use epub::doc::EpubDoc;
 
 pub use self::progress::{
     DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
@@ -54,76 +55,10 @@ pub struct DocumentSelectionOptions<'a> {
     pub recursive: bool,
     /// Optional output directory shared by every selected document.
     pub output: Option<&'a Path>,
-    /// Whether EPUB display names should use metadata-derived base names.
-    pub cover_only: bool,
+    /// Document extraction policy used to derive EPUB display identity.
+    pub document_extraction_policy: DocumentExtractionPolicy,
     /// EPUB metadata filter criteria.
     pub epub_filter: &'a EpubFilter,
-}
-
-/// A document selected for extraction with document-level facts resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SelectedDocument {
-    /// DOCX document selected for extraction.
-    Docx {
-        /// Source file path.
-        path: PathBuf,
-        /// Directory where extracted images should be written.
-        output_dir: PathBuf,
-        /// Output filename stem to use for extracted images.
-        base_name: String,
-        /// Progress display name for this document.
-        display_name: String,
-    },
-    /// EPUB document selected for extraction.
-    Epub {
-        /// Source file path.
-        path: PathBuf,
-        /// Directory where extracted images should be written.
-        output_dir: PathBuf,
-        /// Output filename stem to use for extracted images.
-        base_name: String,
-        /// Progress display name for this document.
-        display_name: String,
-    },
-}
-
-impl SelectedDocument {
-    /// Returns the source path for the selected document.
-    pub fn path(&self) -> &Path {
-        match self {
-            SelectedDocument::Docx { path, .. } | SelectedDocument::Epub { path, .. } => path,
-        }
-    }
-
-    /// Returns the output directory for the selected document.
-    pub fn output_dir(&self) -> &Path {
-        match self {
-            SelectedDocument::Docx { output_dir, .. }
-            | SelectedDocument::Epub { output_dir, .. } => output_dir,
-        }
-    }
-
-    /// Returns the output filename stem for the selected document.
-    pub fn base_name(&self) -> &str {
-        match self {
-            SelectedDocument::Docx { base_name, .. } | SelectedDocument::Epub { base_name, .. } => {
-                base_name
-            }
-        }
-    }
-
-    /// Returns the progress display name for the selected document.
-    pub fn display_name(&self) -> &str {
-        match self {
-            SelectedDocument::Docx { display_name, .. }
-            | SelectedDocument::Epub { display_name, .. } => display_name,
-        }
-    }
-
-    /// Returns whether this selected document is a DOCX file.
-    pub fn is_docx(&self) -> bool {
-        matches!(self, SelectedDocument::Docx { .. })
-    }
 }
 
 /// Supported document types.
@@ -196,7 +131,11 @@ pub fn select_documents(
     deduplicated
         .into_iter()
         .map(|candidate| {
-            selected_document_from_candidate(candidate, options.output, options.cover_only)
+            selected_document_from_candidate(
+                candidate,
+                options.output,
+                options.document_extraction_policy.is_epub_cover_only(),
+            )
         })
         .collect()
 }
@@ -406,9 +345,12 @@ fn filename_dedupe_key(path: &Path) -> (String, String) {
     (String::new(), filename)
 }
 
-/// Reads EPUB metadata through the EPUB adapter.
+/// Reads EPUB metadata needed for selection without acquiring image payloads.
 fn read_epub_metadata(path: &Path) -> anyhow::Result<EpubMetadata> {
-    let (author, title) = epub::get_metadata(path)?;
+    let doc =
+        EpubDoc::new(path).map_err(|error| anyhow::anyhow!("Failed to open EPUB file: {error}"))?;
+    let title = doc.mdata("title").map(|metadata| metadata.value.clone());
+    let author = doc.mdata("creator").map(|metadata| metadata.value.clone());
     Ok(EpubMetadata { author, title })
 }
 
@@ -442,12 +384,9 @@ fn selected_document_from_candidate(
     let display_name = fallback_display_name(&candidate.path);
 
     match candidate.document_type {
-        DocumentType::Docx => SelectedDocument::Docx {
-            path: candidate.path,
-            output_dir,
-            base_name: fallback_base_name,
-            display_name,
-        },
+        DocumentType::Docx => {
+            SelectedDocument::docx(candidate.path, output_dir, fallback_base_name, display_name)
+        }
         DocumentType::Epub => {
             let base_name = format_epub_base_name(
                 candidate
@@ -466,12 +405,7 @@ fn selected_document_from_candidate(
                 display_name
             };
 
-            SelectedDocument::Epub {
-                path: candidate.path,
-                output_dir,
-                base_name,
-                display_name,
-            }
+            SelectedDocument::epub(candidate.path, output_dir, base_name, display_name)
         }
     }
 }
@@ -628,7 +562,7 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -679,7 +613,7 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -809,7 +743,7 @@ mod tests {
                 inputs: std::slice::from_ref(&missing),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -831,7 +765,7 @@ mod tests {
                 inputs: &[],
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -859,7 +793,7 @@ mod tests {
                 inputs: std::slice::from_ref(&epub_path),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -912,7 +846,7 @@ mod tests {
                 inputs: &inputs,
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -1058,7 +992,7 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -1071,7 +1005,7 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: true,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -1105,7 +1039,7 @@ mod tests {
                 inputs: std::slice::from_ref(&docx),
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -1139,14 +1073,14 @@ mod tests {
                 inputs: &[first.clone(), second],
                 recursive: false,
                 output: None,
-                cover_only: false,
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
         );
 
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].path(), first);
+        assert_eq!(selected[0].get_path(), first);
         assert!(observer.progress.iter().any(|progress| {
             matches!(
                 progress,
@@ -1191,8 +1125,8 @@ mod tests {
             true,
         );
 
-        assert_eq!(selected.base_name(), "Tester - Magic Test");
-        assert_eq!(selected.display_name(), "Tester - Magic Test");
+        assert_eq!(selected.get_base_name(), "Tester - Magic Test");
+        assert_eq!(selected.get_display_name(), "Tester - Magic Test");
     }
 
     #[test]

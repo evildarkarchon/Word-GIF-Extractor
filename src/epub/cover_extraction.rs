@@ -1,16 +1,15 @@
 //! EPUB cover candidate ordering, acquisition retry, and optional batch fallback.
 
-use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
 use crate::image_write_pipeline::{
-    ArchiveImageSource, ImageWritePipeline, ImageWriteResult, RequiredCoverWriteOutcome,
-    RequiredCoverWriteRequest,
+    ArchiveImageSource, ImageWriteOutcome, ImageWritePipeline, ImageWriteResult,
+    RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
 };
 
+use super::extract_all_images;
 use super::resource_archive::{EpubResource, EpubResourceArchive};
-use super::{append_result, extract_all_images};
 
 /// EPUB facts needed to resolve and write one required cover.
 pub(super) struct EpubCoverRequest<'request> {
@@ -31,7 +30,7 @@ pub(super) struct EpubCoverRequest<'request> {
 pub(super) fn extract_required_cover(
     archive: &mut EpubResourceArchive,
     request: EpubCoverRequest<'_>,
-) -> Result<ImageWriteResult> {
+) -> ImageWriteOutcome {
     let EpubCoverRequest {
         resources,
         metadata_cover,
@@ -49,7 +48,7 @@ pub(super) fn extract_required_cover(
             continue;
         }
 
-        let outcome = pipeline.write_required_cover(
+        let outcome = match pipeline.write_required_cover(
             RequiredCoverWriteRequest::new(output_dir, base_name),
             |visitor| {
                 let source =
@@ -61,27 +60,39 @@ pub(super) fn extract_required_cover(
                 }
                 Ok(())
             },
-        )?;
+        ) {
+            Ok(outcome) => outcome,
+            Err(mut failure) => {
+                failure.prepend(aggregate);
+                return Err(failure);
+            }
+        };
 
         match outcome {
-            RequiredCoverWriteOutcome::Retry(result) => append_result(&mut aggregate, result),
+            RequiredCoverWriteOutcome::Retry(result) => aggregate.append(result),
             RequiredCoverWriteOutcome::Completed(result) => {
-                append_result(&mut aggregate, result);
+                aggregate.append(result);
                 return Ok(aggregate);
             }
         }
     }
 
     if cover_fallback {
-        let fallback = extract_all_images(
+        let fallback = match extract_all_images(
             archive,
             resources,
             &attempted_identities,
             output_dir,
             base_name,
             pipeline,
-        )?;
-        append_result(&mut aggregate, fallback);
+        ) {
+            Ok(fallback) => fallback,
+            Err(mut failure) => {
+                failure.prepend(aggregate);
+                return Err(failure);
+            }
+        };
+        aggregate.append(fallback);
     }
 
     Ok(aggregate)

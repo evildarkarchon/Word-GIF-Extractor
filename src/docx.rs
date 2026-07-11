@@ -1,12 +1,12 @@
 //! DOCX file processing module
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::fs;
 use std::path::Path;
 use zip::ZipArchive;
 
 use crate::image_write_pipeline::{
-    ArchiveImageSource, ImageWritePipeline, ImageWriteRequest, ImageWriteResult,
+    ArchiveImageSource, ImageWriteOutcome, ImageWritePipeline, ImageWriteRequest,
 };
 
 /// Processes a single .docx file, extracting images accepted by the requested Image formats.
@@ -19,12 +19,12 @@ use crate::image_write_pipeline::{
 ///
 /// Returns an error when the input or ZIP archive cannot be opened, or when
 /// collision-safe output emission cannot create or complete a file.
-pub fn process_file(
+pub(super) fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     base_name: &str,
     pipeline: &ImageWritePipeline,
-) -> Result<ImageWriteResult> {
+) -> ImageWriteOutcome {
     let file = fs::File::open(input_path)
         .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
     let mut archive = ZipArchive::new(file)

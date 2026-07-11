@@ -1,6 +1,8 @@
 //! EPUB file processing module
 
+#[path = "epub/cover_extraction.rs"]
 mod cover_extraction;
+#[path = "epub/resource_archive.rs"]
 mod resource_archive;
 
 use anyhow::Result;
@@ -9,8 +11,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::image_write_pipeline::{
-    ArchiveImageSource, ArchiveImageVisitor, ImageWritePipeline, ImageWriteRequest,
-    ImageWriteResult,
+    ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
+    ImageWriteRequest,
 };
 
 use self::cover_extraction::{EpubCoverRequest, extract_required_cover};
@@ -20,19 +22,6 @@ use self::resource_archive::{
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
-
-/// Gets the metadata (author, title) from an EPUB file.
-/// Returns a tuple of (author, title) where either may be None if not present.
-/// Used for deduplication and display purposes.
-pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>)> {
-    let doc =
-        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
-
-    let title = doc.mdata("title").map(|m| m.value.clone());
-    let author = doc.mdata("creator").map(|m| m.value.clone());
-
-    Ok((author, title))
-}
 
 /// Processes a single .epub file, extracting images accepted by the requested Image formats.
 /// Uses the selected document base name for output files.
@@ -46,14 +35,14 @@ pub fn get_metadata(input_path: &Path) -> Result<(Option<String>, Option<String>
 ///
 /// Returns an error when EPUB metadata or either archive handle cannot be opened,
 /// or when collision-safe output emission cannot create or complete a file.
-pub fn process_file(
+pub(super) fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     base_name: &str,
     cover_only: bool,
     cover_fallback: bool,
     pipeline: &ImageWritePipeline,
-) -> Result<ImageWriteResult> {
+) -> ImageWriteOutcome {
     let doc =
         EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
     let cover_id = doc.get_cover_id();
@@ -107,7 +96,7 @@ fn extract_all_images(
     output_base_dir: &Path,
     base_name: &str,
     pipeline: &ImageWritePipeline,
-) -> Result<ImageWriteResult> {
+) -> ImageWriteOutcome {
     pipeline.write_from(
         ImageWriteRequest::normal_images(output_base_dir, base_name),
         |visitor| {
@@ -161,7 +150,7 @@ fn extract_cover_only(
     base_name: &str,
     cover_fallback: bool,
     pipeline: &ImageWritePipeline,
-) -> Result<ImageWriteResult> {
+) -> ImageWriteOutcome {
     let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id() == id));
     let filename_cover = find_cover_by_filename(resources);
     extract_required_cover(
@@ -197,15 +186,6 @@ fn visit_resource(
     }
 
     Ok(())
-}
-
-/// Appends one fallback attempt while preserving counts and warning order.
-fn append_result(aggregate: &mut ImageWriteResult, mut result: ImageWriteResult) {
-    aggregate.counts.extracted += result.counts.extracted;
-    aggregate.counts.gifs_routed += result.counts.gifs_routed;
-    aggregate.counts.converted += result.counts.converted;
-    aggregate.counts.skipped += result.counts.skipped;
-    aggregate.warnings.append(&mut result.warnings);
 }
 
 #[cfg(test)]
@@ -818,14 +798,14 @@ mod tests {
                 (
                     "metadata-cover",
                     "images/art.jpg",
-                    "image/jpeg",
+                    "application/octet-stream",
                     Some("cover-image"),
                 ),
                 ("filename-cover", "images/cover.jpg", "image/jpeg", None),
                 ("page", "images/page.png", "image/png", None),
             ],
             &[
-                ("OEBPS/images/art.jpg", b"\xFF\xD8\xFFcover"),
+                ("OEBPS/images/art.jpg", b"unidentified-cover"),
                 ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfallback"),
                 ("OEBPS/images/page.png", MINIMAL_PNG),
             ],
@@ -846,7 +826,14 @@ mod tests {
         )
         .expect_err("Image file emission failure must abort cover extraction");
 
-        assert!(format!("{error:#}").contains("Failed to create output directory"));
+        assert!(format!("{:#}", error.error).contains("Failed to create output directory"));
+        assert_eq!(error.partial.counts.extracted, 0);
+        assert_eq!(
+            error.partial.warnings,
+            vec![ImageWriteWarning::CoverDefaultToJpeg {
+                mime: "application/octet-stream".to_string(),
+            }]
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }

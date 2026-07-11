@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use crate::Args;
 use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionRequest};
+use crate::document_extraction::{DocumentExtraction, DocumentExtractionPolicy};
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::RunOptions;
 use crate::image_format::ImageFormat;
@@ -109,15 +110,23 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
         conversion,
         gif_output,
     ));
+    let document_extraction_policy = if cover_only {
+        DocumentExtractionPolicy::EpubCover {
+            fallback_to_normal_images: cover_fallback,
+        }
+    } else {
+        DocumentExtractionPolicy::NormalImages
+    };
 
     let options = RunOptions {
         inputs: all_inputs,
         recursive,
         output,
-        cover_only,
-        cover_fallback,
         epub_filter: EpubFilter { title, author },
-        image_write_pipeline,
+        document_extraction: DocumentExtraction::new(
+            document_extraction_policy,
+            image_write_pipeline,
+        ),
     };
 
     Ok(PreparedExtractionRun {
@@ -167,13 +176,15 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image_write_pipeline::{ArchiveImageSource, ImageWriteRequest};
+    use crate::document_extraction::DocumentExtractionOutcome;
+    use crate::document_extraction::SelectedDocument;
     use clap::Parser;
     use image::DynamicImage;
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
 
     fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
         let args = Args::try_parse_from(args).expect("test args should parse");
@@ -191,24 +202,32 @@ mod tests {
         ))
     }
 
+    /// Writes sources through the prepared Document extraction interface.
     fn write_sources(
         prepared: &PreparedExtractionRun,
         output_dir: &Path,
-        sources: Vec<(ArchiveImageSource, Vec<u8>)>,
+        sources: Vec<(&str, Vec<u8>)>,
     ) -> crate::image_write_pipeline::ImageWriteResult {
-        prepared
-            .options
-            .image_write_pipeline
-            .write_from(
-                ImageWriteRequest::normal_images(output_dir, "sample"),
-                |visitor| {
-                    for (source, data) in sources {
-                        visitor.visit(source, &mut Cursor::new(data))?;
-                    }
-                    Ok(())
-                },
-            )
-            .expect("prepared pipeline should write test sources")
+        fs::create_dir_all(output_dir).expect("temporary output directory should be creatable");
+        let input_path = output_dir.join("input.docx");
+        let file = fs::File::create(&input_path).expect("test DOCX should be creatable");
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, data) in sources {
+            zip.start_file(name, SimpleFileOptions::default())
+                .expect("ZIP entry should start");
+            zip.write_all(&data)
+                .expect("ZIP entry payload should be writable");
+        }
+        zip.finish().expect("test DOCX should finish");
+
+        let document =
+            SelectedDocument::docx(input_path, output_dir.to_path_buf(), "sample", "input.docx");
+        match prepared.options.document_extraction.extract(&document) {
+            DocumentExtractionOutcome::Completed(result) => result,
+            DocumentExtractionOutcome::Failed { error, .. } => {
+                panic!("prepared Document extraction should succeed: {error}")
+            }
+        }
     }
 
     fn valid_png() -> Vec<u8> {
@@ -248,18 +267,9 @@ mod tests {
             &prepared,
             &temp_dir,
             vec![
-                (
-                    ArchiveImageSource::named("image.bin"),
-                    b"\x89PNG\r\n\x1A\n".to_vec(),
-                ),
-                (
-                    ArchiveImageSource::named("photo.bin"),
-                    b"\xFF\xD8\xFF".to_vec(),
-                ),
-                (
-                    ArchiveImageSource::named("animation.bin"),
-                    b"GIF89a".to_vec(),
-                ),
+                ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
+                ("photo.bin", b"\xFF\xD8\xFF".to_vec()),
+                ("animation.bin", b"GIF89a".to_vec()),
             ],
         );
 
@@ -280,7 +290,7 @@ mod tests {
         let result = write_sources(
             &prepared,
             &temp_dir,
-            vec![(ArchiveImageSource::named("vector.bin"), b"<svg/>".to_vec())],
+            vec![("vector.bin", b"<svg/>".to_vec())],
         );
 
         assert_eq!(result.counts.extracted, 1);
@@ -299,14 +309,8 @@ mod tests {
             &prepared,
             &temp_dir,
             vec![
-                (
-                    ArchiveImageSource::named("image.bin"),
-                    b"\x89PNG\r\n\x1A\n".to_vec(),
-                ),
-                (
-                    ArchiveImageSource::named("animation.bin"),
-                    b"GIF89a".to_vec(),
-                ),
+                ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
+                ("animation.bin", b"GIF89a".to_vec()),
             ],
         );
 
@@ -322,11 +326,7 @@ mod tests {
         let prepared = prepare_from(["test", "book.epub", "--convert", "jpg"]);
         let temp_dir = temp_test_dir("default-conversion");
 
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
-            vec![(ArchiveImageSource::named("image.png"), valid_png())],
-        );
+        let result = write_sources(&prepared, &temp_dir, vec![("image.png", valid_png())]);
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(result.counts.converted, 1);
@@ -350,6 +350,18 @@ mod tests {
 
         assert!(prepared.has_convert);
         assert_eq!(prepared.gif_output, Some(PathBuf::from("gifs")));
+    }
+
+    #[test]
+    fn builds_validated_epub_cover_extraction_policy() {
+        let prepared = prepare_from(["test", "book.epub", "--cover-only", "--cover-fallback"]);
+
+        assert_eq!(
+            prepared.options.document_extraction.get_policy(),
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            }
+        );
     }
 
     #[test]
