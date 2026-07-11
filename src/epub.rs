@@ -6,19 +6,17 @@ mod cover_extraction;
 mod resource_archive;
 
 use anyhow::Result;
-use epub::doc::EpubDoc;
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
     ImageWriteRequest,
 };
 
 use self::cover_extraction::{EpubCoverRequest, extract_required_cover};
-use self::resource_archive::{
-    ArchiveResourceIdentity, EpubManifestResource, EpubResource, EpubResourceArchive,
-};
+use self::resource_archive::{ArchiveResourceIdentity, EpubResource, EpubResourceArchive};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -28,41 +26,41 @@ const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 /// If cover_only is true, only extracts the cover image.
 /// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
 /// The configured Image write pipeline owns bounded source acquisition, image
-/// acceptance, and output policy. The EPUB adapter retains manifest and cover
-/// traversal while a second read-only ZIP handle lends scoped resource readers.
+/// acceptance, and output policy. Retained EPUB declarations drive manifest and
+/// cover traversal while a separate read-only ZIP handle lends scoped readers.
 ///
 /// # Errors
 ///
-/// Returns an error when EPUB metadata or either archive handle cannot be opened,
+/// Returns an error when EPUB declarations cannot be acquired, an archive cannot be opened,
 /// or when collision-safe output emission cannot create or complete a file.
 pub(super) fn process_file(
     input_path: &Path,
     output_base_dir: &Path,
     base_name: &str,
+    retained_declarations: Option<&EpubDeclarations>,
     cover_only: bool,
     cover_fallback: bool,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
-    let doc =
-        EpubDoc::new(input_path).map_err(|e| anyhow::anyhow!("Failed to open EPUB file: {}", e))?;
-    let cover_id = doc.get_cover_id();
-    let manifest_resources: Vec<EpubManifestResource> = doc
-        .resources
-        .iter()
-        .map(|(id, item)| EpubManifestResource::new(id, &item.path, &item.mime))
-        .collect();
-    // EpubDoc exposes the manifest facts we need but only offers eager payload reads.
-    // Release it before opening the independent read-only ZIP handle recorded in ADR-0001.
-    drop(doc);
-
-    let mut archive = EpubResourceArchive::open(input_path, manifest_resources)?;
+    let acquired_declarations;
+    let declarations = match retained_declarations {
+        Some(declarations) => declarations,
+        None => {
+            acquired_declarations =
+                EpubDeclarations::acquire(input_path).map_err(anyhow::Error::new)?;
+            &acquired_declarations
+        }
+    };
+    // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
+    // even when declaration facts were retained earlier by Document selection.
+    let mut archive = EpubResourceArchive::open(input_path, declarations.resources())?;
     let resources = archive.resources().to_vec();
 
     if cover_only {
         return extract_cover_only(
             &mut archive,
             &resources,
-            cover_id.as_deref(),
+            declarations.cover_id(),
             output_base_dir,
             base_name,
             cover_fallback,
@@ -113,7 +111,7 @@ fn extract_all_images(
     )
 }
 
-/// Searches for a cover image by filename when metadata-based detection fails.
+/// Searches for a cover image by filename when the declared cover identity fails.
 /// Looks for files named "cover" (case-insensitive) with common JPEG extensions.
 /// Returns the first matching deterministic manifest candidate.
 fn find_cover_by_filename(resources: &[EpubResource]) -> Option<&EpubResource> {
@@ -141,7 +139,7 @@ fn find_cover_by_filename(resources: &[EpubResource]) -> Option<&EpubResource> {
 /// # Errors
 ///
 /// Returns an error when output emission fails. Unreadable cover resources become
-/// warnings and advance through metadata, filename, then optional batch fallback.
+/// warnings and advance through declared identity, filename, then optional batch fallback.
 fn extract_cover_only(
     archive: &mut EpubResourceArchive,
     resources: &[EpubResource],
@@ -401,6 +399,7 @@ mod tests {
             &input_path,
             &output_dir,
             "Tester - Magic Test",
+            None,
             false,
             false,
             &pipeline,
@@ -439,6 +438,7 @@ mod tests {
             &input_path,
             &output_dir,
             "Tester - Magic Test",
+            None,
             false,
             false,
             &pipeline,
@@ -471,8 +471,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", false, false, &pipeline)
-            .expect("a missing resource should not abort the EPUB");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            false,
+            false,
+            &pipeline,
+        )
+        .expect("a missing resource should not abort the EPUB");
 
         assert_eq!(result.counts.extracted, 1);
         assert!(matches!(
@@ -518,8 +526,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", false, false, &pipeline)
-            .expect("EPUB extraction should succeed");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            false,
+            false,
+            &pipeline,
+        )
+        .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 2);
         assert_eq!(
@@ -561,8 +577,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", false, false, &pipeline)
-            .expect("EPUB extraction should succeed");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            false,
+            false,
+            &pipeline,
+        )
+        .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 2);
         assert_eq!(
@@ -594,8 +618,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", false, false, &pipeline)
-            .expect("percent-decoded lookup should preserve EPUB crate behavior");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            false,
+            false,
+            &pipeline,
+        )
+        .expect("percent-decoded lookup should preserve EPUB crate behavior");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
@@ -630,8 +662,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", false, false, &pipeline)
-            .expect("exact ZIP lookup should take precedence");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            false,
+            false,
+            &pipeline,
+        )
+        .expect("exact ZIP lookup should take precedence");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
@@ -668,8 +708,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", true, false, &pipeline)
-            .expect("an unreadable metadata cover should allow filename fallback");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            true,
+            false,
+            &pipeline,
+        )
+        .expect("an unreadable metadata cover should allow filename fallback");
 
         assert_eq!(result.counts.extracted, 1);
         assert!(matches!(
@@ -708,8 +756,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", true, true, &pipeline)
-            .expect("unreadable cover candidates should allow batch fallback");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            true,
+            true,
+            &pipeline,
+        )
+        .expect("unreadable cover candidates should allow batch fallback");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
@@ -762,8 +818,16 @@ mod tests {
             None,
         ));
 
-        let result = process_file(&input_path, &output_dir, "sample", true, true, &pipeline)
-            .expect("one failed resolved cover should allow batch fallback");
+        let result = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            true,
+            true,
+            &pipeline,
+        )
+        .expect("one failed resolved cover should allow batch fallback");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
@@ -820,6 +884,7 @@ mod tests {
             &input_path,
             &blocked_output,
             "sample",
+            None,
             true,
             true,
             &pipeline,

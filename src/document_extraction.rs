@@ -8,6 +8,7 @@ mod epub;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
 
 /// Opaque handoff from Document selection to Document extraction.
@@ -18,6 +19,7 @@ pub(crate) struct SelectedDocument {
     output_dir: PathBuf,
     base_name: String,
     display_name: String,
+    epub_declarations: Option<EpubDeclarations>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +42,7 @@ impl SelectedDocument {
             output_dir,
             base_name: base_name.into(),
             display_name: display_name.into(),
+            epub_declarations: None,
         }
     }
 
@@ -49,6 +52,7 @@ impl SelectedDocument {
         output_dir: PathBuf,
         base_name: impl Into<String>,
         display_name: impl Into<String>,
+        epub_declarations: Option<EpubDeclarations>,
     ) -> Self {
         Self {
             kind: SelectedDocumentKind::Epub,
@@ -56,6 +60,7 @@ impl SelectedDocument {
             output_dir,
             base_name: base_name.into(),
             display_name: display_name.into(),
+            epub_declarations,
         }
     }
 
@@ -144,6 +149,7 @@ impl DocumentExtraction {
                 &document.path,
                 &document.output_dir,
                 &document.base_name,
+                document.epub_declarations.as_ref(),
                 self.policy.is_epub_cover_only(),
                 self.policy.is_epub_cover_fallback_enabled(),
                 &self.image_write_pipeline,
@@ -288,6 +294,10 @@ pub(crate) enum DocumentExtractionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document_selection::{
+        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
+        DocumentSelectionProgress, EpubFilter, select_documents,
+    };
     use crate::image_format::ImageFormat;
     use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
     use std::collections::HashSet;
@@ -323,6 +333,22 @@ mod tests {
 
     /// Writes an EPUB fixture with one declared image and optional cover property.
     fn write_epub(path: &Path, image_href: &str, properties: Option<&str>, data: &[u8]) {
+        let archive_path = format!("OEBPS/{image_href}");
+        write_epub_with_resources(
+            path,
+            image_href,
+            properties,
+            &[(archive_path.as_str(), data)],
+        );
+    }
+
+    /// Writes an EPUB fixture whose declaration and available payloads vary independently.
+    fn write_epub_with_resources(
+        path: &Path,
+        image_href: &str,
+        properties: Option<&str>,
+        archive_resources: &[(&str, &[u8])],
+    ) {
         let file = fs::File::create(path).expect("test EPUB should be creatable");
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default();
@@ -363,10 +389,23 @@ mod tests {
             .expect("nav entry should start");
         zip.write_all(b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body/></html>")
             .expect("nav should be writable");
-        zip.start_file(format!("OEBPS/{image_href}"), options)
-            .expect("image entry should start");
-        zip.write_all(data).expect("image should be writable");
+        for (archive_path, data) in archive_resources {
+            zip.start_file(*archive_path, options)
+                .expect("image entry should start");
+            zip.write_all(data).expect("image should be writable");
+        }
         zip.finish().expect("test EPUB should finish");
+    }
+
+    #[derive(Default)]
+    struct SilentDocumentSelectionObserver;
+
+    impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
+        /// Ignores progress facts that are outside this extraction-focused test seam.
+        fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
+
+        /// Ignores diagnostics because the fixtures in these tests are readable.
+        fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
     }
 
     #[test]
@@ -481,7 +520,8 @@ mod tests {
                 None,
             )),
         );
-        let document = SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test");
+        let document =
+            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
 
         let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
             panic!("valid EPUB cover extraction should complete");
@@ -511,7 +551,8 @@ mod tests {
                 None,
             )),
         );
-        let document = SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test");
+        let document =
+            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
 
         let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
             panic!("EPUB cover fallback should complete");
@@ -544,7 +585,8 @@ mod tests {
                 None,
             )),
         );
-        let document = SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test");
+        let document =
+            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
 
         let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
             panic!("normal EPUB extraction should complete");
@@ -553,6 +595,111 @@ mod tests {
         assert_eq!(result.get_emitted_images(), 1);
         assert!(result.is_normal_image_output_present());
         assert!(output_dir.join("sample.jpg").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn retained_epub_declarations_are_authoritative_during_extraction() {
+        let temp_dir = temp_test_dir("retained-epub-declarations");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("output");
+        let selected_payload = b"\xFF\xD8\xFFselected";
+        let replacement_payload = b"\xFF\xD8\xFFreplacement";
+        let archive_resources = [
+            ("OEBPS/images/selected.jpg", selected_payload.as_slice()),
+            (
+                "OEBPS/images/replacement.jpg",
+                replacement_payload.as_slice(),
+            ),
+        ];
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        write_epub_with_resources(&input_path, "images/selected.jpg", None, &archive_resources);
+        let mut observer = SilentDocumentSelectionObserver;
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&input_path),
+                recursive: false,
+                output: Some(&output_dir),
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+        assert_eq!(selected.len(), 1);
+
+        write_epub_with_resources(
+            &input_path,
+            "images/replacement.jpg",
+            None,
+            &archive_resources,
+        );
+        let extraction = DocumentExtraction::new(
+            DocumentExtractionPolicy::NormalImages,
+            ImageWritePipeline::new(ImageWritePolicy::new(
+                HashSet::from([ImageFormat::Jpg]),
+                None,
+                None,
+            )),
+        );
+
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&selected[0]) else {
+            panic!("retained EPUB declarations should support extraction");
+        };
+
+        assert_eq!(result.get_emitted_images(), 1);
+        assert_eq!(
+            fs::read(output_dir.join("Test.jpg")).expect("selected image should be readable"),
+            selected_payload
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn selection_declaration_failure_is_retried_during_extraction() {
+        let temp_dir = temp_test_dir("retry-epub-declarations");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        fs::write(&input_path, b"not an EPUB").expect("invalid EPUB should be writable");
+        let mut observer = SilentDocumentSelectionObserver;
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&input_path),
+                recursive: false,
+                output: Some(&output_dir),
+                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+        assert_eq!(selected.len(), 1);
+
+        write_epub(
+            &input_path,
+            "images/recovered.jpg",
+            None,
+            b"\xFF\xD8\xFFrecovered",
+        );
+        let extraction = DocumentExtraction::new(
+            DocumentExtractionPolicy::NormalImages,
+            ImageWritePipeline::new(ImageWritePolicy::new(
+                HashSet::from([ImageFormat::Jpg]),
+                None,
+                None,
+            )),
+        );
+
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&selected[0]) else {
+            panic!("Document extraction should retry unavailable EPUB declarations");
+        };
+
+        assert_eq!(result.get_emitted_images(), 1);
+        assert_eq!(
+            fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
+            b"\xFF\xD8\xFFrecovered"
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }

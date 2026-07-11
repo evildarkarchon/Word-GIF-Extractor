@@ -5,30 +5,10 @@ use percent_encoding::percent_decode;
 use std::fmt;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use zip::ZipArchive;
 
-/// Manifest facts used to build one EPUB resource descriptor.
-pub(super) struct EpubManifestResource {
-    id: String,
-    path: PathBuf,
-    mime: String,
-}
-
-impl EpubManifestResource {
-    /// Captures the document-facing facts for one EPUB manifest resource.
-    pub(super) fn new(
-        id: impl Into<String>,
-        path: impl Into<PathBuf>,
-        mime: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            path: path.into(),
-            mime: mime.into(),
-        }
-    }
-}
+use crate::epub_declarations::EpubResourceDeclaration;
 
 /// Stable opaque identity for one archive payload or unresolved reference.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -135,16 +115,16 @@ impl EpubResourceArchive {
     /// resources remain in the catalog and fail only when acquired.
     pub(super) fn open(
         input_path: &Path,
-        manifest_resources: Vec<EpubManifestResource>,
+        declared_resources: &[EpubResourceDeclaration],
     ) -> Result<Self> {
         let file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
         let archive = ZipArchive::new(file)
             .with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
-        let mut resources: Vec<_> = manifest_resources
-            .into_iter()
+        let mut resources: Vec<_> = declared_resources
+            .iter()
             .map(|resource| {
-                let manifest_path = archive_path(&resource.path);
+                let manifest_path = archive_path(resource.path());
                 let resolution = match resolve_resource(&archive, &manifest_path) {
                     Ok(index) => ResourceResolution::Resolved(index),
                     Err(error) => ResourceResolution::Unresolved(error),
@@ -165,9 +145,9 @@ impl EpubResourceArchive {
                     ResourceResolution::Unresolved(_) => normalized_sort_path(&manifest_path),
                 };
                 EpubResource {
-                    id: resource.id,
+                    id: resource.id().to_string(),
                     manifest_path,
-                    mime: resource.mime,
+                    mime: resource.mime().to_string(),
                     identity,
                     resolution,
                     sort_path,
@@ -324,7 +304,7 @@ mod tests {
         );
         let mut archive = EpubResourceArchive::open(
             &path,
-            vec![EpubManifestResource::new(
+            &[EpubResourceDeclaration::new(
                 "image",
                 Path::new("OPS/image%20one.png"),
                 "image/png",
@@ -353,9 +333,17 @@ mod tests {
         write_archive(&path, &[("OPS/image one.png", b"shared")]);
         let mut archive = EpubResourceArchive::open(
             &path,
-            vec![
-                EpubManifestResource::new("encoded", Path::new("OPS/image%20one.png"), "image/png"),
-                EpubManifestResource::new("decoded", Path::new("OPS/image one.png"), "image/png"),
+            &[
+                EpubResourceDeclaration::new(
+                    "encoded",
+                    Path::new("OPS/image%20one.png"),
+                    "image/png",
+                ),
+                EpubResourceDeclaration::new(
+                    "decoded",
+                    Path::new("OPS/image one.png"),
+                    "image/png",
+                ),
             ],
         )
         .expect("resource archive should open");
@@ -382,10 +370,10 @@ mod tests {
         write_archive(&path, &[("OPS/z.png", b"z"), ("OPS/a one.png", b"a")]);
         let archive = EpubResourceArchive::open(
             &path,
-            vec![
-                EpubManifestResource::new("z", Path::new("OPS/z.png"), "image/png"),
-                EpubManifestResource::new("a", Path::new("OPS/a%20one.png"), "image/png"),
-                EpubManifestResource::new("missing", Path::new("OPS/missing.png"), "image/png"),
+            &[
+                EpubResourceDeclaration::new("z", Path::new("OPS/z.png"), "image/png"),
+                EpubResourceDeclaration::new("a", Path::new("OPS/a%20one.png"), "image/png"),
+                EpubResourceDeclaration::new("missing", Path::new("OPS/missing.png"), "image/png"),
             ],
         )
         .expect("resource archive should open");
@@ -406,7 +394,7 @@ mod tests {
         write_archive(&path, &[("OPS/other.png", b"other")]);
         let mut archive = EpubResourceArchive::open(
             &path,
-            vec![EpubManifestResource::new(
+            &[EpubResourceDeclaration::new(
                 "invalid",
                 Path::new("OPS/image%FF.png"),
                 "image/png",
@@ -436,7 +424,7 @@ mod tests {
         write_archive(&path, &[("OPS/other.png", b"other")]);
         let mut archive = EpubResourceArchive::open(
             &path,
-            vec![EpubManifestResource::new(
+            &[EpubResourceDeclaration::new(
                 "invalid",
                 Path::new("OPS/image%ZZ.png"),
                 "image/png",

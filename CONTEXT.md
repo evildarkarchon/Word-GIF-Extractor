@@ -80,6 +80,10 @@ _Avoid_: ZIP index, resource path
 The ordered set of resources declared by an EPUB together with their available archive payloads. It preserves document-facing resource facts while distinguishing references from Archive resource identity.
 _Avoid_: Direct ZIP adapter, resource list
 
+**EPUB declarations**:
+The payload-free facts declared by an EPUB and retained across Document selection and Document extraction, including descriptive metadata, cover identity, and resource declarations. Once retained, they are the authoritative declaration facts for that Extraction run. They exclude archive payload acquisition and Archive resource identity resolution.
+_Avoid_: EPUB metadata, manifest snapshot, EPUB document model
+
 **Image format**:
 The project-normalized identity of image bytes used to decide whether an image is extractable, writable, and convertible, independent of how a document labels it.
 _Avoid_: Raw extension, MIME type, detected kind

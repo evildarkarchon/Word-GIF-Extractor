@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::document_extraction::{DocumentExtractionPolicy, SelectedDocument};
-use epub::doc::EpubDoc;
+use crate::epub_declarations::EpubDeclarations;
 
 pub use self::progress::{
     DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
@@ -18,7 +18,7 @@ use self::progress::{
     DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck, ScanningProgress,
 };
 
-/// Sanitizes document metadata for use as an output filename.
+/// Sanitizes declared document text for use as an output filename.
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|character| match character {
@@ -31,7 +31,7 @@ fn sanitize_filename(name: &str) -> String {
         .to_string()
 }
 
-/// Filter criteria for selecting EPUB files by metadata.
+/// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EpubFilter {
     /// Case-insensitive title substring required for an EPUB to be selected.
@@ -41,7 +41,7 @@ pub struct EpubFilter {
 }
 
 impl EpubFilter {
-    /// Returns true if no EPUB metadata filter criteria are set.
+    /// Returns true if no EPUB declaration filter criteria are set.
     pub fn is_empty(&self) -> bool {
         self.title.is_none() && self.author.is_none()
     }
@@ -57,7 +57,7 @@ pub struct DocumentSelectionOptions<'a> {
     pub output: Option<&'a Path>,
     /// Document extraction policy used to derive EPUB display identity.
     pub document_extraction_policy: DocumentExtractionPolicy,
-    /// EPUB metadata filter criteria.
+    /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
 }
 
@@ -69,42 +69,29 @@ enum DocumentType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EpubMetadata {
-    author: Option<String>,
-    title: Option<String>,
-}
-
-impl EpubMetadata {
-    /// Returns true when at least one metadata field is present.
-    fn has_any_value(&self) -> bool {
-        self.author.is_some() || self.title.is_some()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct DocumentCandidate {
     path: PathBuf,
     document_type: DocumentType,
-    epub_metadata: Option<EpubMetadata>,
+    epub_declarations: Option<EpubDeclarations>,
 }
 
 impl DocumentCandidate {
-    /// Creates a document candidate without preloaded EPUB metadata.
+    /// Creates a document candidate without retained EPUB declarations.
     fn new(path: PathBuf, document_type: DocumentType) -> Self {
         Self {
             path,
             document_type,
-            epub_metadata: None,
+            epub_declarations: None,
         }
     }
 }
 
 /// Selects documents for extraction while reporting live progress snapshots and diagnostics.
 ///
-/// Selection owns document discovery, EPUB metadata filtering, EPUB dedupe,
+/// Selection owns document discovery, EPUB declaration filtering, EPUB dedupe,
 /// display identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
-/// filters. Missing inputs and unreadable EPUB metadata are reported as
+/// filters. Missing inputs and unreadable EPUB declarations are reported as
 /// structured, non-fatal diagnostics through the informational observer.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
@@ -126,7 +113,7 @@ pub fn select_documents(
     } else {
         candidates
     };
-    let deduplicated = deduplicate_by_metadata(filtered, &mut lifecycle);
+    let deduplicated = deduplicate_epubs_by_declarations(filtered, &mut lifecycle);
 
     deduplicated
         .into_iter()
@@ -222,7 +209,7 @@ fn push_supported_document(
     progress.document_discovered();
 }
 
-/// Filters EPUB files by metadata while passing non-EPUB files through.
+/// Filters EPUB files by title and creator declarations while passing non-EPUB files through.
 fn filter_epub_files(
     files: Vec<DocumentCandidate>,
     filter: &EpubFilter,
@@ -236,15 +223,15 @@ fn filter_epub_files(
         let mut matching_epubs = Vec::new();
 
         for mut candidate in epub_files {
-            let outcome = match read_epub_metadata(&candidate.path) {
-                Ok(metadata) if matches_filter(&metadata, filter) => {
-                    candidate.epub_metadata = Some(metadata);
+            let outcome = match EpubDeclarations::acquire(&candidate.path) {
+                Ok(declarations) if matches_filter(&declarations, filter) => {
+                    candidate.epub_declarations = Some(declarations);
                     matching_epubs.push(candidate);
                     EpubFilterCheck::Matched
                 }
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
-                    // Filtering cannot accept an EPUB whose requested metadata is unreadable.
+                    // Filtering cannot accept an EPUB whose requested declarations are unreadable.
                     progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
                         path: candidate.path,
                         purpose: EpubMetadataPurpose::Filtering,
@@ -263,12 +250,12 @@ fn filter_epub_files(
     })
 }
 
-/// Deduplicates EPUB files based on their metadata (author + title).
+/// Deduplicates EPUB files based on their creator and title declarations.
 ///
 /// Keeps the first occurrence of each unique (author, title) combination.
-/// Non-EPUB files are passed through unchanged. EPUBs without metadata are
+/// Non-EPUB files are passed through unchanged. EPUBs without those declarations are
 /// deduplicated by filename.
-fn deduplicate_by_metadata(
+fn deduplicate_epubs_by_declarations(
     files: Vec<DocumentCandidate>,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
@@ -282,9 +269,9 @@ fn deduplicate_by_metadata(
         let mut unique_epubs = Vec::new();
 
         for mut candidate in epub_files {
-            if candidate.epub_metadata.is_none() {
-                match read_epub_metadata(&candidate.path) {
-                    Ok(metadata) => candidate.epub_metadata = Some(metadata),
+            if candidate.epub_declarations.is_none() {
+                match EpubDeclarations::acquire(&candidate.path) {
+                    Ok(declarations) => candidate.epub_declarations = Some(declarations),
                     Err(error) => {
                         progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
                             path: candidate.path.clone(),
@@ -295,8 +282,12 @@ fn deduplicate_by_metadata(
                 }
             }
 
-            let key = match candidate.epub_metadata.as_ref() {
-                Some(metadata) if metadata.has_any_value() => metadata.dedupe_key(),
+            let key = match candidate.epub_declarations.as_ref() {
+                Some(declarations)
+                    if declarations.creator().is_some() || declarations.title().is_some() =>
+                {
+                    epub_dedupe_key(declarations)
+                }
                 _ => filename_dedupe_key(&candidate.path),
             };
 
@@ -319,24 +310,20 @@ fn deduplicate_by_metadata(
     })
 }
 
-impl EpubMetadata {
-    /// Builds the case-insensitive dedupe key for EPUB metadata.
-    fn dedupe_key(&self) -> (String, String) {
-        let author_key = self
-            .author
-            .as_deref()
-            .map(|s| s.trim().to_lowercase())
-            .unwrap_or_default();
-        let title_key = self
-            .title
-            .as_deref()
-            .map(|s| s.trim().to_lowercase())
-            .unwrap_or_default();
-        (author_key, title_key)
-    }
+/// Builds the case-insensitive dedupe key from retained EPUB declarations.
+fn epub_dedupe_key(declarations: &EpubDeclarations) -> (String, String) {
+    let creator_key = declarations
+        .creator()
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_default();
+    let title_key = declarations
+        .title()
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_default();
+    (creator_key, title_key)
 }
 
-/// Builds a filename fallback dedupe key for EPUBs without usable metadata.
+/// Builds a filename fallback dedupe key for EPUBs without usable declarations.
 fn filename_dedupe_key(path: &Path) -> (String, String) {
     let filename = path
         .file_name()
@@ -345,28 +332,17 @@ fn filename_dedupe_key(path: &Path) -> (String, String) {
     (String::new(), filename)
 }
 
-/// Reads EPUB metadata needed for selection without acquiring image payloads.
-fn read_epub_metadata(path: &Path) -> anyhow::Result<EpubMetadata> {
-    let doc =
-        EpubDoc::new(path).map_err(|error| anyhow::anyhow!("Failed to open EPUB file: {error}"))?;
-    let title = doc.mdata("title").map(|metadata| metadata.value.clone());
-    let author = doc.mdata("creator").map(|metadata| metadata.value.clone());
-    Ok(EpubMetadata { author, title })
-}
-
-/// Checks if EPUB metadata matches the filter using case-insensitive substring match.
-fn matches_filter(metadata: &EpubMetadata, filter: &EpubFilter) -> bool {
+/// Checks whether title and creator declarations match the case-insensitive filter.
+fn matches_filter(declarations: &EpubDeclarations, filter: &EpubFilter) -> bool {
     let title_matches = filter.title.as_ref().is_none_or(|f| {
-        metadata
-            .title
-            .as_deref()
+        declarations
+            .title()
             .is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase()))
     });
 
     let author_matches = filter.author.as_ref().is_none_or(|f| {
-        metadata
-            .author
-            .as_deref()
+        declarations
+            .creator()
             .is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase()))
     });
 
@@ -390,13 +366,13 @@ fn selected_document_from_candidate(
         DocumentType::Epub => {
             let base_name = format_epub_base_name(
                 candidate
-                    .epub_metadata
+                    .epub_declarations
                     .as_ref()
-                    .and_then(|metadata| metadata.author.as_deref()),
+                    .and_then(EpubDeclarations::creator),
                 candidate
-                    .epub_metadata
+                    .epub_declarations
                     .as_ref()
-                    .and_then(|metadata| metadata.title.as_deref()),
+                    .and_then(EpubDeclarations::title),
                 &fallback_base_name,
             );
             let display_name = if cover_only {
@@ -405,7 +381,13 @@ fn selected_document_from_candidate(
                 display_name
             };
 
-            SelectedDocument::epub(candidate.path, output_dir, base_name, display_name)
+            SelectedDocument::epub(
+                candidate.path,
+                output_dir,
+                base_name,
+                display_name,
+                candidate.epub_declarations,
+            )
         }
     }
 }
@@ -439,7 +421,7 @@ fn fallback_display_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Formats a filename based on EPUB metadata (author and title).
+/// Formats a filename from EPUB creator and title declarations.
 fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &str) -> String {
     let author = author.map(|s| s.trim()).filter(|s| !s.is_empty());
     let title = title.map(|s| s.trim()).filter(|s| !s.is_empty());
@@ -501,7 +483,7 @@ mod tests {
         ))
     }
 
-    /// Writes a minimal EPUB whose metadata can be read by the production adapter.
+    /// Writes a minimal EPUB whose declarations can be read by the production adapter.
     fn write_minimal_epub(path: &Path, author: &str, title: &str) {
         let file = fs::File::create(path).expect("test EPUB should be creatable");
         let mut archive = zip::ZipWriter::new(file);
@@ -1056,7 +1038,7 @@ mod tests {
     }
 
     #[test]
-    fn deduplicate_by_metadata_falls_back_to_filename_when_metadata_cannot_be_read() {
+    fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read() {
         let temp_dir = temp_test_dir("dedupe-fallback");
         let first_dir = temp_dir.join("first");
         let second_dir = temp_dir.join("second");
@@ -1112,14 +1094,17 @@ mod tests {
 
     #[test]
     fn selected_epub_carries_base_name_and_cover_display_name() {
+        let temp_dir = temp_test_dir("selected-epub-identity");
+        let epub_path = temp_dir.join("sample.epub");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        write_minimal_epub(&epub_path, "Tester", "Magic Test");
+        let declarations = EpubDeclarations::acquire(&epub_path)
+            .expect("test EPUB declarations should be readable");
         let selected = selected_document_from_candidate(
             DocumentCandidate {
-                path: PathBuf::from("sample.epub"),
+                path: epub_path,
                 document_type: DocumentType::Epub,
-                epub_metadata: Some(EpubMetadata {
-                    author: Some("Tester".to_string()),
-                    title: Some("Magic Test".to_string()),
-                }),
+                epub_declarations: Some(declarations),
             },
             None,
             true,
@@ -1127,6 +1112,8 @@ mod tests {
 
         assert_eq!(selected.get_base_name(), "Tester - Magic Test");
         assert_eq!(selected.get_display_name(), "Tester - Magic Test");
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
 
     #[test]

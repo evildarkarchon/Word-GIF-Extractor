@@ -6,6 +6,7 @@
 mod conversion;
 mod document_extraction;
 mod document_selection;
+mod epub_declarations;
 mod extraction_run;
 mod extraction_run_intake;
 mod image_format;
