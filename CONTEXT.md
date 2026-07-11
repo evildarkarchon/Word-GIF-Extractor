@@ -8,6 +8,18 @@ This context names the concepts involved in extracting images from document arch
 The project workflow for turning requested input paths into processed documents and a final outcome, including Document selection and per-document extraction.
 _Avoid_: CLI orchestration, processing loop
 
+**Document extraction**:
+The per-document responsibility within an Extraction run for turning one selected document into an extraction outcome, including document-kind handling, cover behavior, warnings, and output classification. It excludes Document selection, cross-document sequencing, and run-level presentation.
+_Avoid_: Per-document execution, document processor
+
+**Document extraction outcome**:
+The terminal result of Document extraction: either completed or failed with a document-local error, while retaining any image-write facts produced before completion or failure. A failed outcome does not end the Extraction run or imply that no files were emitted.
+_Avoid_: Per-file result, extraction return value
+
+**Document extraction policy**:
+The valid per-run choices governing normal document images versus EPUB cover extraction and optional cover fallback. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
+_Avoid_: Cover flags, extraction booleans
+
 **Document selection**:
 The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement.
 _Avoid_: File collection, scan results, work item builder
