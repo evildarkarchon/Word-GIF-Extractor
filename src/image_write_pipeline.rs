@@ -3,7 +3,7 @@
 mod discovery;
 mod emission;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
 
-use self::discovery::{discover_image, is_source_safe};
+use self::discovery::{
+    ArchiveImageDiscoveryOutcome, discover_image, discover_required_cover, is_source_safe,
+};
 use self::emission::ImageFileEmission;
 
 /// Metadata supplied before Archive image discovery reads one archive resource.
@@ -39,6 +41,18 @@ impl ArchiveImageSource {
     pub(crate) fn with_mime(mut self, mime: impl Into<String>) -> Self {
         self.mime = Some(mime.into());
         self
+    }
+
+    /// Creates a required-cover source whose path is diagnostic identity, not format evidence.
+    ///
+    /// EPUB covers intentionally use byte evidence before MIME and never fall back
+    /// to a manifest path extension.
+    pub(crate) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
+        Self {
+            diagnostic_name: source_name.into(),
+            format_source_name: None,
+            mime: Some(mime.into()),
+        }
     }
 }
 
@@ -200,6 +214,13 @@ struct PreparedImage {
     skipped_conversion: bool,
 }
 
+/// Private policy branch shared by the two Image write pipeline operations.
+#[derive(Clone, Copy)]
+pub(super) enum ImageWritePurpose {
+    NormalImages,
+    RequiredCover,
+}
+
 /// Document-specific facts for one Image write pipeline invocation.
 pub(crate) struct ImageWriteRequest<'a> {
     output_dir: &'a Path,
@@ -216,6 +237,31 @@ impl<'a> ImageWriteRequest<'a> {
     }
 }
 
+/// Output facts for one required EPUB cover attempt.
+pub(crate) struct RequiredCoverWriteRequest<'a> {
+    output_dir: &'a Path,
+    base_name: &'a str,
+}
+
+impl<'a> RequiredCoverWriteRequest<'a> {
+    /// Creates a required-cover request with singular output naming.
+    pub(crate) fn new(output_dir: &'a Path, base_name: &'a str) -> Self {
+        Self {
+            output_dir,
+            base_name,
+        }
+    }
+}
+
+/// Completion disposition for one required-cover candidate.
+#[derive(Debug)]
+pub(crate) enum RequiredCoverWriteOutcome {
+    /// Resource acquisition failed, so EPUB cover extraction may try another candidate.
+    Retry(ImageWriteResult),
+    /// Image write policy reached a final emitting or non-emitting cover outcome.
+    Completed(ImageWriteResult),
+}
+
 /// Immutable Image write pipeline configured for one Extraction run.
 pub(crate) struct ImageWritePipeline {
     policy: ImageWritePolicy,
@@ -227,54 +273,18 @@ impl ImageWritePipeline {
         Self { policy }
     }
 
-    /// Returns whether one identified Image format is accepted by this run.
-    pub(crate) fn accepts_format(&self, format: ImageFormat) -> bool {
-        self.policy.allowed_formats.contains(&format)
-    }
-
-    /// Lends the optional Conversion policy without interpreting document behavior.
-    pub(crate) fn conversion_policy(&self) -> Option<&ConversionPolicy> {
-        self.policy.conversion.as_ref()
-    }
-
-    /// Returns whether an image will be routed to the configured GIF destination.
-    pub(crate) fn routes_gif(&self, format: ImageFormat) -> bool {
-        format == ImageFormat::Gif && self.policy.gif_output.is_some()
-    }
-
-    /// Emits one fully decided image and returns counts for the completed file.
+    /// Discovers and writes one required EPUB cover through a scoped source reader.
     ///
-    /// GIF destination routing remains a generic Image write policy. Create,
-    /// write, flush, and collision failures are returned and abort the document.
-    pub(crate) fn emit_single_image(
+    /// Acquisition failures return a retry disposition. Filtering and other Image
+    /// write policy decisions complete the attempt, while emission failures remain errors.
+    pub(crate) fn write_required_cover(
         &self,
-        output_dir: &Path,
-        base_name: &str,
-        data: Vec<u8>,
-        format: ImageFormat,
-        converted: bool,
-    ) -> Result<ImageWriteResult> {
-        let routed_gif = self.routes_gif(format);
-        let destination = if routed_gif {
-            self.policy
-                .gif_output
-                .as_deref()
-                .expect("routed GIF should have a configured destination")
-        } else {
-            output_dir
-        };
-        let mut emission = ImageFileEmission::new(base_name, false);
-        emission.emit(destination, format, &data)?;
-
-        Ok(ImageWriteResult {
-            counts: ImageWriteCounts {
-                extracted: 1,
-                gifs_routed: usize::from(routed_gif),
-                converted: usize::from(converted),
-                skipped: 0,
-            },
-            warnings: Vec::new(),
-        })
+        request: RequiredCoverWriteRequest<'_>,
+        traverse: impl FnOnce(&mut RequiredCoverWriteVisitor<'_, '_>) -> Result<()>,
+    ) -> Result<RequiredCoverWriteOutcome> {
+        let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request);
+        traverse(&mut visitor)?;
+        visitor.finish()
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
@@ -295,6 +305,120 @@ impl ImageWritePipeline {
         traverse(&mut visitor)?;
         visitor.finish()
     }
+}
+
+/// Scoped authority for one required-cover acquisition and Image write decision.
+pub(crate) struct RequiredCoverWriteVisitor<'policy, 'request> {
+    policy: &'policy ImageWritePolicy,
+    request: RequiredCoverWriteRequest<'request>,
+    outcome: Option<RequiredCoverWriteOutcome>,
+}
+
+impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
+    /// Starts one required-cover attempt with no acquired source.
+    fn new(
+        policy: &'policy ImageWritePolicy,
+        request: RequiredCoverWriteRequest<'request>,
+    ) -> Self {
+        Self {
+            policy,
+            request,
+            outcome: None,
+        }
+    }
+
+    /// Consumes one scoped cover reader and applies required-cover Image write policy.
+    ///
+    /// Bounded evidence is read before the remaining payload. Read failures are
+    /// retryable; emission failures are returned to abort the document.
+    pub(crate) fn visit(
+        &mut self,
+        source: ArchiveImageSource,
+        reader: &mut dyn Read,
+    ) -> Result<()> {
+        self.ensure_empty()?;
+        let discovered = discover_required_cover(&source, reader, &self.policy.allowed_formats);
+        let image = match discovered.outcome {
+            ArchiveImageDiscoveryOutcome::Accepted(image) => image,
+            ArchiveImageDiscoveryOutcome::Completed => {
+                self.outcome = Some(RequiredCoverWriteOutcome::Completed(
+                    ImageWriteResult::from_warnings(discovered.warnings),
+                ));
+                return Ok(());
+            }
+            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
+                self.outcome = Some(RequiredCoverWriteOutcome::Retry(
+                    ImageWriteResult::from_warnings(discovered.warnings),
+                ));
+                return Ok(());
+            }
+        };
+
+        let result = emit_required_cover(self.policy, &self.request, image, discovered.warnings)?;
+        self.outcome = Some(RequiredCoverWriteOutcome::Completed(result));
+        Ok(())
+    }
+
+    /// Records a candidate that the EPUB adapter could not open.
+    pub(crate) fn unreadable(
+        &mut self,
+        source: ArchiveImageSource,
+        error: impl fmt::Display,
+    ) -> Result<()> {
+        self.ensure_empty()?;
+        self.outcome = Some(RequiredCoverWriteOutcome::Retry(
+            ImageWriteResult::from_warning(ImageWriteWarning::archive_image_acquisition_failed(
+                source.diagnostic_name,
+                error,
+            )),
+        ));
+        Ok(())
+    }
+
+    /// Returns an error when a traversal attempts to supply more than one cover source.
+    fn ensure_empty(&self) -> Result<()> {
+        if self.outcome.is_some() {
+            return Err(anyhow!(
+                "required-cover traversal supplied more than one source"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Completes the required-cover traversal after exactly one source attempt.
+    fn finish(self) -> Result<RequiredCoverWriteOutcome> {
+        self.outcome
+            .ok_or_else(|| anyhow!("required-cover traversal supplied no source"))
+    }
+}
+
+/// Applies required-cover conversion, routing, singular emission, and outcome policy.
+fn emit_required_cover(
+    policy: &ImageWritePolicy,
+    request: &RequiredCoverWriteRequest<'_>,
+    image: AcceptedImage,
+    mut warnings: Vec<ImageWriteWarning>,
+) -> Result<ImageWriteResult> {
+    let Some(prepared) = prepare_image_for_write(
+        image,
+        request.base_name,
+        policy,
+        ImageWritePurpose::RequiredCover,
+        &mut warnings,
+    ) else {
+        return Ok(ImageWriteResult::from_warnings(warnings));
+    };
+    let mut counts = ImageWriteCounts::default();
+    let mut emission = ImageFileEmission::new(request.base_name, false);
+    emit_prepared_image(
+        policy,
+        request.output_dir,
+        &mut emission,
+        prepared,
+        &mut counts,
+    )?;
+
+    Ok(ImageWriteResult { counts, warnings })
 }
 
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
@@ -336,16 +460,17 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         self.discovery_warnings.extend(discovered.warnings);
 
-        let Some(image) = discovered.image else {
+        let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
         let Some(prepared) = prepare_image_for_write(
             image,
             self.base_name,
             self.policy,
+            ImageWritePurpose::NormalImages,
             &mut self.conversion_warnings,
         ) else {
-            return Ok(());
+            unreachable!("normal-image preparation always preserves accepted bytes");
         };
 
         self.stage_prepared(prepared)
@@ -394,29 +519,13 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         emission: &mut ImageFileEmission<'_>,
         prepared: PreparedImage,
     ) -> Result<()> {
-        let output_dir = if prepared.routed_gif {
-            // Preparation only marks routing when the immutable policy has a destination.
-            self.policy
-                .gif_output
-                .as_deref()
-                .expect("routed GIF should have a configured destination")
-        } else {
-            self.output_dir
-        };
-        emission.emit(output_dir, prepared.format, &prepared.data)?;
-
-        self.counts.extracted += 1;
-        if prepared.routed_gif {
-            self.counts.gifs_routed += 1;
-        }
-        if prepared.converted {
-            self.counts.converted += 1;
-        }
-        if prepared.skipped_conversion {
-            self.counts.skipped += 1;
-        }
-
-        Ok(())
+        emit_prepared_image(
+            self.policy,
+            self.output_dir,
+            emission,
+            prepared,
+            &mut self.counts,
+        )
     }
 
     /// Completes singular lookahead and returns phase-ordered warning facts.
@@ -439,13 +548,16 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     }
 }
 
-/// Applies normal-image conversion semantics before one file write.
+/// Applies purpose-specific conversion semantics before one file write.
 ///
-/// Conversion warning facts are appended in accepted-source order.
+/// `purpose` selects normal preservation versus final non-emitting cover outcomes.
+/// Conversion warning facts are appended in accepted-source order. `None` is
+/// returned only when required-cover conversion completes without emission.
 fn prepare_image_for_write(
     image: AcceptedImage,
     base_name: &str,
     policy: &ImageWritePolicy,
+    purpose: ImageWritePurpose,
     warnings: &mut Vec<ImageWriteWarning>,
 ) -> Option<PreparedImage> {
     let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
@@ -477,10 +589,20 @@ fn prepare_image_for_write(
                 skipped_conversion: false,
             }),
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                warnings.push(ImageWriteWarning::ConversionSkipped {
-                    base_name: base_name.to_string(),
-                    format: original_format,
-                });
+                match purpose {
+                    ImageWritePurpose::NormalImages => {
+                        warnings.push(ImageWriteWarning::ConversionSkipped {
+                            base_name: base_name.to_string(),
+                            format: original_format,
+                        });
+                    }
+                    ImageWritePurpose::RequiredCover => {
+                        warnings.push(ImageWriteWarning::CoverConversionSkipped {
+                            format: original_format,
+                        });
+                        return None;
+                    }
+                }
                 Some(PreparedImage {
                     data: image.data,
                     format: original_format,
@@ -490,10 +612,20 @@ fn prepare_image_for_write(
                 })
             }
             Err(error) => {
-                warnings.push(ImageWriteWarning::ConversionFailed {
-                    base_name: base_name.to_string(),
-                    message: error.to_string(),
-                });
+                match purpose {
+                    ImageWritePurpose::NormalImages => {
+                        warnings.push(ImageWriteWarning::ConversionFailed {
+                            base_name: base_name.to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                    ImageWritePurpose::RequiredCover => {
+                        warnings.push(ImageWriteWarning::CoverConversionFailed {
+                            message: error.to_string(),
+                        });
+                        return None;
+                    }
+                }
                 Some(PreparedImage {
                     data: image.data,
                     format: image.format,
@@ -512,6 +644,39 @@ fn prepare_image_for_write(
             skipped_conversion: false,
         })
     }
+}
+
+/// Emits one prepared image using shared destination routing and count semantics.
+fn emit_prepared_image(
+    policy: &ImageWritePolicy,
+    output_dir: &Path,
+    emission: &mut ImageFileEmission<'_>,
+    prepared: PreparedImage,
+    counts: &mut ImageWriteCounts,
+) -> Result<()> {
+    let destination = if prepared.routed_gif {
+        // Preparation only marks routing when the immutable policy has a destination.
+        policy
+            .gif_output
+            .as_deref()
+            .expect("routed GIF should have a configured destination")
+    } else {
+        output_dir
+    };
+    emission.emit(destination, prepared.format, &prepared.data)?;
+
+    counts.extracted += 1;
+    if prepared.routed_gif {
+        counts.gifs_routed += 1;
+    }
+    if prepared.converted {
+        counts.converted += 1;
+    }
+    if prepared.skipped_conversion {
+        counts.skipped += 1;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -628,6 +793,233 @@ mod tests {
             ArchiveImageSource::named(source_name).with_mime(mime),
             data.into(),
         )
+    }
+
+    #[test]
+    fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
+        let temp_dir = temp_test_dir("required-cover-default-jpeg");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg]),
+            None,
+            None,
+        ));
+        let original = b"unidentified cover payload".to_vec();
+        let mut reader = Cursor::new(original.clone());
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover(
+                            "OPS/cover.bin",
+                            "application/octet-stream",
+                        ),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("required cover write should succeed");
+
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("a readable required cover should complete the cover decision");
+        };
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::CoverDefaultToJpeg {
+                mime: "application/octet-stream".to_string(),
+            }]
+        );
+        assert_eq!(fs::read(temp_dir.join("sample.jpg")).unwrap(), original);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn required_cover_filter_is_final_and_reads_only_bounded_evidence() {
+        let temp_dir = temp_test_dir("required-cover-filter");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
+        let mut reader = Cursor::new(vec![0xff; 4096]);
+        reader.get_mut()[..3].copy_from_slice(b"\xFF\xD8\xFF");
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover("OPS/cover.jpg", "image/jpeg"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("format filtering should be a normal cover outcome");
+
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("a filtered cover should complete rather than retry");
+        };
+        assert_eq!(reader.position(), 1027);
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::UnsupportedCoverFormat {
+                format: ImageFormat::Jpg,
+            }]
+        );
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn required_cover_tail_read_failure_is_retryable_and_preserves_warning_order() {
+        let temp_dir = temp_test_dir("required-cover-tail-failure");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg]),
+            None,
+            None,
+        ));
+        let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover(
+                            "OPS/cover.bin",
+                            "application/octet-stream",
+                        ),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("a cover acquisition failure should be a typed outcome");
+
+        let RequiredCoverWriteOutcome::Retry(result) = outcome else {
+            panic!("a tail read failure should permit another cover candidate");
+        };
+        assert_eq!(result.counts.extracted, 0);
+        assert!(matches!(
+            &result.warnings[..],
+            [
+                ImageWriteWarning::CoverDefaultToJpeg { mime },
+                ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, message }
+            ] if mime == "application/octet-stream"
+                && source_name == "OPS/cover.bin"
+                && message.contains("injected archive resource failure")
+        ));
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn required_cover_conversion_skip_is_final_and_writes_nothing() {
+        let temp_dir = temp_test_dir("required-cover-conversion-skip");
+        let pipeline = pipeline_with_conversion(
+            HashSet::from([ImageFormat::Svg]),
+            ConversionTarget::Png,
+            None,
+        );
+        let mut reader = Cursor::new(b"<svg/>".to_vec());
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover("OPS/cover.svg", "image/svg+xml"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("unsupported cover conversion should be a normal outcome");
+
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("conversion skip should complete rather than retry");
+        };
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::CoverConversionSkipped {
+                format: ImageFormat::Svg,
+            }]
+        );
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn required_cover_conversion_failure_is_final_and_writes_nothing() {
+        let temp_dir = temp_test_dir("required-cover-conversion-failure");
+        let pipeline = pipeline_with_conversion(
+            HashSet::from([ImageFormat::Png]),
+            ConversionTarget::Jpg,
+            None,
+        );
+        let mut reader = Cursor::new(b"\x89PNG\r\n\x1A\ninvalid".to_vec());
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover("OPS/cover.png", "image/png"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("cover conversion failure should be a normal outcome");
+
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("conversion failure should complete rather than retry");
+        };
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert!(matches!(
+            &result.warnings[..],
+            [ImageWriteWarning::CoverConversionFailed { message }]
+                if message.contains("Failed to decode image")
+        ));
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn required_gif_cover_routes_without_conversion() {
+        let temp_dir = temp_test_dir("required-cover-gif-routing");
+        let gif_dir = temp_dir.join("gifs");
+        let output_dir = temp_dir.join("images");
+        let pipeline = pipeline_with_conversion(
+            HashSet::from([ImageFormat::Gif]),
+            ConversionTarget::Png,
+            Some(gif_dir.clone()),
+        );
+        let mut reader = Cursor::new(b"GIF89a".to_vec());
+
+        let outcome = pipeline
+            .write_required_cover(
+                RequiredCoverWriteRequest::new(&output_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::required_cover("OPS/cover.gif", "image/gif"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("routed required GIF should be emitted");
+
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("a routed cover should complete");
+        };
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.gifs_routed, 1);
+        assert_eq!(result.counts.converted, 0);
+        assert!(result.warnings.is_empty());
+        assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), b"GIF89a");
+        assert!(!output_dir.exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
