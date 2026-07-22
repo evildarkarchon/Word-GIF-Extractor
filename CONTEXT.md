@@ -33,8 +33,12 @@ The valid per-run choices governing normal document images versus EPUB cover ext
 _Avoid_: Cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across Document extraction policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
 _Avoid_: File collection, scan results, work item builder
+
+**Selected document**:
+The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, display identity, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
+_Avoid_: Extraction work item, selected file, document task
 
 **Document selection progress**:
 The live, user-observable status of Document selection while it scans inputs, filters EPUBs, and removes duplicates. It excludes per-document extraction status and terminal presentation details.
