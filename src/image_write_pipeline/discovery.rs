@@ -5,7 +5,10 @@ use std::io::Read;
 
 use crate::image_format::{FormatConfidence, ImageFormat, ImageFormatSource};
 
-use super::{AcceptedImage, ArchiveImageSource, ImageWritePurpose, ImageWriteWarning};
+use super::purpose::{
+    FilteredFormatAction, ImageWritePurpose, SourceEligibility, UnidentifiedFormatAction,
+};
+use super::{AcceptedImage, ArchiveImageSource, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
 pub(super) const FORMAT_EVIDENCE_LIMIT: u64 = 1027;
@@ -26,49 +29,20 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
     AcquisitionFailed,
 }
 
-/// Acquires one normal source incrementally and accepts it when its format is requested.
+/// Acquires one source incrementally through a statically selected Image write purpose.
 ///
 /// Only bounded evidence is read for rejected or filtered sources. Accepted
 /// sources retain that prefix and append the remaining payload.
-pub(super) fn discover_image(
+pub(super) fn discover_image<P: ImageWritePurpose>(
     source: &ArchiveImageSource,
     reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
+    purpose: &P,
 ) -> DiscoveredImage {
-    discover_image_for_purpose(
-        source,
-        reader,
-        allowed_formats,
-        ImageWritePurpose::NormalImages,
-    )
-}
-
-/// Acquires one required cover incrementally using cover-specific discovery outcomes.
-pub(super) fn discover_required_cover(
-    source: &ArchiveImageSource,
-    reader: &mut dyn Read,
-    allowed_formats: &HashSet<ImageFormat>,
-) -> DiscoveredImage {
-    discover_image_for_purpose(
-        source,
-        reader,
-        allowed_formats,
-        ImageWritePurpose::RequiredCover,
-    )
-}
-
-/// Shares bounded acquisition and format identification across Image write purposes.
-///
-/// `purpose` selects source-safety, unidentified-cover, and filtered-cover policy.
-/// The result distinguishes accepted payloads, final non-emitting decisions, and
-/// acquisition failures without requiring callers to infer state from warnings.
-fn discover_image_for_purpose(
-    source: &ArchiveImageSource,
-    reader: &mut dyn Read,
-    allowed_formats: &HashSet<ImageFormat>,
-    purpose: ImageWritePurpose,
-) -> DiscoveredImage {
-    if matches!(purpose, ImageWritePurpose::NormalImages) && !is_source_safe(source) {
+    if matches!(
+        purpose.source_eligibility(source),
+        SourceEligibility::Reject
+    ) {
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,
             warnings: Vec::new(),
@@ -95,17 +69,20 @@ fn discover_image_for_purpose(
     });
     let (format, confidence) = match identified {
         Some(identified) => (identified.format, Some(identified.confidence)),
-        None if matches!(purpose, ImageWritePurpose::RequiredCover) => {
-            warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
-                mime: source.mime.clone().unwrap_or_default(),
-            });
-            (ImageFormat::Jpg, None)
-        }
         None => {
-            return DiscoveredImage {
-                outcome: ArchiveImageDiscoveryOutcome::Completed,
-                warnings,
-            };
+            let decision = purpose.unidentified_format(source);
+            if let Some(warning) = decision.warning {
+                warnings.push(warning);
+            }
+            match decision.action {
+                UnidentifiedFormatAction::ContinueWith(format) => (format, None),
+                UnidentifiedFormatAction::Complete => {
+                    return DiscoveredImage {
+                        outcome: ArchiveImageDiscoveryOutcome::Completed,
+                        warnings,
+                    };
+                }
+            }
         }
     };
 
@@ -122,9 +99,11 @@ fn discover_image_for_purpose(
     }
 
     if !allowed_formats.contains(&format) {
-        if matches!(purpose, ImageWritePurpose::RequiredCover) {
-            warnings.push(ImageWriteWarning::UnsupportedCoverFormat { format });
+        let decision = purpose.filtered_format(format);
+        if let Some(warning) = decision.warning {
+            warnings.push(warning);
         }
+        let FilteredFormatAction::CompleteWithoutEmission = decision.action;
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,
             warnings,
@@ -146,27 +125,4 @@ fn discover_image_for_purpose(
         outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage { data, format }),
         warnings,
     }
-}
-
-/// Returns whether discovery would inspect this source.
-pub(super) fn is_source_safe(source: &ArchiveImageSource) -> bool {
-    source
-        .format_source_name
-        .as_deref()
-        .is_some_and(is_safe_archive_path)
-}
-
-/// Returns whether an archive path is safe to use as image source evidence.
-fn is_safe_archive_path(name: &str) -> bool {
-    if name.contains('\0') || name.contains("..") {
-        return false;
-    }
-    if name.starts_with('/') || name.starts_with('\\') {
-        return false;
-    }
-    // Colons enable drive-letter and alternate-data-stream syntax on Windows.
-    if name.contains(':') {
-        return false;
-    }
-    true
 }

@@ -2,6 +2,7 @@
 
 mod discovery;
 mod emission;
+mod purpose;
 
 use anyhow::{Error, Result, anyhow};
 use std::collections::HashSet;
@@ -12,10 +13,11 @@ use std::path::{Path, PathBuf};
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
 
-use self::discovery::{
-    ArchiveImageDiscoveryOutcome, discover_image, discover_required_cover, is_source_safe,
-};
+use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::ImageFileEmission;
+use self::purpose::{
+    ConversionAction, ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility,
+};
 
 /// Metadata supplied before Archive image discovery reads one archive resource.
 #[derive(Debug, Clone)]
@@ -261,13 +263,6 @@ struct PreparedImage {
     skipped_conversion: bool,
 }
 
-/// Private policy branch shared by the two Image write pipeline operations.
-#[derive(Clone, Copy)]
-pub(super) enum ImageWritePurpose {
-    NormalImages,
-    RequiredCover,
-}
-
 /// Document-specific facts for one Image write pipeline invocation.
 pub(crate) struct ImageWriteRequest<'a> {
     output_dir: &'a Path,
@@ -336,7 +331,7 @@ impl ImageWritePipeline {
         request: RequiredCoverWriteRequest<'_>,
         traverse: impl FnOnce(&mut RequiredCoverWriteVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request);
+        let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request, RequiredCover);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -357,7 +352,7 @@ impl ImageWritePipeline {
         request: ImageWriteRequest<'_>,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome {
-        let mut visitor = ArchiveImageVisitor::new(&self.policy, request);
+        let mut visitor = ArchiveImageVisitor::new(&self.policy, request, NormalImages);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -369,6 +364,7 @@ impl ImageWritePipeline {
 pub(crate) struct RequiredCoverWriteVisitor<'policy, 'request> {
     policy: &'policy ImageWritePolicy,
     request: RequiredCoverWriteRequest<'request>,
+    purpose: RequiredCover,
     disposition: Option<RequiredCoverWriteDisposition>,
     result: ImageWriteResult,
 }
@@ -378,10 +374,12 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
     fn new(
         policy: &'policy ImageWritePolicy,
         request: RequiredCoverWriteRequest<'request>,
+        purpose: RequiredCover,
     ) -> Self {
         Self {
             policy,
             request,
+            purpose,
             disposition: None,
             result: ImageWriteResult::default(),
         }
@@ -397,7 +395,8 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
         reader: &mut dyn Read,
     ) -> Result<()> {
         self.ensure_empty()?;
-        let discovered = discover_required_cover(&source, reader, &self.policy.allowed_formats);
+        let discovered =
+            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
         self.result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
@@ -415,7 +414,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
             image,
             self.request.base_name,
             self.policy,
-            ImageWritePurpose::RequiredCover,
+            &self.purpose,
             &mut self.result.warnings,
         ) else {
             self.disposition = Some(RequiredCoverWriteDisposition::Completed);
@@ -485,6 +484,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
 pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     policy: &'policy ImageWritePolicy,
+    purpose: NormalImages,
     output_dir: &'request Path,
     base_name: &'request str,
     discovery_warnings: Vec<ImageWriteWarning>,
@@ -497,9 +497,14 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
 
 impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     /// Starts one scoped Archive image discovery traversal.
-    fn new(policy: &'policy ImageWritePolicy, request: ImageWriteRequest<'request>) -> Self {
+    fn new(
+        policy: &'policy ImageWritePolicy,
+        request: ImageWriteRequest<'request>,
+        purpose: NormalImages,
+    ) -> Self {
         Self {
             policy,
+            purpose,
             output_dir: request.output_dir,
             base_name: request.base_name,
             discovery_warnings: Vec::new(),
@@ -520,7 +525,8 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         source: ArchiveImageSource,
         reader: &mut dyn Read,
     ) -> Result<()> {
-        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
+        let discovered =
+            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
         self.discovery_warnings.extend(discovered.warnings);
 
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
@@ -530,7 +536,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             image,
             self.base_name,
             self.policy,
-            ImageWritePurpose::NormalImages,
+            &self.purpose,
             &mut self.conversion_warnings,
         ) else {
             unreachable!("normal-image preparation always preserves accepted bytes");
@@ -543,7 +549,10 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     ///
     /// Unsafe normal-image names remain silent skips, matching discovery behavior.
     pub(crate) fn unreadable(&mut self, source: ArchiveImageSource, error: impl fmt::Display) {
-        if is_source_safe(&source) {
+        if matches!(
+            self.purpose.source_eligibility(&source),
+            SourceEligibility::Inspect
+        ) {
             self.discovery_warnings
                 .push(ImageWriteWarning::archive_image_acquisition_failed(
                     source.diagnostic_name,
@@ -629,16 +638,15 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     }
 }
 
-/// Applies purpose-specific conversion semantics before one file write.
+/// Applies one statically selected purpose's conversion decision before a file write.
 ///
-/// `purpose` selects normal preservation versus final non-emitting cover outcomes.
 /// Conversion warning facts are appended in accepted-source order. `None` is
 /// returned only when required-cover conversion completes without emission.
-fn prepare_image_for_write(
+fn prepare_image_for_write<P: ImageWritePurpose>(
     image: AcceptedImage,
     base_name: &str,
     policy: &ImageWritePolicy,
-    purpose: ImageWritePurpose,
+    purpose: &P,
     warnings: &mut Vec<ImageWriteWarning>,
 ) -> Option<PreparedImage> {
     let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
@@ -654,67 +662,44 @@ fn prepare_image_for_write(
             });
         }
 
-        match conversion.convert(&image.data, image.format) {
-            Ok(ConversionOutcome::Converted(converted_bytes, format)) => Some(PreparedImage {
-                data: converted_bytes,
-                format,
-                routed_gif: false,
-                converted: true,
-                skipped_conversion: false,
-            }),
-            Ok(ConversionOutcome::PreservedMatchingSource) => Some(PreparedImage {
-                data: image.data,
-                format: image.format,
-                routed_gif: false,
-                converted: false,
-                skipped_conversion: false,
-            }),
-            Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                match purpose {
-                    ImageWritePurpose::NormalImages => {
-                        warnings.push(ImageWriteWarning::ConversionSkipped {
-                            base_name: base_name.to_string(),
-                            format: original_format,
-                        });
-                    }
-                    ImageWritePurpose::RequiredCover => {
-                        warnings.push(ImageWriteWarning::CoverConversionSkipped {
-                            format: original_format,
-                        });
-                        return None;
-                    }
-                }
-                Some(PreparedImage {
-                    data: image.data,
-                    format: original_format,
+        let (original_format, decision) = match conversion.convert(&image.data, image.format) {
+            Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
+                return Some(PreparedImage {
+                    data: converted_bytes,
+                    format,
                     routed_gif: false,
-                    converted: false,
-                    skipped_conversion: true,
-                })
+                    converted: true,
+                    skipped_conversion: false,
+                });
             }
-            Err(error) => {
-                match purpose {
-                    ImageWritePurpose::NormalImages => {
-                        warnings.push(ImageWriteWarning::ConversionFailed {
-                            base_name: base_name.to_string(),
-                            message: error.to_string(),
-                        });
-                    }
-                    ImageWritePurpose::RequiredCover => {
-                        warnings.push(ImageWriteWarning::CoverConversionFailed {
-                            message: error.to_string(),
-                        });
-                        return None;
-                    }
-                }
-                Some(PreparedImage {
+            Ok(ConversionOutcome::PreservedMatchingSource) => {
+                return Some(PreparedImage {
                     data: image.data,
                     format: image.format,
                     routed_gif: false,
                     converted: false,
-                    skipped_conversion: true,
-                })
+                    skipped_conversion: false,
+                });
             }
+            Ok(ConversionOutcome::UnsupportedSource(original_format)) => (
+                original_format,
+                purpose.unsupported_conversion(base_name, original_format),
+            ),
+            Err(error) => (image.format, purpose.failed_conversion(base_name, &error)),
+        };
+
+        if let Some(warning) = decision.warning {
+            warnings.push(warning);
+        }
+        match decision.action {
+            ConversionAction::PreserveOriginal => Some(PreparedImage {
+                data: image.data,
+                format: original_format,
+                routed_gif: false,
+                converted: false,
+                skipped_conversion: true,
+            }),
+            ConversionAction::CompleteWithoutEmission => None,
         }
     } else {
         Some(PreparedImage {
@@ -1559,6 +1544,44 @@ mod tests {
         assert_eq!(source.position(), 0);
         assert_eq!(result.counts.extracted, 0);
         assert!(result.warnings.is_empty());
+        assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
+        let temp_dir = temp_test_dir("unreadable-source-eligibility");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
+
+        let result = pipeline
+            .write_from(
+                ImageWriteRequest::normal_images(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.unreadable(
+                        ArchiveImageSource::named("../unsafe.png"),
+                        "unsafe source should remain silent",
+                    );
+                    visitor.unreadable(
+                        ArchiveImageSource::named("word/media/safe.png"),
+                        "safe source could not be opened",
+                    );
+                    Ok(())
+                },
+            )
+            .expect("unreadable sources should remain non-fatal");
+
+        assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "word/media/safe.png".to_string(),
+                message: "safe source could not be opened".to_string(),
+            }]
+        );
         assert!(!temp_dir.exists());
     }
 
