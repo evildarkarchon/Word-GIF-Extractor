@@ -88,13 +88,6 @@ pub(crate) struct ImageWriteCounts {
     pub(crate) skipped: usize,
 }
 
-/// Counts successfully emitted files by their Image write purpose.
-#[derive(Debug, Default, Clone, Copy)]
-struct ImageWritePurposeCounts {
-    normal_images: usize,
-    required_covers: usize,
-}
-
 /// Structured warning facts produced by the Image write pipeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ImageWriteWarning {
@@ -190,13 +183,13 @@ impl ImageWriteWarning {
 pub(crate) struct ImageWriteResult {
     pub(crate) counts: ImageWriteCounts,
     pub(crate) warnings: Vec<ImageWriteWarning>,
-    purpose_counts: ImageWritePurposeCounts,
+    has_normal_image_output: bool,
 }
 
 impl ImageWriteResult {
     /// Returns whether at least one normal batch image was emitted.
     pub(crate) fn has_normal_image_output(&self) -> bool {
-        self.purpose_counts.normal_images > 0
+        self.has_normal_image_output
     }
 
     /// Appends later Image write facts while preserving warning order.
@@ -205,8 +198,7 @@ impl ImageWriteResult {
         self.counts.gifs_routed += later.counts.gifs_routed;
         self.counts.converted += later.counts.converted;
         self.counts.skipped += later.counts.skipped;
-        self.purpose_counts.normal_images += later.purpose_counts.normal_images;
-        self.purpose_counts.required_covers += later.purpose_counts.required_covers;
+        self.has_normal_image_output |= later.has_normal_image_output;
         self.warnings.append(&mut later.warnings);
     }
 }
@@ -435,9 +427,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
             self.request.output_dir,
             &mut emission,
             prepared,
-            ImageWritePurpose::RequiredCover,
             &mut self.result.counts,
-            &mut self.result.purpose_counts,
         )?;
         self.disposition = Some(RequiredCoverWriteDisposition::Completed);
         Ok(())
@@ -500,7 +490,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
-    purpose_counts: ImageWritePurposeCounts,
+    has_normal_image_output: bool,
     pending_first: Option<PreparedImage>,
     multiple_emission: Option<ImageFileEmission<'request>>,
 }
@@ -515,7 +505,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
-            purpose_counts: ImageWritePurposeCounts::default(),
+            has_normal_image_output: false,
             pending_first: None,
             multiple_emission: None,
         }
@@ -597,10 +587,10 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             self.output_dir,
             emission,
             prepared,
-            ImageWritePurpose::NormalImages,
             &mut self.counts,
-            &mut self.purpose_counts,
-        )
+        )?;
+        self.has_normal_image_output = true;
+        Ok(())
     }
 
     /// Completes singular lookahead and returns phase-ordered warning facts.
@@ -626,7 +616,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
                 .into_iter()
                 .chain(self.conversion_warnings)
                 .collect(),
-            purpose_counts: self.purpose_counts,
+            has_normal_image_output: self.has_normal_image_output,
         }
     }
 
@@ -743,9 +733,7 @@ fn emit_prepared_image(
     output_dir: &Path,
     emission: &mut ImageFileEmission<'_>,
     prepared: PreparedImage,
-    purpose: ImageWritePurpose,
     counts: &mut ImageWriteCounts,
-    purpose_counts: &mut ImageWritePurposeCounts,
 ) -> Result<()> {
     let destination = if prepared.routed_gif {
         // Preparation only marks routing when the immutable policy has a destination.
@@ -767,10 +755,6 @@ fn emit_prepared_image(
     }
     if prepared.skipped_conversion {
         counts.skipped += 1;
-    }
-    match purpose {
-        ImageWritePurpose::NormalImages => purpose_counts.normal_images += 1,
-        ImageWritePurpose::RequiredCover => purpose_counts.required_covers += 1,
     }
 
     Ok(())
@@ -922,6 +906,7 @@ mod tests {
             panic!("a readable required cover should complete the cover decision");
         };
         assert_eq!(result.counts.extracted, 1);
+        assert!(!result.has_normal_image_output());
         assert_eq!(
             result.warnings,
             vec![ImageWriteWarning::CoverDefaultToJpeg {
@@ -961,6 +946,7 @@ mod tests {
         };
         assert_eq!(reader.position(), 1027);
         assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
         assert_eq!(
             result.warnings,
             vec![ImageWriteWarning::UnsupportedCoverFormat {
@@ -999,6 +985,7 @@ mod tests {
             panic!("a tail read failure should permit another cover candidate");
         };
         assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
         assert!(matches!(
             &result.warnings[..],
             [
@@ -1038,6 +1025,7 @@ mod tests {
         };
         assert_eq!(result.counts.extracted, 0);
         assert_eq!(result.counts.skipped, 0);
+        assert!(!result.has_normal_image_output());
         assert_eq!(
             result.warnings,
             vec![ImageWriteWarning::CoverConversionSkipped {
@@ -1074,6 +1062,7 @@ mod tests {
         };
         assert_eq!(result.counts.extracted, 0);
         assert_eq!(result.counts.skipped, 0);
+        assert!(!result.has_normal_image_output());
         assert!(matches!(
             &result.warnings[..],
             [ImageWriteWarning::CoverConversionFailed { message }]
@@ -1136,6 +1125,7 @@ mod tests {
         .expect("normal image write should succeed");
 
         assert_eq!(result.counts.extracted, 1);
+        assert!(result.has_normal_image_output());
         assert!(result.warnings.is_empty());
         assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
 
@@ -1167,6 +1157,7 @@ mod tests {
 
         assert_eq!(rejected_source.position(), 1027);
         assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
         assert!(result.warnings.is_empty());
         assert!(!temp_dir.exists());
     }
@@ -1198,8 +1189,35 @@ mod tests {
 
         assert_eq!(filtered_source.position(), 1027);
         assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
         assert!(result.warnings.is_empty());
         assert!(!temp_dir.exists());
+    }
+
+    #[test]
+    fn failed_normal_emission_does_not_report_normal_output() {
+        let temp_dir = temp_test_dir("failed-normal-emission-purpose");
+        let blocked_output = temp_dir.join("not-a-directory");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        fs::write(&blocked_output, b"occupied").expect("blocking file should be creatable");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            None,
+            None,
+        ));
+
+        let failure = write_sources(
+            &pipeline,
+            ImageWriteRequest::normal_images(&blocked_output, "sample"),
+            vec![named_source(MINIMAL_PNG, "word/media/image.png")],
+        )
+        .expect_err("failed Image file emission should abort the pipeline");
+
+        assert_eq!(failure.partial.counts.extracted, 0);
+        assert!(!failure.partial.has_normal_image_output());
+        assert!(!blocked_output.join("sample.png").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]

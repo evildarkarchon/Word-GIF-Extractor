@@ -211,6 +211,19 @@ mod tests {
         ))
     }
 
+    /// Returns archive acquisition warning sources in their observed order.
+    fn acquisition_failure_sources(warnings: &[ImageWriteWarning]) -> Vec<&str> {
+        warnings
+            .iter()
+            .filter_map(|warning| match warning {
+                ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. } => {
+                    Some(source_name.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     fn write_minimal_epub(path: &Path, image_href: &str, image_mime: &str, image_data: &[u8]) {
         let file = fs::File::create(path).expect("test EPUB should be creatable");
         let mut zip = zip::ZipWriter::new(file);
@@ -720,6 +733,7 @@ mod tests {
         .expect("an unreadable metadata cover should allow filename fallback");
 
         assert_eq!(result.counts.extracted, 1);
+        assert!(!result.has_normal_image_output());
         assert!(matches!(
             &result.warnings[..],
             [ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. }]
@@ -768,19 +782,72 @@ mod tests {
         .expect("unreadable cover candidates should allow batch fallback");
 
         assert_eq!(result.counts.extracted, 1);
+        assert!(result.has_normal_image_output());
         assert_eq!(
-            result
-                .warnings
-                .iter()
-                .filter(|warning| matches!(
-                    warning,
-                    ImageWriteWarning::ArchiveImageAcquisitionFailed { .. }
-                ))
-                .count(),
-            2
+            acquisition_failure_sources(&result.warnings),
+            vec!["OEBPS/images/missing.png", "OEBPS/images/cover.jpg"]
         );
         assert_eq!(
             fs::read(output_dir.join("sample.png")).unwrap(),
+            MINIMAL_PNG
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn cover_retries_precede_partial_normal_fallback_facts() {
+        let temp_dir = temp_test_dir("cover-retries-partial-batch-fallback");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        let blocked_gif_output = temp_dir.join("blocked-gifs");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        fs::write(&blocked_gif_output, b"not a directory")
+            .expect("blocked GIF destination should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/missing.png",
+                    "image/png",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/first.png", "image/png", None),
+                ("animation", "images/second.gif", "image/gif", None),
+            ],
+            &[
+                ("OEBPS/images/first.png", MINIMAL_PNG),
+                ("OEBPS/images/second.gif", b"GIF89a"),
+            ],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg, ImageFormat::Png, ImageFormat::Gif]),
+            None,
+            Some(blocked_gif_output),
+        ));
+
+        let failure = process_file(
+            &input_path,
+            &output_dir,
+            "sample",
+            None,
+            true,
+            true,
+            &pipeline,
+        )
+        .expect_err("fallback emission failure should retain earlier normal output");
+
+        assert_eq!(failure.partial.counts.extracted, 1);
+        assert_eq!(failure.partial.counts.gifs_routed, 0);
+        assert!(failure.partial.has_normal_image_output());
+        assert_eq!(
+            acquisition_failure_sources(&failure.partial.warnings),
+            vec!["OEBPS/images/missing.png", "OEBPS/images/cover.jpg"]
+        );
+        assert_eq!(
+            fs::read(output_dir.join("sample_1.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -830,6 +897,7 @@ mod tests {
         .expect("one failed resolved cover should allow batch fallback");
 
         assert_eq!(result.counts.extracted, 1);
+        assert!(result.has_normal_image_output());
         assert_eq!(
             result
                 .warnings
