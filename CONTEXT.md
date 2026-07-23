@@ -69,7 +69,7 @@ The role of one source set in the Image write pipeline: normal batch images or a
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **EPUB cover extraction**:
-The EPUB-only responsibility for turning ordered cover candidates into one required-cover outcome, including acquisition fallback, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes archive resource reading mechanics and Image file emission.
+The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
 _Avoid_: Cover pipeline, cover selection, cover helper
 
 **Archive image discovery**:
