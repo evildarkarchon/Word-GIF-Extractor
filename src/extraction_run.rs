@@ -10,7 +10,8 @@ use crate::document_extraction::{
     DocumentExtractionPolicy,
 };
 use crate::document_selection::{
-    self, DocumentSelectionObserver, DocumentSelectionOptions, EpubFilter,
+    self, DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
+    DocumentSelectionProgress, EpubFilter,
 };
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
@@ -35,6 +36,10 @@ impl ExtractionRunRequest {
     ///
     /// Conversion intent and the GIF destination are retained alongside the
     /// configured Image write pipeline for outcome classification.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "named normalized facts avoid exposing a parallel request-parts model"
+    )]
     pub(crate) fn new(
         inputs: Vec<PathBuf>,
         recursive: bool,
@@ -237,12 +242,17 @@ struct RunAggregation {
     gif_routing: Option<GifRoutingAggregation>,
 }
 
-/// Domain event emitted while an extraction run progresses.
+/// One structured, ordered fact emitted during an Extraction run.
 ///
-/// Events describe extraction-run facts, not terminal UI commands. The CLI
-/// adapter decides how to render them as progress bars or warnings.
+/// Observations retain Document selection's structured domain values alongside
+/// per-document extraction lifecycle facts and the final semantic outcome. They
+/// exclude terminal wording and user-interface commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RunEvent {
+pub(crate) enum ExtractionRunObservation {
+    /// One immutable Document selection phase snapshot.
+    DocumentSelectionProgress(DocumentSelectionProgress),
+    /// One structured, non-fatal Document selection diagnostic.
+    DocumentSelectionDiagnostic(DocumentSelectionDiagnostic),
     /// Document extraction has started.
     ExtractionStarted { total: usize, cover_only: bool },
     /// A document is about to be processed.
@@ -253,22 +263,62 @@ pub enum RunEvent {
     DocumentWarning { path: PathBuf, message: String },
     /// A document has finished processing, successfully or not.
     DocumentFinished { path: PathBuf },
+    /// The final semantic outcome of the run; no observation follows it.
+    Terminal(ExtractionRunOutcome),
 }
 
-/// Observer for extraction-run events and the nested Document selection workflow.
-pub trait RunObserver: DocumentSelectionObserver {
-    /// Handles one event emitted by the extraction run.
-    fn on_event(&mut self, event: RunEvent);
+/// Receives the complete ordered stream of Extraction run observations.
+///
+/// The observer does not inherit the lower Document selection interface; the
+/// run privately translates those callbacks into this cohesive seam and ends
+/// every stream with exactly one terminal outcome.
+pub(crate) trait ExtractionRunObserver {
+    /// Handles one structured observation emitted by the Extraction run.
+    fn on_observation(&mut self, observation: ExtractionRunObservation);
+}
+
+/// Run-private bridge from Document selection callbacks to run observations.
+struct DocumentSelectionObservationAdapter<'observer, Observer> {
+    observer: &'observer mut Observer,
+}
+
+impl<'observer, Observer> DocumentSelectionObservationAdapter<'observer, Observer> {
+    /// Borrows the run observer for the duration of one Document selection call.
+    fn new(observer: &'observer mut Observer) -> Self {
+        Self { observer }
+    }
+}
+
+impl<Observer> DocumentSelectionObserver for DocumentSelectionObservationAdapter<'_, Observer>
+where
+    Observer: ExtractionRunObserver,
+{
+    /// Preserves one structured progress value in the run observation stream.
+    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+        self.observer
+            .on_observation(ExtractionRunObservation::DocumentSelectionProgress(
+                progress,
+            ));
+    }
+
+    /// Preserves one structured diagnostic value in the run observation stream.
+    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+        self.observer
+            .on_observation(ExtractionRunObservation::DocumentSelectionDiagnostic(
+                diagnostic,
+            ));
+    }
 }
 
 /// Executes one Extraction run and returns its semantic outcome directly.
 ///
 /// The owned request is consumed exactly once. Selection diagnostics and
 /// document-local failures are emitted through the observer and do not make the
-/// run fallible or stop later documents.
+/// run fallible or stop later documents. The final observation carries the same
+/// outcome returned by this operation, and nothing is observed afterward.
 pub(crate) fn run(
     request: ExtractionRunRequest,
-    observer: &mut impl RunObserver,
+    observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {
     let ExtractionRunRequest {
         inputs,
@@ -280,21 +330,26 @@ pub(crate) fn run(
         gif_destination,
     } = request;
     let cover_only = document_extraction.is_epub_cover_extraction_configured();
-    let selected_documents = document_selection::select_documents(
-        DocumentSelectionOptions {
-            inputs: &inputs,
-            recursive,
-            output: output.as_deref(),
-            epub_filter: &epub_filter,
-        },
-        observer,
-    );
+    let selected_documents = {
+        let mut selection_observer = DocumentSelectionObservationAdapter::new(observer);
+        document_selection::select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive,
+                output: output.as_deref(),
+                epub_filter: &epub_filter,
+            },
+            &mut selection_observer,
+        )
+    };
 
     if selected_documents.is_empty() {
-        return ExtractionRunOutcome::NoDocuments;
+        let outcome = ExtractionRunOutcome::NoDocuments;
+        observer.on_observation(ExtractionRunObservation::Terminal(outcome.clone()));
+        return outcome;
     }
 
-    observer.on_event(RunEvent::ExtractionStarted {
+    observer.on_observation(ExtractionRunObservation::ExtractionStarted {
         total: selected_documents.len(),
         cover_only,
     });
@@ -305,7 +360,7 @@ pub(crate) fn run(
         // selection-owned handoff into Document extraction exactly once.
         let path = selected_document.get_path().to_path_buf();
         let display_name = selected_document.get_display_name().to_string();
-        observer.on_event(RunEvent::DocumentStarted {
+        observer.on_observation(ExtractionRunObservation::DocumentStarted {
             path: path.clone(),
             display_name,
         });
@@ -315,23 +370,25 @@ pub(crate) fn run(
             DocumentExtractionOutcome::Failed { facts, error } => (facts, Some(error)),
         };
         for warning in facts.get_warnings() {
-            observer.on_event(RunEvent::DocumentWarning {
+            observer.on_observation(ExtractionRunObservation::DocumentWarning {
                 path: path.clone(),
                 message: warning.get_message().to_string(),
             });
         }
         aggregation.record_document_result(&facts);
         if let Some(error) = error {
-            observer.on_event(RunEvent::DocumentError {
+            observer.on_observation(ExtractionRunObservation::DocumentError {
                 path: path.clone(),
                 message: error.to_string(),
             });
         }
 
-        observer.on_event(RunEvent::DocumentFinished { path: path.clone() });
+        observer.on_observation(ExtractionRunObservation::DocumentFinished { path: path.clone() });
     }
 
-    aggregation.into_outcome(cover_only)
+    let outcome = aggregation.into_outcome(cover_only);
+    observer.on_observation(ExtractionRunObservation::Terminal(outcome.clone()));
+    outcome
 }
 
 impl RunAggregation {
@@ -408,7 +465,10 @@ impl RunAggregation {
 mod tests {
     use super::*;
     use crate::Args;
-    use crate::document_selection::{DocumentSelectionDiagnostic, DocumentSelectionProgress};
+    use crate::document_selection::{
+        DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
+        DocumentSelectionScanScope,
+    };
     use crate::extraction_run_intake;
     use clap::Parser;
     use image::DynamicImage;
@@ -418,20 +478,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use zip::write::SimpleFileOptions;
 
+    /// Records every live fact observed through the production run seam.
     #[derive(Default)]
     struct RecordingRunObserver {
-        events: Vec<RunEvent>,
+        observations: Vec<ExtractionRunObservation>,
     }
 
-    impl DocumentSelectionObserver for RecordingRunObserver {
-        fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
-
-        fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
-    }
-
-    impl RunObserver for RecordingRunObserver {
-        fn on_event(&mut self, event: RunEvent) {
-            self.events.push(event);
+    impl ExtractionRunObserver for RecordingRunObserver {
+        /// Records the complete ordered live Extraction run timeline.
+        fn on_observation(&mut self, observation: ExtractionRunObservation) {
+            self.observations.push(observation);
         }
     }
 
@@ -457,6 +513,27 @@ mod tests {
             ExtractionRunOutcome::ProducedOutput(output) => output,
             other => panic!("expected produced output, got {other:?}"),
         }
+    }
+
+    /// Verifies that one run ends with exactly one terminal observation matching its return value.
+    fn assert_single_terminal_observation(
+        observer: &RecordingRunObserver,
+        outcome: &ExtractionRunOutcome,
+    ) {
+        let terminal_observations: Vec<_> = observer
+            .observations
+            .iter()
+            .filter_map(|observation| match observation {
+                ExtractionRunObservation::Terminal(observed_outcome) => Some(observed_outcome),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(terminal_observations, vec![outcome]);
+        assert_eq!(
+            observer.observations.last(),
+            Some(&ExtractionRunObservation::Terminal(outcome.clone()))
+        );
     }
 
     fn temp_test_dir(test_name: &str) -> PathBuf {
@@ -560,6 +637,82 @@ mod tests {
         let outcome = run(prepared.request, &mut observer);
 
         assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+        assert_single_terminal_observation(&observer, &outcome);
+        assert!(!observer.observations.iter().any(|observation| matches!(
+            observation,
+            ExtractionRunObservation::ExtractionStarted { .. }
+                | ExtractionRunObservation::DocumentStarted { .. }
+        )));
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_stream() {
+        let temp_dir = temp_test_dir("selection-extraction-boundary");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let missing_path = temp_dir.join("missing.docx");
+        let input_path = temp_dir.join("sample.docx");
+        let output_dir = temp_dir.join("output");
+        write_docx(&input_path, &[]);
+        let request = prepare_request(vec![
+            "test".to_string(),
+            missing_path.to_string_lossy().into_owned(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+        ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        );
+        assert_eq!(
+            observer.observations,
+            vec![
+                ExtractionRunObservation::DocumentSelectionDiagnostic(
+                    DocumentSelectionDiagnostic::MissingInput { path: missing_path }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RequestedInputs,
+                        discovered: 0,
+                        status: DocumentSelectionPhaseStatus::Running,
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RequestedInputs,
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Running,
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RequestedInputs,
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Finished,
+                    }
+                ),
+                ExtractionRunObservation::ExtractionStarted {
+                    total: 1,
+                    cover_only: false,
+                },
+                ExtractionRunObservation::DocumentStarted {
+                    path: input_path.clone(),
+                    display_name: "sample.docx".to_string(),
+                },
+                ExtractionRunObservation::DocumentFinished {
+                    path: input_path.clone(),
+                },
+                ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput(
+                    ExtractionOutputKind::Images,
+                )),
+            ]
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -593,17 +746,21 @@ mod tests {
         let output_dir = temp_dir.join("output");
         write_docx(&input_path, &[]);
 
-        let outcome = execute(vec![
+        let request = prepare_request(vec![
             "test".to_string(),
             input_path.to_string_lossy().into_owned(),
             "--output".to_string(),
             output_dir.to_string_lossy().into_owned(),
         ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
 
         assert_eq!(
             outcome,
             ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
         );
+        assert_single_terminal_observation(&observer, &outcome);
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -616,18 +773,22 @@ mod tests {
         let output_dir = temp_dir.join("output");
         write_epub(&input_path, "Test Creator", "No Cover", None);
 
-        let outcome = execute(vec![
+        let request = prepare_request(vec![
             "test".to_string(),
             input_path.to_string_lossy().into_owned(),
             "--output".to_string(),
             output_dir.to_string_lossy().into_owned(),
             "--cover-only".to_string(),
         ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
 
         assert_eq!(
             outcome,
             ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
         );
+        assert_single_terminal_observation(&observer, &outcome);
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -643,12 +804,15 @@ mod tests {
             &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
         );
 
-        let outcome = execute(vec![
+        let request = prepare_request(vec![
             "test".to_string(),
             input_path.to_string_lossy().into_owned(),
             "--output".to_string(),
             output_dir.to_string_lossy().into_owned(),
         ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
         let output = produced(&outcome);
 
         assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
@@ -656,6 +820,7 @@ mod tests {
         assert_eq!(output.documents_with_output(), 1);
         assert!(output.conversion().is_none());
         assert!(output.gif_routing().is_none());
+        assert_single_terminal_observation(&observer, &outcome);
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -836,29 +1001,29 @@ mod tests {
             let outcome = run(request, &mut observer);
 
             assert_eq!(produced(&outcome).output_kind(), expected_output_kind);
-            assert!(observer.events.iter().any(|event| {
+            assert!(observer.observations.iter().any(|observation| {
                 matches!(
-                    event,
-                    RunEvent::ExtractionStarted {
+                    observation,
+                    ExtractionRunObservation::ExtractionStarted {
                         total: 1,
-                        cover_only: event_cover_only
-                    } if *event_cover_only == cover_only
+                        cover_only: observed_cover_only
+                    } if *observed_cover_only == cover_only
                 )
             }));
-            assert!(
-                !observer
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, RunEvent::DocumentError { .. }))
-            );
+            assert!(!observer.observations.iter().any(|observation| matches!(
+                observation,
+                ExtractionRunObservation::DocumentError { .. }
+            )));
             let display_name = observer
-                .events
+                .observations
                 .iter()
-                .find_map(|event| match event {
-                    RunEvent::DocumentStarted { display_name, .. } => Some(display_name.clone()),
+                .find_map(|observation| match observation {
+                    ExtractionRunObservation::DocumentStarted { display_name, .. } => {
+                        Some(display_name.clone())
+                    }
                     _ => None,
                 })
-                .expect("selected EPUB should emit a start event");
+                .expect("selected EPUB should emit a start observation");
             display_names.push(display_name);
         }
 
@@ -887,7 +1052,8 @@ mod tests {
             &failing_path,
             &[
                 ("word/media/first.png", b"not actually a png"),
-                ("word/media/second.gif", b"GIF89a"),
+                ("word/media/second.png", b"also not actually a png"),
+                ("word/media/third.gif", b"GIF89a"),
             ],
         );
         write_docx(
@@ -911,39 +1077,73 @@ mod tests {
         let output = produced(&outcome);
 
         assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
-        assert_eq!(output.emitted_images(), 2);
+        assert_eq!(output.emitted_images(), 3);
         assert_eq!(output.documents_with_output(), 2);
         assert!(output_dir.join("failing_1.png").exists());
+        assert!(output_dir.join("failing_2.png").exists());
         assert!(output_dir.join("succeeding.png").exists());
 
-        let warning_index = observer
-            .events
+        let failing_start = observer
+            .observations
             .iter()
-            .position(|event| matches!(event, RunEvent::DocumentWarning { path, .. } if path == &failing_path))
-            .expect("failed document warning should be emitted");
-        let error_index = observer
-            .events
-            .iter()
-            .position(|event| matches!(event, RunEvent::DocumentError { path, message } if path == &failing_path && message.contains("Failed to create output directory")))
-            .expect("failed document error should be emitted");
-        let failing_finish_indices: Vec<_> = observer
-            .events
+            .position(|observation| matches!(observation, ExtractionRunObservation::DocumentStarted { path, .. } if path == &failing_path))
+            .expect("failed document should start");
+        let warning_indices: Vec<_> = observer
+            .observations
             .iter()
             .enumerate()
-            .filter_map(|(index, event)| {
-                matches!(event, RunEvent::DocumentFinished { path } if path == &failing_path)
+            .filter_map(|(index, observation)| {
+                matches!(observation, ExtractionRunObservation::DocumentWarning { path, .. } if path == &failing_path)
+                    .then_some(index)
+            })
+            .collect();
+        assert_eq!(warning_indices.len(), 2);
+        let warning_messages: Vec<_> = warning_indices
+            .iter()
+            .map(|index| match &observer.observations[*index] {
+                ExtractionRunObservation::DocumentWarning { message, .. } => message.as_str(),
+                _ => unreachable!("warning indices must reference warning observations"),
+            })
+            .collect();
+        assert!(warning_messages[0].contains("first.png"));
+        assert!(warning_messages[1].contains("second.png"));
+        let error_index = observer
+            .observations
+            .iter()
+            .position(|observation| matches!(observation, ExtractionRunObservation::DocumentError { path, message } if path == &failing_path && message.contains("Failed to create output directory")))
+            .expect("failed document error should be emitted");
+        let failing_finish_indices: Vec<_> = observer
+            .observations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, observation)| {
+                matches!(observation, ExtractionRunObservation::DocumentFinished { path } if path == &failing_path)
                     .then_some(index)
             })
             .collect();
         assert_eq!(failing_finish_indices.len(), 1);
-        assert!(warning_index < error_index);
+        assert!(failing_start < warning_indices[0]);
+        assert!(warning_indices[0] < warning_indices[1]);
+        assert!(warning_indices[1] < error_index);
         assert!(error_index < failing_finish_indices[0]);
         let succeeding_start = observer
-            .events
+            .observations
             .iter()
-            .position(|event| matches!(event, RunEvent::DocumentStarted { path, .. } if path == &succeeding_path))
+            .position(|observation| matches!(observation, ExtractionRunObservation::DocumentStarted { path, .. } if path == &succeeding_path))
             .expect("later document should start");
         assert!(failing_finish_indices[0] < succeeding_start);
+        let succeeding_finish_indices: Vec<_> = observer
+            .observations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, observation)| {
+                matches!(observation, ExtractionRunObservation::DocumentFinished { path } if path == &succeeding_path)
+                    .then_some(index)
+            })
+            .collect();
+        assert_eq!(succeeding_finish_indices.len(), 1);
+        assert!(succeeding_start < succeeding_finish_indices[0]);
+        assert_single_terminal_observation(&observer, &outcome);
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }

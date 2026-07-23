@@ -19,10 +19,12 @@ use std::path::PathBuf;
 
 use crate::conversion::{ConversionPolicyError, ConversionTarget};
 use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
-    DocumentSelectionProgress, DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
+    DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
+    DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
 };
-use crate::extraction_run::{ExtractionOutputKind, ExtractionRunOutcome, RunEvent, RunObserver};
+use crate::extraction_run::{
+    ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
+};
 use crate::extraction_run_intake::{ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun};
 
 /// Conversion target spelling accepted by the CLI adapter.
@@ -152,7 +154,7 @@ fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     }
 }
 
-/// Adapts Extraction run and Document selection facts to terminal progress bars.
+/// Adapts cohesive live Extraction run observations to terminal presentation.
 struct IndicatifRunObserver {
     scan_pb: Option<ProgressBar>,
     epub_filter_pb: Option<ProgressBar>,
@@ -191,9 +193,9 @@ impl IndicatifRunObserver {
     }
 }
 
-impl DocumentSelectionObserver for IndicatifRunObserver {
-    /// Renders one Document selection progress snapshot without relying on event deltas.
-    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+impl IndicatifRunObserver {
+    /// Renders one Document selection progress snapshot without relying on callback deltas.
+    fn render_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
         match progress {
             DocumentSelectionProgress::Scanning {
                 scope,
@@ -286,7 +288,7 @@ impl DocumentSelectionObserver for IndicatifRunObserver {
     }
 
     /// Renders one structured Document selection diagnostic with terminal wording.
-    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+    fn render_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
         match diagnostic {
             DocumentSelectionDiagnostic::MissingInput { path } => {
                 eprintln!("Warning: Input path does not exist: {}", path.display());
@@ -317,10 +319,17 @@ impl DocumentSelectionObserver for IndicatifRunObserver {
     }
 }
 
-impl RunObserver for IndicatifRunObserver {
-    fn on_event(&mut self, event: RunEvent) {
-        match event {
-            RunEvent::ExtractionStarted { total, cover_only } => {
+impl ExtractionRunObserver for IndicatifRunObserver {
+    /// Renders one observation without exposing the nested selection observer seam.
+    fn on_observation(&mut self, observation: ExtractionRunObservation) {
+        match observation {
+            ExtractionRunObservation::DocumentSelectionProgress(progress) => {
+                self.render_document_selection_progress(progress);
+            }
+            ExtractionRunObservation::DocumentSelectionDiagnostic(diagnostic) => {
+                self.render_document_selection_diagnostic(diagnostic);
+            }
+            ExtractionRunObservation::ExtractionStarted { total, cover_only } => {
                 let pb = ProgressBar::new(total as u64);
                 pb.set_style(create_progress_style());
                 let extraction_msg = if cover_only {
@@ -331,24 +340,31 @@ impl RunObserver for IndicatifRunObserver {
                 pb.set_message(extraction_msg);
                 self.extraction_pb = Some(pb);
             }
-            RunEvent::DocumentStarted { display_name, .. } => {
+            ExtractionRunObservation::DocumentStarted { display_name, .. } => {
                 if let Some(pb) = &self.extraction_pb {
                     pb.set_message(display_name);
                 }
             }
-            RunEvent::DocumentError { path, message } => {
+            ExtractionRunObservation::DocumentError { path, message } => {
                 Self::suspend_progress_bar(self.extraction_pb.as_ref(), || {
                     eprintln!("Error processing {}: {}", path.display(), message);
                 });
             }
-            RunEvent::DocumentWarning { message, .. } => {
+            ExtractionRunObservation::DocumentWarning { message, .. } => {
                 Self::suspend_progress_bar(self.extraction_pb.as_ref(), || {
                     eprintln!("Warning: {}", message);
                 });
             }
-            RunEvent::DocumentFinished { .. } => {
+            ExtractionRunObservation::DocumentFinished { .. } => {
                 if let Some(pb) = &self.extraction_pb {
                     pb.inc(1);
+                }
+            }
+            ExtractionRunObservation::Terminal(outcome) => {
+                if matches!(outcome, ExtractionRunOutcome::NoDocuments) {
+                    println!("{}", final_summary_message(&outcome));
+                } else {
+                    self.finish_extraction(final_summary_message(&outcome));
                 }
             }
         }
@@ -442,13 +458,7 @@ fn main() -> Result<()> {
     }
 
     let mut observer = IndicatifRunObserver::new();
-    let outcome = extraction_run::run(request, &mut observer);
-
-    if matches!(outcome, ExtractionRunOutcome::NoDocuments) {
-        println!("{}", final_summary_message(&outcome));
-    } else {
-        observer.finish_extraction(final_summary_message(&outcome));
-    }
+    extraction_run::run(request, &mut observer);
 
     Ok(())
 }
@@ -481,6 +491,37 @@ mod tests {
             }),
         )
         .expect("terminal test outcome should be semantically valid")
+    }
+
+    /// Verifies that the terminal observation finishes progress with adapter-owned wording.
+    fn assert_terminal_observation_finishes_extraction(
+        outcome: ExtractionRunOutcome,
+        expected_message: &str,
+    ) {
+        let mut observer = IndicatifRunObserver::new();
+        let cover_only = match &outcome {
+            ExtractionRunOutcome::NoDocuments => false,
+            ExtractionRunOutcome::NoOutput(output_kind) => {
+                *output_kind == ExtractionOutputKind::Covers
+            }
+            ExtractionRunOutcome::ProducedOutput(output) => {
+                output.output_kind() == ExtractionOutputKind::Covers
+            }
+        };
+        observer.on_observation(ExtractionRunObservation::ExtractionStarted {
+            total: 1,
+            cover_only,
+        });
+        let progress = observer
+            .extraction_pb
+            .as_ref()
+            .expect("Extraction start should create progress")
+            .clone();
+
+        observer.on_observation(ExtractionRunObservation::Terminal(outcome));
+
+        assert!(progress.is_finished());
+        assert_eq!(progress.message(), expected_message);
     }
 
     #[test]
@@ -786,6 +827,73 @@ mod tests {
                 gif_dir.display()
             )
         );
+    }
+
+    #[test]
+    fn terminal_observer_finishes_every_nonempty_outcome_with_existing_wording() {
+        let gif_dir = PathBuf::from("/tmp/gifs");
+        let cases = [
+            (
+                ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images),
+                "No images found".to_string(),
+            ),
+            (
+                ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers),
+                "No cover images found".to_string(),
+            ),
+            (
+                produced_outcome(ExtractionOutputKind::Images, 3, 2, None, None),
+                "Extracted 3 image(s) from 2 document(s)".to_string(),
+            ),
+            (
+                produced_outcome(
+                    ExtractionOutputKind::Images,
+                    3,
+                    2,
+                    Some(ConversionFacts::new(2, 1)),
+                    None,
+                ),
+                "Extracted 3 image(s), converted 2, skipped 1 from 2 document(s)".to_string(),
+            ),
+            (
+                produced_outcome(
+                    ExtractionOutputKind::Images,
+                    3,
+                    2,
+                    None,
+                    Some((1, gif_dir.clone())),
+                ),
+                format!(
+                    "Extracted 3 image(s), routed 1 GIF(s) to {} from 2 document(s)",
+                    gif_dir.display()
+                ),
+            ),
+            (
+                produced_outcome(
+                    ExtractionOutputKind::Images,
+                    4,
+                    2,
+                    Some(ConversionFacts::new(2, 1)),
+                    Some((1, gif_dir.clone())),
+                ),
+                format!(
+                    "Extracted 4 image(s), converted 2, skipped 1, routed 1 GIF(s) to {} from 2 document(s)",
+                    gif_dir.display()
+                ),
+            ),
+            (
+                produced_outcome(ExtractionOutputKind::Covers, 1, 1, None, None),
+                "Extracted 1 cover(s) from 1 document(s)".to_string(),
+            ),
+            (
+                produced_outcome(ExtractionOutputKind::Images, 2, 1, None, None),
+                "Extracted 2 image(s) from 1 document(s)".to_string(),
+            ),
+        ];
+
+        for (outcome, expected_message) in cases {
+            assert_terminal_observation_finishes_extraction(outcome, &expected_message);
+        }
     }
 
     #[test]

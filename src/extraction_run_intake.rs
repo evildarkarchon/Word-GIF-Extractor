@@ -170,11 +170,9 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document_selection::{
-        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionProgress,
-    };
     use crate::extraction_run::{
-        ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput, RunEvent, RunObserver, run,
+        ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver,
+        ExtractionRunOutcome, ProducedOutput, run,
     };
     use clap::Parser;
     use image::DynamicImage;
@@ -200,20 +198,13 @@ mod tests {
         ))
     }
 
+    /// Ignores the live run timeline in intake-focused outcome tests.
     #[derive(Default)]
-    struct SilentDocumentSelectionObserver;
+    struct SilentExtractionRunObserver;
 
-    impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
-        /// Ignores progress facts that are outside these intake-focused tests.
-        fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
-
-        /// Ignores diagnostics because the DOCX fixtures are readable selection inputs.
-        fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
-    }
-
-    impl RunObserver for SilentDocumentSelectionObserver {
-        /// Ignores run events because intake tests observe files and semantic outcomes.
-        fn on_event(&mut self, _event: RunEvent) {}
+    impl ExtractionRunObserver for SilentExtractionRunObserver {
+        /// Ignores live observations because intake tests assert files and semantic outcomes.
+        fn on_observation(&mut self, _observation: ExtractionRunObservation) {}
     }
 
     /// Writes one DOCX fixture containing the supplied archive sources.
@@ -253,7 +244,7 @@ mod tests {
 
     /// Executes one intake-produced request exactly once.
     fn execute(prepared: PreparedExtractionRun) -> ExtractionRunOutcome {
-        let mut observer = SilentDocumentSelectionObserver;
+        let mut observer = SilentExtractionRunObserver;
         run(prepared.request, &mut observer)
     }
 
