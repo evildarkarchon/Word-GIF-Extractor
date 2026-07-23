@@ -15,15 +15,15 @@ mod image_write_pipeline;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::conversion::{ConversionPolicyError, ConversionTarget};
 use crate::document_selection::{
     DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
     DocumentSelectionProgress, DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
 };
-use crate::extraction_run::{RunEvent, RunObserver, RunReport};
-use crate::extraction_run_intake::{ExtractionRunIntakeError, PreparedExtractionRun};
+use crate::extraction_run::{ExtractionOutputKind, ExtractionRunOutcome, RunEvent, RunObserver};
+use crate::extraction_run_intake::{ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun};
 
 /// Conversion target spelling accepted by the CLI adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -356,111 +356,99 @@ impl RunObserver for IndicatifRunObserver {
 }
 
 /// Builds the final extraction summary shown in the terminal.
-fn final_summary_message(
-    report: &RunReport,
-    has_convert: bool,
-    gif_output: Option<&Path>,
-) -> String {
-    if report.get_emitted_images() > 0 {
-        // EPUB fallback and DOCX output are normal images even during a cover-only run.
-        // Label output as covers only when every emitted file used required-cover purpose.
-        let item_name = if report.is_cover_only() && !report.is_normal_image_output_present() {
-            "cover(s)"
-        } else {
-            "image(s)"
-        };
-        let has_gif_routing = report.get_gifs_routed() > 0;
+fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
+    match outcome {
+        ExtractionRunOutcome::NoDocuments => "No documents found to process.".to_string(),
+        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images) => {
+            "No images found".to_string()
+        }
+        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers) => {
+            "No cover images found".to_string()
+        }
+        ExtractionRunOutcome::ProducedOutput(output) => {
+            let item_name = match output.output_kind() {
+                ExtractionOutputKind::Images => "image(s)",
+                ExtractionOutputKind::Covers => "cover(s)",
+            };
 
-        match (has_convert, has_gif_routing) {
-            (true, true) => {
-                // D-04: Combined conversion + GIF routing message
-                let gif_dir = gif_output.unwrap();
-                format!(
-                    "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
-                    report.get_emitted_images(),
-                    item_name,
-                    report.get_converted_images(),
-                    report.get_skipped_conversions(),
-                    report.get_gifs_routed(),
-                    gif_dir.display(),
-                    report.get_documents_with_output()
-                )
-            }
-            (true, false) => {
-                // D-01: Conversion stats only
-                format!(
-                    "Extracted {} {}, converted {}, skipped {} from {} document(s)",
-                    report.get_emitted_images(),
-                    item_name,
-                    report.get_converted_images(),
-                    report.get_skipped_conversions(),
-                    report.get_documents_with_output()
-                )
-            }
-            (false, true) => {
-                // Existing GIF routing message (no conversion) -- unchanged
-                let gif_dir = gif_output.unwrap();
-                format!(
-                    "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
-                    report.get_emitted_images(),
-                    item_name,
-                    report.get_gifs_routed(),
-                    gif_dir.display(),
-                    report.get_documents_with_output()
-                )
-            }
-            (false, false) => {
-                // Existing default message -- unchanged
-                format!(
-                    "Extracted {} {} from {} document(s)",
-                    report.get_emitted_images(),
-                    item_name,
-                    report.get_documents_with_output()
-                )
+            match (output.conversion(), output.gif_routing()) {
+                (Some(conversion), Some(gif_routing)) => {
+                    // D-04: Combined conversion + GIF routing message
+                    format!(
+                        "Extracted {} {}, converted {}, skipped {}, routed {} GIF(s) to {} from {} document(s)",
+                        output.emitted_images(),
+                        item_name,
+                        conversion.converted_images(),
+                        conversion.skipped_conversions(),
+                        gif_routing.routed_gifs(),
+                        gif_routing.destination().display(),
+                        output.documents_with_output()
+                    )
+                }
+                (Some(conversion), None) => {
+                    // D-01: Conversion stats only
+                    format!(
+                        "Extracted {} {}, converted {}, skipped {} from {} document(s)",
+                        output.emitted_images(),
+                        item_name,
+                        conversion.converted_images(),
+                        conversion.skipped_conversions(),
+                        output.documents_with_output()
+                    )
+                }
+                (None, Some(gif_routing)) => {
+                    // Existing GIF routing message (no conversion) -- unchanged
+                    format!(
+                        "Extracted {} {}, routed {} GIF(s) to {} from {} document(s)",
+                        output.emitted_images(),
+                        item_name,
+                        gif_routing.routed_gifs(),
+                        gif_routing.destination().display(),
+                        output.documents_with_output()
+                    )
+                }
+                (None, None) => {
+                    // Existing default message -- unchanged
+                    format!(
+                        "Extracted {} {} from {} document(s)",
+                        output.emitted_images(),
+                        item_name,
+                        output.documents_with_output()
+                    )
+                }
             }
         }
-    } else if report.is_cover_only() && !report.is_normal_image_output_present() {
-        "No cover images found".to_string()
-    } else {
-        "No images found".to_string()
     }
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let PreparedExtractionRun {
-        options,
-        has_convert,
-        gif_output,
-        defaulted_input,
-        ignored_formats,
-    } = extraction_run_intake::prepare(args).map_err(render_intake_error)?;
+    let PreparedExtractionRun { request, notices } =
+        extraction_run_intake::prepare(args).map_err(render_intake_error)?;
 
-    if let Some(cwd) = defaulted_input {
-        println!(
-            "No input path specified, using current directory: {}",
-            cwd.display()
-        );
-    }
-
-    for format in ignored_formats {
-        eprintln!("Warning: Unrecognized format '{}' ignored", format);
+    for notice in notices {
+        match notice {
+            PreRunNotice::DefaultedInput { path } => {
+                println!(
+                    "No input path specified, using current directory: {}",
+                    path.display()
+                );
+            }
+            PreRunNotice::IgnoredFormat { format } => {
+                eprintln!("Warning: Unrecognized format '{}' ignored", format);
+            }
+        }
     }
 
     let mut observer = IndicatifRunObserver::new();
-    let report = extraction_run::run(options, &mut observer)?;
+    let outcome = extraction_run::run(request, &mut observer);
 
-    if report.get_documents_to_process() == 0 {
-        println!("No documents found to process.");
-        return Ok(());
+    if matches!(outcome, ExtractionRunOutcome::NoDocuments) {
+        println!("{}", final_summary_message(&outcome));
+    } else {
+        observer.finish_extraction(final_summary_message(&outcome));
     }
-
-    observer.finish_extraction(final_summary_message(
-        &report,
-        has_convert,
-        gif_output.as_deref(),
-    ));
 
     Ok(())
 }
@@ -468,7 +456,32 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction_run::RunReportFixture;
+    use crate::extraction_run::{ConversionFacts, GifRoutingFacts};
+    use std::num::NonZeroUsize;
+
+    /// Builds one state-valid produced outcome through the production constructor.
+    fn produced_outcome(
+        output_kind: ExtractionOutputKind,
+        emitted_images: usize,
+        documents_with_output: usize,
+        conversion: Option<ConversionFacts>,
+        gif_routing: Option<(usize, PathBuf)>,
+    ) -> ExtractionRunOutcome {
+        ExtractionRunOutcome::try_produced(
+            output_kind,
+            NonZeroUsize::new(emitted_images).expect("produced output must be positive"),
+            NonZeroUsize::new(documents_with_output)
+                .expect("documents with output must be positive"),
+            conversion,
+            gif_routing.map(|(routed_gifs, destination)| {
+                GifRoutingFacts::new(
+                    NonZeroUsize::new(routed_gifs).expect("routed GIF count must be positive"),
+                    destination,
+                )
+            }),
+        )
+        .expect("terminal test outcome should be semantically valid")
+    }
 
     #[test]
     fn test_convert_flag_parses_all_formats() {
@@ -660,13 +673,15 @@ mod tests {
 
     #[test]
     fn conversion_summary_reports_preserved_matching_source_as_unconverted() {
-        let report = RunReport::from_fixture(RunReportFixture {
-            emitted_images: 1,
-            documents_with_output: 1,
-            ..RunReportFixture::default()
-        });
+        let outcome = produced_outcome(
+            ExtractionOutputKind::Images,
+            1,
+            1,
+            Some(ConversionFacts::new(0, 0)),
+            None,
+        );
 
-        let message = final_summary_message(&report, true, None);
+        let message = final_summary_message(&outcome);
 
         assert_eq!(
             message,
@@ -675,18 +690,17 @@ mod tests {
     }
 
     #[test]
-    fn combined_conversion_and_gif_summary_uses_run_report() {
+    fn combined_conversion_and_gif_summary_uses_semantic_outcome() {
         let gif_dir = std::path::PathBuf::from("/tmp/gifs");
-        let report = RunReport::from_fixture(RunReportFixture {
-            emitted_images: 10,
-            converted_images: 5,
-            skipped_conversions: 2,
-            gifs_routed: 3,
-            documents_with_output: 4,
-            ..RunReportFixture::default()
-        });
+        let outcome = produced_outcome(
+            ExtractionOutputKind::Images,
+            10,
+            4,
+            Some(ConversionFacts::new(5, 2)),
+            Some((3, gif_dir.clone())),
+        );
 
-        let message = final_summary_message(&report, true, Some(&gif_dir));
+        let message = final_summary_message(&outcome);
 
         assert_eq!(
             message,
@@ -699,18 +713,79 @@ mod tests {
 
     #[test]
     fn epub_cover_fallback_summary_reports_normal_images() {
-        let report = RunReport::from_fixture(RunReportFixture {
-            emitted_images: 2,
-            documents_with_output: 1,
-            has_normal_image_output: true,
-            cover_only: true,
-            documents_to_process: 1,
-            ..RunReportFixture::default()
-        });
+        let outcome = produced_outcome(ExtractionOutputKind::Images, 2, 1, None, None);
 
-        let message = final_summary_message(&report, false, None);
+        let message = final_summary_message(&outcome);
 
         assert_eq!(message, "Extracted 2 image(s) from 1 document(s)");
+    }
+
+    #[test]
+    fn no_documents_summary_preserves_existing_wording() {
+        assert_eq!(
+            final_summary_message(&ExtractionRunOutcome::NoDocuments),
+            "No documents found to process."
+        );
+    }
+
+    #[test]
+    fn image_no_output_summary_preserves_existing_wording() {
+        assert_eq!(
+            final_summary_message(&ExtractionRunOutcome::NoOutput(
+                ExtractionOutputKind::Images
+            )),
+            "No images found"
+        );
+    }
+
+    #[test]
+    fn cover_no_output_summary_preserves_existing_wording() {
+        assert_eq!(
+            final_summary_message(&ExtractionRunOutcome::NoOutput(
+                ExtractionOutputKind::Covers
+            )),
+            "No cover images found"
+        );
+    }
+
+    #[test]
+    fn default_output_summary_preserves_existing_wording() {
+        let outcome = produced_outcome(ExtractionOutputKind::Images, 3, 2, None, None);
+
+        assert_eq!(
+            final_summary_message(&outcome),
+            "Extracted 3 image(s) from 2 document(s)"
+        );
+    }
+
+    #[test]
+    fn required_cover_summary_preserves_existing_wording() {
+        let outcome = produced_outcome(ExtractionOutputKind::Covers, 1, 1, None, None);
+
+        assert_eq!(
+            final_summary_message(&outcome),
+            "Extracted 1 cover(s) from 1 document(s)"
+        );
+    }
+
+    #[test]
+    fn gif_routing_summary_preserves_existing_wording() {
+        let gif_dir = PathBuf::from("/tmp/gifs");
+        let outcome = produced_outcome(
+            ExtractionOutputKind::Images,
+            2,
+            1,
+            None,
+            Some((1, gif_dir.clone())),
+        );
+
+        assert_eq!(
+            final_summary_message(&outcome),
+            format!(
+                "Extracted 2 image(s), routed 1 GIF(s) to {} from 1 document(s)",
+                gif_dir.display()
+            )
+        );
     }
 
     #[test]

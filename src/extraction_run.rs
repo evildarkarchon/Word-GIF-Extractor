@@ -1,72 +1,240 @@
 //! Extraction run workflow for document selection, sequencing, and aggregation.
 
-use anyhow::Result;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
 
+use crate::conversion::ConversionPolicy;
 use crate::document_extraction::{
     DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
+    DocumentExtractionPolicy,
 };
 use crate::document_selection::{
     self, DocumentSelectionObserver, DocumentSelectionOptions, EpubFilter,
 };
-/// Options for one extraction run after CLI arguments have been normalized.
+use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+
+/// Opaque, ready-to-execute handoff produced by Extraction run intake.
 ///
-/// The CLI adapter owns parsing and validation. This module receives only the
-/// workflow facts it needs to select and sequence documents and aggregate the
-/// final outcome.
-pub struct RunOptions {
-    /// Input files or directories to scan.
-    pub inputs: Vec<PathBuf>,
-    /// Whether directory inputs should be scanned recursively.
-    pub recursive: bool,
-    /// Optional output directory shared by every input file.
-    pub output: Option<PathBuf>,
-    /// EPUB metadata filter criteria.
-    pub epub_filter: EpubFilter,
-    /// Ready Document extraction module configured for the run.
-    pub document_extraction: DocumentExtraction,
+/// Construction derives presentation-relevant intent from the same policies
+/// used for extraction, so conversion and GIF-routing facts cannot drift from
+/// the configured workflow. An Extraction run consumes this request by value.
+pub(crate) struct ExtractionRunRequest {
+    inputs: Vec<PathBuf>,
+    recursive: bool,
+    output: Option<PathBuf>,
+    epub_filter: EpubFilter,
+    document_extraction: DocumentExtraction,
+    conversion_requested: bool,
+    gif_destination: Option<PathBuf>,
 }
 
-/// Aggregated outcome from an extraction run.
-///
-/// The report keeps workflow facts behind the extraction run seam so callers do
-/// not have to infer summary state from raw counters.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RunReport {
-    emitted_images: usize,
-    gifs_routed: usize,
+impl ExtractionRunRequest {
+    /// Builds one valid request from normalized inputs and workflow policies.
+    ///
+    /// Conversion intent and the GIF destination are retained alongside the
+    /// configured Image write pipeline for outcome classification.
+    pub(crate) fn new(
+        inputs: Vec<PathBuf>,
+        recursive: bool,
+        output: Option<PathBuf>,
+        epub_filter: EpubFilter,
+        document_extraction_policy: DocumentExtractionPolicy,
+        allowed_formats: HashSet<ImageFormat>,
+        conversion: Option<ConversionPolicy>,
+        gif_destination: Option<PathBuf>,
+    ) -> Self {
+        let conversion_requested = conversion.is_some();
+        let image_write_pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            allowed_formats,
+            conversion,
+            gif_destination.clone(),
+        ));
+
+        Self {
+            inputs,
+            recursive,
+            output,
+            epub_filter,
+            document_extraction: DocumentExtraction::new(
+                document_extraction_policy,
+                image_write_pipeline,
+            ),
+            conversion_requested,
+            gif_destination,
+        }
+    }
+}
+
+/// Semantic classification of output produced or sought by an Extraction run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExtractionOutputKind {
+    /// Normal document images, including EPUB normal-image fallback output.
+    Images,
+    /// Required EPUB covers when no normal-image output was emitted.
+    Covers,
+}
+
+/// Conversion totals retained only when conversion was requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConversionFacts {
     converted_images: usize,
     skipped_conversions: usize,
-    /// Number of documents that produced at least one output image.
-    documents_with_output: usize,
-    /// Whether any normal batch image was emitted.
-    has_normal_image_output: bool,
-    /// Whether this run was requested in cover-only mode.
-    cover_only: bool,
-    /// Number of documents selected for processing after filtering and dedupe.
-    documents_to_process: usize,
 }
 
-/// Test-only run facts used to exercise terminal presentation without pipeline types.
-#[cfg(test)]
+impl ConversionFacts {
+    /// Creates applicable conversion facts, including valid zero totals.
+    pub(crate) fn new(converted_images: usize, skipped_conversions: usize) -> Self {
+        Self {
+            converted_images,
+            skipped_conversions,
+        }
+    }
+
+    /// Returns the number of images converted before emission.
+    pub(crate) fn converted_images(&self) -> usize {
+        self.converted_images
+    }
+
+    /// Returns the number of requested conversions that preserved source bytes.
+    pub(crate) fn skipped_conversions(&self) -> usize {
+        self.skipped_conversions
+    }
+}
+
+/// Routed-GIF facts retained together with their required destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GifRoutingFacts {
+    routed_gifs: NonZeroUsize,
+    destination: PathBuf,
+}
+
+impl GifRoutingFacts {
+    /// Creates applicable GIF-routing facts with a positive routed count.
+    pub(crate) fn new(routed_gifs: NonZeroUsize, destination: PathBuf) -> Self {
+        Self {
+            routed_gifs,
+            destination,
+        }
+    }
+
+    /// Returns the positive number of GIFs routed by the run.
+    pub(crate) fn routed_gifs(&self) -> usize {
+        self.routed_gifs.get()
+    }
+
+    /// Returns the destination that received the routed GIFs.
+    pub(crate) fn destination(&self) -> &Path {
+        &self.destination
+    }
+}
+
+/// State-valid facts for an Extraction run that emitted output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProducedOutput {
+    output_kind: ExtractionOutputKind,
+    emitted_images: NonZeroUsize,
+    documents_with_output: NonZeroUsize,
+    conversion: Option<ConversionFacts>,
+    gif_routing: Option<GifRoutingFacts>,
+}
+
+impl ProducedOutput {
+    /// Returns whether the emitted files are normal images or required covers.
+    pub(crate) fn output_kind(&self) -> ExtractionOutputKind {
+        self.output_kind
+    }
+
+    /// Returns the positive number of emitted image files.
+    pub(crate) fn emitted_images(&self) -> usize {
+        self.emitted_images.get()
+    }
+
+    /// Returns the positive number of documents that emitted output.
+    pub(crate) fn documents_with_output(&self) -> usize {
+        self.documents_with_output.get()
+    }
+
+    /// Returns conversion facts exactly when conversion was requested.
+    pub(crate) fn conversion(&self) -> Option<&ConversionFacts> {
+        self.conversion.as_ref()
+    }
+
+    /// Returns routing facts exactly when at least one GIF was routed.
+    pub(crate) fn gif_routing(&self) -> Option<&GifRoutingFacts> {
+        self.gif_routing.as_ref()
+    }
+}
+
+/// Closed terminal result of one Extraction run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExtractionRunOutcome {
+    /// Document selection found no eligible documents.
+    NoDocuments,
+    /// Documents were selected, but no image file was emitted.
+    NoOutput(ExtractionOutputKind),
+    /// At least one selected document emitted at least one image file.
+    ProducedOutput(ProducedOutput),
+}
+
+impl ExtractionRunOutcome {
+    /// Creates a produced-output outcome when all semantic totals are consistent.
+    ///
+    /// Positive count types prevent terminal adapters and tests from creating a
+    /// produced state with zero output. The remaining checks ensure documents
+    /// and classified output facts cannot exceed the emitted-image total.
+    pub(crate) fn try_produced(
+        output_kind: ExtractionOutputKind,
+        emitted_images: NonZeroUsize,
+        documents_with_output: NonZeroUsize,
+        conversion: Option<ConversionFacts>,
+        gif_routing: Option<GifRoutingFacts>,
+    ) -> Option<Self> {
+        let conversion_total = match conversion {
+            Some(facts) => facts
+                .converted_images
+                .checked_add(facts.skipped_conversions)?,
+            None => 0,
+        };
+        let routed_gifs = gif_routing
+            .as_ref()
+            .map_or(0, |facts| facts.routed_gifs.get());
+        let classified_output = conversion_total.checked_add(routed_gifs)?;
+        if documents_with_output.get() > emitted_images.get()
+            || classified_output > emitted_images.get()
+        {
+            return None;
+        }
+
+        Some(Self::ProducedOutput(ProducedOutput {
+            output_kind,
+            emitted_images,
+            documents_with_output,
+            conversion,
+            gif_routing,
+        }))
+    }
+}
+
 #[derive(Default)]
-pub(crate) struct RunReportFixture {
-    /// Total images emitted by the fixture run.
-    pub(crate) emitted_images: usize,
-    /// Total GIFs routed by the fixture run.
-    pub(crate) gifs_routed: usize,
-    /// Total images converted by the fixture run.
-    pub(crate) converted_images: usize,
-    /// Total conversions skipped by the fixture run.
-    pub(crate) skipped_conversions: usize,
-    /// Documents that emitted at least one image.
-    pub(crate) documents_with_output: usize,
-    /// Whether the fixture run emitted any normal image.
-    pub(crate) has_normal_image_output: bool,
-    /// Whether the fixture run requested cover extraction.
-    pub(crate) cover_only: bool,
-    /// Documents selected by the fixture run.
-    pub(crate) documents_to_process: usize,
+struct ConversionAggregation {
+    converted_images: usize,
+    skipped_conversions: usize,
+}
+
+struct GifRoutingAggregation {
+    routed_gifs: usize,
+    destination: PathBuf,
+}
+
+/// Run-private aggregation that can be consumed only into a valid outcome.
+struct RunAggregation {
+    emitted_images: usize,
+    documents_with_output: usize,
+    has_normal_image_output: bool,
+    conversion: Option<ConversionAggregation>,
+    gif_routing: Option<GifRoutingAggregation>,
 }
 
 /// Domain event emitted while an extraction run progresses.
@@ -93,37 +261,44 @@ pub trait RunObserver: DocumentSelectionObserver {
     fn on_event(&mut self, event: RunEvent);
 }
 
-/// Executes one extraction run and returns its aggregate report.
+/// Executes one Extraction run and returns its semantic outcome directly.
 ///
-/// Per-document failures are emitted as events and do not abort the run. Setup
-/// failures that prevent the run from starting are returned as errors.
-pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunReport> {
-    let cover_only = options
-        .document_extraction
-        .is_epub_cover_extraction_configured();
+/// The owned request is consumed exactly once. Selection diagnostics and
+/// document-local failures are emitted through the observer and do not make the
+/// run fallible or stop later documents.
+pub(crate) fn run(
+    request: ExtractionRunRequest,
+    observer: &mut impl RunObserver,
+) -> ExtractionRunOutcome {
+    let ExtractionRunRequest {
+        inputs,
+        recursive,
+        output,
+        epub_filter,
+        document_extraction,
+        conversion_requested,
+        gif_destination,
+    } = request;
+    let cover_only = document_extraction.is_epub_cover_extraction_configured();
     let selected_documents = document_selection::select_documents(
         DocumentSelectionOptions {
-            inputs: &options.inputs,
-            recursive: options.recursive,
-            output: options.output.as_deref(),
-            epub_filter: &options.epub_filter,
+            inputs: &inputs,
+            recursive,
+            output: output.as_deref(),
+            epub_filter: &epub_filter,
         },
         observer,
     );
-    let mut report = RunReport {
-        cover_only,
-        documents_to_process: selected_documents.len(),
-        ..RunReport::default()
-    };
 
     if selected_documents.is_empty() {
-        return Ok(report);
+        return ExtractionRunOutcome::NoDocuments;
     }
 
     observer.on_event(RunEvent::ExtractionStarted {
         total: selected_documents.len(),
         cover_only,
     });
+    let mut aggregation = RunAggregation::new(conversion_requested, gif_destination);
 
     for selected_document in selected_documents {
         // The run retains only observer-facing facts before transferring the
@@ -135,7 +310,7 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
             display_name,
         });
 
-        let (facts, error) = match options.document_extraction.extract(selected_document) {
+        let (facts, error) = match document_extraction.extract(selected_document) {
             DocumentExtractionOutcome::Completed(facts) => (facts, None),
             DocumentExtractionOutcome::Failed { facts, error } => (facts, Some(error)),
         };
@@ -145,7 +320,7 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
                 message: warning.get_message().to_string(),
             });
         }
-        report.record_document_result(&facts);
+        aggregation.record_document_result(&facts);
         if let Some(error) = error {
             observer.on_event(RunEvent::DocumentError {
                 path: path.clone(),
@@ -156,89 +331,87 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
         observer.on_event(RunEvent::DocumentFinished { path: path.clone() });
     }
 
-    Ok(report)
+    aggregation.into_outcome(cover_only)
 }
 
-impl RunReport {
-    /// Creates a report from run-owned fixture facts for terminal presentation tests.
-    #[cfg(test)]
-    pub(crate) fn from_fixture(fixture: RunReportFixture) -> Self {
+impl RunAggregation {
+    /// Starts aggregation with only the facts applicable to the requested workflow.
+    fn new(conversion_requested: bool, gif_destination: Option<PathBuf>) -> Self {
         Self {
-            emitted_images: fixture.emitted_images,
-            gifs_routed: fixture.gifs_routed,
-            converted_images: fixture.converted_images,
-            skipped_conversions: fixture.skipped_conversions,
-            documents_with_output: fixture.documents_with_output,
-            has_normal_image_output: fixture.has_normal_image_output,
-            cover_only: fixture.cover_only,
-            documents_to_process: fixture.documents_to_process,
+            emitted_images: 0,
+            documents_with_output: 0,
+            has_normal_image_output: false,
+            conversion: conversion_requested.then(ConversionAggregation::default),
+            gif_routing: gif_destination.map(|destination| GifRoutingAggregation {
+                routed_gifs: 0,
+                destination,
+            }),
         }
-    }
-
-    /// Returns the total number of images emitted across processed documents.
-    pub(crate) fn get_emitted_images(&self) -> usize {
-        self.emitted_images
-    }
-
-    /// Returns the total number of emitted GIFs routed to their configured destination.
-    pub(crate) fn get_gifs_routed(&self) -> usize {
-        self.gifs_routed
-    }
-
-    /// Returns the total number of images converted before emission.
-    pub(crate) fn get_converted_images(&self) -> usize {
-        self.converted_images
-    }
-
-    /// Returns the total number of skipped conversions that preserved source bytes.
-    pub(crate) fn get_skipped_conversions(&self) -> usize {
-        self.skipped_conversions
-    }
-
-    /// Returns the number of documents that emitted at least one image.
-    pub(crate) fn get_documents_with_output(&self) -> usize {
-        self.documents_with_output
-    }
-
-    /// Returns whether any document emitted a normal batch image.
-    pub(crate) fn is_normal_image_output_present(&self) -> bool {
-        self.has_normal_image_output
-    }
-
-    /// Returns whether the run requested EPUB cover extraction.
-    pub(crate) fn is_cover_only(&self) -> bool {
-        self.cover_only
-    }
-
-    /// Returns the number of documents selected for extraction.
-    pub(crate) fn get_documents_to_process(&self) -> usize {
-        self.documents_to_process
     }
 
     /// Records Document extraction facts retained by one completed or failed outcome.
     fn record_document_result(&mut self, facts: &DocumentExtractionFacts) {
         self.emitted_images += facts.get_emitted_images();
-        self.gifs_routed += facts.get_gifs_routed();
-        self.converted_images += facts.get_converted_images();
-        self.skipped_conversions += facts.get_skipped_conversions();
+        if let Some(conversion) = &mut self.conversion {
+            conversion.converted_images += facts.get_converted_images();
+            conversion.skipped_conversions += facts.get_skipped_conversions();
+        } else {
+            debug_assert_eq!(facts.get_converted_images(), 0);
+            debug_assert_eq!(facts.get_skipped_conversions(), 0);
+        }
+        if let Some(gif_routing) = &mut self.gif_routing {
+            gif_routing.routed_gifs += facts.get_gifs_routed();
+        } else {
+            debug_assert_eq!(facts.get_gifs_routed(), 0);
+        }
 
         if facts.get_emitted_images() > 0 {
             self.documents_with_output += 1;
             self.has_normal_image_output |= facts.is_normal_image_output_present();
         }
     }
+
+    /// Consumes aggregate counters into one closed, state-valid semantic outcome.
+    fn into_outcome(self, cover_only: bool) -> ExtractionRunOutcome {
+        // EPUB fallback and DOCX output are normal images even during a cover-only run.
+        // Classify output as covers only when every emitted file used required-cover purpose.
+        let output_kind = if cover_only && !self.has_normal_image_output {
+            ExtractionOutputKind::Covers
+        } else {
+            ExtractionOutputKind::Images
+        };
+        let Some(emitted_images) = NonZeroUsize::new(self.emitted_images) else {
+            return ExtractionRunOutcome::NoOutput(output_kind);
+        };
+        let documents_with_output = NonZeroUsize::new(self.documents_with_output)
+            .expect("emitted output must belong to at least one document");
+        let conversion = self
+            .conversion
+            .map(|facts| ConversionFacts::new(facts.converted_images, facts.skipped_conversions));
+        let gif_routing = self.gif_routing.and_then(|facts| {
+            NonZeroUsize::new(facts.routed_gifs)
+                .map(|routed_gifs| GifRoutingFacts::new(routed_gifs, facts.destination))
+        });
+
+        ExtractionRunOutcome::try_produced(
+            output_kind,
+            emitted_images,
+            documents_with_output,
+            conversion,
+            gif_routing,
+        )
+        .expect("run aggregation must produce consistent semantic totals")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
-    use crate::document_extraction::{DocumentExtraction, DocumentExtractionPolicy};
+    use crate::Args;
     use crate::document_selection::{DocumentSelectionDiagnostic, DocumentSelectionProgress};
-    use crate::image_format::ImageFormat;
-    use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+    use crate::extraction_run_intake;
+    use clap::Parser;
     use image::DynamicImage;
-    use std::collections::HashSet;
     use std::fs;
     use std::io::{Cursor, Write};
     use std::path::Path;
@@ -259,6 +432,30 @@ mod tests {
     impl RunObserver for RecordingRunObserver {
         fn on_event(&mut self, event: RunEvent) {
             self.events.push(event);
+        }
+    }
+
+    /// Prepares one production request and asserts that no pre-run notice applies.
+    fn prepare_request(arguments: Vec<String>) -> ExtractionRunRequest {
+        let args = Args::try_parse_from(arguments).expect("test arguments should parse");
+        let prepared =
+            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        assert!(prepared.notices.is_empty());
+        prepared.request
+    }
+
+    /// Executes one production-built request with a recording observer.
+    fn execute(arguments: Vec<String>) -> ExtractionRunOutcome {
+        let request = prepare_request(arguments);
+        let mut observer = RecordingRunObserver::default();
+        run(request, &mut observer)
+    }
+
+    /// Borrows produced-output facts from one semantic run outcome.
+    fn produced(outcome: &ExtractionRunOutcome) -> &ProducedOutput {
+        match outcome {
+            ExtractionRunOutcome::ProducedOutput(output) => output,
+            other => panic!("expected produced output, got {other:?}"),
         }
     }
 
@@ -286,8 +483,8 @@ mod tests {
         zip.finish().expect("test DOCX should finish");
     }
 
-    /// Writes an EPUB fixture with declaration-derived identity and one cover image.
-    fn write_epub_with_cover(path: &Path, creator: &str, title: &str) {
+    /// Writes an EPUB fixture with declaration-derived identity and an optional image.
+    fn write_epub(path: &Path, creator: &str, title: &str, image: Option<(&str, &[u8], bool)>) {
         let file = fs::File::create(path).expect("test EPUB should be creatable");
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default();
@@ -304,6 +501,15 @@ mod tests {
 </container>"#,
         )
         .expect("container should be writable");
+        let manifest_item = match image {
+            Some((name, _, true)) => format!(
+                r#"<item id="image" href="images/{name}" media-type="image/jpeg" properties="cover-image"/>"#
+            ),
+            Some((name, _, false)) => {
+                format!(r#"<item id="image" href="images/{name}" media-type="image/jpeg"/>"#)
+            }
+            None => String::new(),
+        };
         let opf = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
@@ -313,7 +519,7 @@ mod tests {
     <dc:creator>{creator}</dc:creator>
   </metadata>
   <manifest>
-    <item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+    {manifest_item}
   </manifest>
   <spine></spine>
 </package>"#
@@ -322,10 +528,12 @@ mod tests {
             .expect("OPF entry should start");
         zip.write_all(opf.as_bytes())
             .expect("OPF should be writable");
-        zip.start_file("OEBPS/images/cover.jpg", options)
-            .expect("cover entry should start");
-        zip.write_all(b"\xFF\xD8\xFFcover")
-            .expect("cover payload should be writable");
+        if let Some((name, data, _)) = image {
+            zip.start_file(format!("OEBPS/images/{name}"), options)
+                .expect("image entry should start");
+            zip.write_all(data)
+                .expect("image payload should be writable");
+        }
         zip.finish().expect("test EPUB should finish");
     }
 
@@ -339,7 +547,208 @@ mod tests {
     }
 
     #[test]
-    fn run_report_aggregates_document_extraction_facts() {
+    fn no_selected_documents_returns_no_documents_outcome() {
+        let temp_dir = temp_test_dir("no-documents");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input = temp_dir.to_string_lossy().into_owned();
+        let args =
+            Args::try_parse_from(["test", input.as_str()]).expect("test arguments should parse");
+        let prepared =
+            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(prepared.request, &mut observer);
+
+        assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn produced_outcome_rejects_inconsistent_semantic_totals() {
+        let one = NonZeroUsize::new(1).expect("one should be nonzero");
+        let two = NonZeroUsize::new(2).expect("two should be nonzero");
+
+        assert!(
+            ExtractionRunOutcome::try_produced(ExtractionOutputKind::Images, one, two, None, None,)
+                .is_none()
+        );
+        assert!(
+            ExtractionRunOutcome::try_produced(
+                ExtractionOutputKind::Images,
+                one,
+                one,
+                Some(ConversionFacts::new(1, 0)),
+                Some(GifRoutingFacts::new(one, PathBuf::from("gifs"))),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn selected_document_without_images_returns_image_no_output() {
+        let temp_dir = temp_test_dir("image-no-output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("empty.docx");
+        let output_dir = temp_dir.join("output");
+        write_docx(&input_path, &[]);
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+        ]);
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn selected_epub_without_a_cover_returns_cover_no_output() {
+        let temp_dir = temp_test_dir("cover-no-output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("empty.epub");
+        let output_dir = temp_dir.join("output");
+        write_epub(&input_path, "Test Creator", "No Cover", None);
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--cover-only".to_string(),
+        ]);
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn normal_document_output_returns_produced_images() {
+        let temp_dir = temp_test_dir("normal-output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("sample.docx");
+        let output_dir = temp_dir.join("output");
+        write_docx(
+            &input_path,
+            &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
+        );
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+        ]);
+        let output = produced(&outcome);
+
+        assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
+        assert_eq!(output.emitted_images(), 1);
+        assert_eq!(output.documents_with_output(), 1);
+        assert!(output.conversion().is_none());
+        assert!(output.gif_routing().is_none());
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn epub_normal_fallback_is_classified_as_images() {
+        let temp_dir = temp_test_dir("normal-fallback-output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("fallback.epub");
+        let output_dir = temp_dir.join("output");
+        write_epub(
+            &input_path,
+            "Test Creator",
+            "Fallback",
+            Some(("interior.jpg", b"\xFF\xD8\xFFinterior", false)),
+        );
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--cover-only".to_string(),
+            "--cover-fallback".to_string(),
+        ]);
+
+        assert_eq!(
+            produced(&outcome).output_kind(),
+            ExtractionOutputKind::Images
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn requested_conversion_retains_valid_zero_totals() {
+        let temp_dir = temp_test_dir("zero-conversion-totals");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("matching.docx");
+        let output_dir = temp_dir.join("output");
+        write_docx(
+            &input_path,
+            &[("word/media/image.jpg", b"\xFF\xD8\xFFmatching")],
+        );
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--convert".to_string(),
+            "jpg".to_string(),
+        ]);
+
+        assert_eq!(
+            produced(&outcome).conversion(),
+            Some(&ConversionFacts::new(0, 0))
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn routed_gif_retains_its_count_and_destination() {
+        let temp_dir = temp_test_dir("gif-routing");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("animation.docx");
+        let output_dir = temp_dir.join("output");
+        let gif_destination = temp_dir.join("gifs");
+        write_docx(&input_path, &[("word/media/animation.gif", b"GIF89a")]);
+
+        let outcome = execute(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--gif-output".to_string(),
+            gif_destination.to_string_lossy().into_owned(),
+        ]);
+        let output = produced(&outcome);
+        let gif_routing = output
+            .gif_routing()
+            .expect("GIF routing facts should apply");
+
+        assert!(output.conversion().is_none());
+        assert_eq!(gif_routing.routed_gifs(), 1);
+        assert_eq!(gif_routing.destination(), gif_destination);
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
         let temp_dir = temp_test_dir("document-fact-aggregation");
         fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
         let input_path = temp_dir.join("sample.docx");
@@ -354,38 +763,32 @@ mod tests {
                 ("word/media/vector.svg", b"<svg/>"),
             ],
         );
-        let conversion = ConversionPolicy::try_from(ConversionRequest {
-            target: ConversionTarget::Jpg,
-            quality: None,
-            lossless: false,
-        })
-        .expect("test conversion policy should be valid");
-        let options = RunOptions {
-            inputs: vec![input_path],
-            recursive: false,
-            output: Some(output_dir),
-            epub_filter: EpubFilter::default(),
-            document_extraction: DocumentExtraction::new(
-                DocumentExtractionPolicy::NormalImages,
-                ImageWritePipeline::new(ImageWritePolicy::new(
-                    HashSet::from([ImageFormat::Png, ImageFormat::Gif, ImageFormat::Svg]),
-                    Some(conversion),
-                    Some(gif_output),
-                )),
-            ),
-        };
+        let request = prepare_request(vec![
+            "test".to_string(),
+            input_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--formats".to_string(),
+            "png,gif,svg".to_string(),
+            "--convert".to_string(),
+            "jpg".to_string(),
+            "--gif-output".to_string(),
+            gif_output.to_string_lossy().into_owned(),
+        ]);
         let mut observer = RecordingRunObserver::default();
 
-        let report = run(options, &mut observer).expect("Extraction run should complete");
+        let outcome = run(request, &mut observer);
+        let output = produced(&outcome);
 
-        assert_eq!(report.get_emitted_images(), 3);
-        assert_eq!(report.get_converted_images(), 1);
-        assert_eq!(report.get_skipped_conversions(), 1);
-        assert_eq!(report.get_gifs_routed(), 1);
-        assert_eq!(report.get_documents_with_output(), 1);
-        assert!(report.is_normal_image_output_present());
-        assert!(!report.is_cover_only());
-        assert_eq!(report.get_documents_to_process(), 1);
+        assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
+        assert_eq!(output.emitted_images(), 3);
+        assert_eq!(output.documents_with_output(), 1);
+        assert_eq!(output.conversion(), Some(&ConversionFacts::new(1, 1)));
+        let gif_routing = output
+            .gif_routing()
+            .expect("routed GIF facts should be present");
+        assert_eq!(gif_routing.routed_gifs(), 1);
+        assert_eq!(gif_routing.destination(), gif_output);
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -395,50 +798,51 @@ mod tests {
         let temp_dir = temp_test_dir("epub-identity-across-policies");
         fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
         let input_path = temp_dir.join("filename.epub");
-        write_epub_with_cover(&input_path, "Test Creator", "Declared Title");
+        write_epub(
+            &input_path,
+            "Test Creator",
+            "Declared Title",
+            Some(("cover.jpg", b"\xFF\xD8\xFFcover", true)),
+        );
         let run_cases = [
             (
-                DocumentExtractionPolicy::NormalImages,
                 false,
+                ExtractionOutputKind::Images,
                 temp_dir.join("normal-output"),
             ),
             (
-                DocumentExtractionPolicy::EpubCover {
-                    fallback_to_normal_images: false,
-                },
                 true,
+                ExtractionOutputKind::Covers,
                 temp_dir.join("cover-output"),
             ),
         ];
         let mut display_names = Vec::new();
 
-        for (policy, expected_cover_only, output) in run_cases {
-            let options = RunOptions {
-                inputs: vec![input_path.clone()],
-                recursive: false,
-                output: Some(output),
-                epub_filter: EpubFilter::default(),
-                document_extraction: DocumentExtraction::new(
-                    policy,
-                    ImageWritePipeline::new(ImageWritePolicy::new(
-                        HashSet::from([ImageFormat::Jpg]),
-                        None,
-                        None,
-                    )),
-                ),
-            };
+        for (cover_only, expected_output_kind, output_dir) in run_cases {
+            let mut arguments = vec![
+                "test".to_string(),
+                input_path.to_string_lossy().into_owned(),
+                "--output".to_string(),
+                output_dir.to_string_lossy().into_owned(),
+                "--formats".to_string(),
+                "jpg".to_string(),
+            ];
+            if cover_only {
+                arguments.push("--cover-only".to_string());
+            }
+            let request = prepare_request(arguments);
             let mut observer = RecordingRunObserver::default();
 
-            let report = run(options, &mut observer).expect("Extraction run should complete");
+            let outcome = run(request, &mut observer);
 
-            assert_eq!(report.is_cover_only(), expected_cover_only);
+            assert_eq!(produced(&outcome).output_kind(), expected_output_kind);
             assert!(observer.events.iter().any(|event| {
                 matches!(
                     event,
                     RunEvent::ExtractionStarted {
                         total: 1,
-                        cover_only
-                    } if *cover_only == expected_cover_only
+                        cover_only: event_cover_only
+                    } if *event_cover_only == cover_only
                 )
             }));
             assert!(
@@ -490,27 +894,25 @@ mod tests {
             &succeeding_path,
             &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
         );
-        let options = RunOptions {
-            inputs: vec![failing_path.clone(), succeeding_path.clone()],
-            recursive: false,
-            output: Some(output_dir.clone()),
-            epub_filter: EpubFilter::default(),
-            document_extraction: DocumentExtraction::new(
-                DocumentExtractionPolicy::NormalImages,
-                ImageWritePipeline::new(ImageWritePolicy::new(
-                    HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
-                    None,
-                    Some(blocked_gif_output),
-                )),
-            ),
-        };
+        let request = prepare_request(vec![
+            "test".to_string(),
+            failing_path.to_string_lossy().into_owned(),
+            succeeding_path.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_dir.to_string_lossy().into_owned(),
+            "--formats".to_string(),
+            "png,gif".to_string(),
+            "--gif-output".to_string(),
+            blocked_gif_output.to_string_lossy().into_owned(),
+        ]);
         let mut observer = RecordingRunObserver::default();
 
-        let report = run(options, &mut observer).expect("Extraction run should complete");
+        let outcome = run(request, &mut observer);
+        let output = produced(&outcome);
 
-        assert_eq!(report.get_emitted_images(), 2);
-        assert_eq!(report.get_documents_with_output(), 2);
-        assert!(report.is_normal_image_output_present());
+        assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
+        assert_eq!(output.emitted_images(), 2);
+        assert_eq!(output.documents_with_output(), 2);
         assert!(output_dir.join("failing_1.png").exists());
         assert!(output_dir.join("succeeding.png").exists());
 

@@ -6,11 +6,10 @@ use std::path::PathBuf;
 
 use crate::Args;
 use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionRequest};
-use crate::document_extraction::{DocumentExtraction, DocumentExtractionPolicy};
+use crate::document_extraction::DocumentExtractionPolicy;
 use crate::document_selection::EpubFilter;
-use crate::extraction_run::RunOptions;
+use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
@@ -41,29 +40,28 @@ impl std::error::Error for ExtractionRunIntakeError {
     }
 }
 
-/// Prepared extraction run data consumed by the CLI adapter.
-///
-/// The extraction run options are the stable workflow interface. The remaining
-/// fields are adapter facts needed to preserve user-facing messages after the
-/// run has completed.
+/// Structured fact that the terminal adapter renders before an Extraction run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PreRunNotice {
+    /// Intake selected the current directory because no input was requested.
+    DefaultedInput { path: PathBuf },
+    /// Intake ignored one unrecognized image-format token.
+    IgnoredFormat { format: String },
+}
+
+/// Intake result containing one executable request and its ordered pre-run notices.
 pub(crate) struct PreparedExtractionRun {
-    /// Ready-to-run extraction workflow options.
-    pub(crate) options: RunOptions,
-    /// Whether conversion was requested by the user.
-    pub(crate) has_convert: bool,
-    /// GIF output directory for final summary rendering.
-    pub(crate) gif_output: Option<PathBuf>,
-    /// Current directory used when the user did not provide any input.
-    pub(crate) defaulted_input: Option<PathBuf>,
-    /// Format tokens ignored while preparing allowed image formats.
-    pub(crate) ignored_formats: Vec<String>,
+    /// Opaque request consumed by the Extraction run exactly once.
+    pub(crate) request: ExtractionRunRequest,
+    /// Ordered pre-run facts for adapter rendering.
+    pub(crate) notices: Vec<PreRunNotice>,
 }
 
 /// Prepares an extraction run from parsed CLI arguments.
 ///
 /// This concentrates input fallback, format selection, GIF-only behavior,
-/// conversion defaults, EPUB filters, and post-run summary facts behind one
-/// intake interface.
+/// conversion defaults, EPUB filters, and production-valid request construction
+/// behind one intake interface.
 pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
     let Args {
         inputs,
@@ -82,7 +80,6 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
         gif_output,
     } = args;
 
-    let has_convert = convert.is_some();
     let conversion = convert
         .map(|target| {
             ConversionPolicy::try_from(ConversionRequest {
@@ -104,12 +101,6 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
     };
 
     let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
-    let gif_output_for_summary = gif_output.clone();
-    let image_write_pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        allowed_formats,
-        conversion,
-        gif_output,
-    ));
     let document_extraction_policy = if cover_only {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: cover_fallback,
@@ -118,24 +109,27 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
         DocumentExtractionPolicy::NormalImages
     };
 
-    let options = RunOptions {
-        inputs: all_inputs,
+    let request = ExtractionRunRequest::new(
+        all_inputs,
         recursive,
         output,
-        epub_filter: EpubFilter { title, author },
-        document_extraction: DocumentExtraction::new(
-            document_extraction_policy,
-            image_write_pipeline,
-        ),
-    };
+        EpubFilter { title, author },
+        document_extraction_policy,
+        allowed_formats,
+        conversion,
+        gif_output,
+    );
+    let mut notices = Vec::new();
+    if let Some(path) = defaulted_input {
+        notices.push(PreRunNotice::DefaultedInput { path });
+    }
+    notices.extend(
+        ignored_formats
+            .into_iter()
+            .map(|format| PreRunNotice::IgnoredFormat { format }),
+    );
 
-    Ok(PreparedExtractionRun {
-        options,
-        has_convert,
-        gif_output: gif_output_for_summary,
-        defaulted_input,
-        ignored_formats,
-    })
+    Ok(PreparedExtractionRun { request, notices })
 }
 
 /// Resolves the image formats accepted by one extraction run.
@@ -176,10 +170,11 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document_extraction::{DocumentExtractionFacts, DocumentExtractionOutcome};
     use crate::document_selection::{
-        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
-        DocumentSelectionProgress, EpubFilter, select_documents,
+        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionProgress,
+    };
+    use crate::extraction_run::{
+        ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput, RunEvent, RunObserver, run,
     };
     use clap::Parser;
     use image::DynamicImage;
@@ -216,15 +211,14 @@ mod tests {
         fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
     }
 
-    /// Writes sources through the prepared Document extraction interface.
-    fn write_sources(
-        prepared: &PreparedExtractionRun,
-        output_dir: &Path,
-        sources: Vec<(&str, Vec<u8>)>,
-    ) -> DocumentExtractionFacts {
-        fs::create_dir_all(output_dir).expect("temporary output directory should be creatable");
-        let input_path = output_dir.join("input.docx");
-        let file = fs::File::create(&input_path).expect("test DOCX should be creatable");
+    impl RunObserver for SilentDocumentSelectionObserver {
+        /// Ignores run events because intake tests observe files and semantic outcomes.
+        fn on_event(&mut self, _event: RunEvent) {}
+    }
+
+    /// Writes one DOCX fixture containing the supplied archive sources.
+    fn write_docx(input_path: &Path, sources: Vec<(&str, Vec<u8>)>) {
+        let file = fs::File::create(input_path).expect("test DOCX should be creatable");
         let mut zip = zip::ZipWriter::new(file);
         for (name, data) in sources {
             zip.start_file(name, SimpleFileOptions::default())
@@ -233,24 +227,42 @@ mod tests {
                 .expect("ZIP entry payload should be writable");
         }
         zip.finish().expect("test DOCX should finish");
+    }
 
+    /// Prepares and executes one archive-backed DOCX request through the public operation seam.
+    fn run_docx(
+        test_name: &str,
+        sources: Vec<(&str, Vec<u8>)>,
+        extra_args: &[&str],
+    ) -> (PreparedExtractionRun, PathBuf, PathBuf) {
+        let temp_dir = temp_test_dir(test_name);
+        let input_path = temp_dir.join("input.docx");
+        let output_dir = temp_dir.join("output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        write_docx(&input_path, sources);
+
+        let input = input_path.to_string_lossy().into_owned();
+        let output = output_dir.to_string_lossy().into_owned();
+        let mut args = vec!["test".to_string(), input, "--output".to_string(), output];
+        args.extend(extra_args.iter().map(|argument| (*argument).to_string()));
+        let args = Args::try_parse_from(args).expect("test args should parse");
+        let prepared = prepare(args).expect("extraction run intake should succeed");
+
+        (prepared, temp_dir, output_dir)
+    }
+
+    /// Executes one intake-produced request exactly once.
+    fn execute(prepared: PreparedExtractionRun) -> ExtractionRunOutcome {
         let mut observer = SilentDocumentSelectionObserver;
-        let document = select_documents(
-            DocumentSelectionOptions {
-                inputs: std::slice::from_ref(&input_path),
-                recursive: false,
-                output: Some(output_dir),
-                epub_filter: &EpubFilter::default(),
-            },
-            &mut observer,
-        )
-        .into_iter()
-        .next()
-        .expect("DOCX fixture should be selected");
-        match prepared.options.document_extraction.extract(document) {
-            DocumentExtractionOutcome::Completed(result) => result,
-            DocumentExtractionOutcome::Failed { error, .. } => {
-                panic!("prepared Document extraction should succeed: {error}")
+        run(prepared.request, &mut observer)
+    }
+
+    /// Extracts produced-output facts from a semantic outcome.
+    fn produced(outcome: ExtractionRunOutcome) -> ProducedOutput {
+        match outcome {
+            ExtractionRunOutcome::ProducedOutput(output) => output,
+            other => {
+                panic!("expected produced output, got {other:?}");
             }
         }
     }
@@ -265,13 +277,36 @@ mod tests {
 
     #[test]
     fn combines_positional_and_named_inputs() {
-        let prepared = prepare_from(["test", "first.docx", "--input", "second.epub"]);
-
-        assert_eq!(
-            prepared.options.inputs,
-            vec![PathBuf::from("first.docx"), PathBuf::from("second.epub")]
+        let temp_dir = temp_test_dir("combined-inputs");
+        let first = temp_dir.join("first.docx");
+        let second = temp_dir.join("second.docx");
+        let output_dir = temp_dir.join("output");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        write_docx(
+            &first,
+            vec![("word/media/first.png", b"\x89PNG\r\n\x1A\n".to_vec())],
         );
-        assert!(prepared.defaulted_input.is_none());
+        write_docx(
+            &second,
+            vec![("word/media/second.png", b"\x89PNG\r\n\x1A\n".to_vec())],
+        );
+        let args = Args::try_parse_from([
+            "test",
+            first.to_string_lossy().as_ref(),
+            "--input",
+            second.to_string_lossy().as_ref(),
+            "--output",
+            output_dir.to_string_lossy().as_ref(),
+        ])
+        .expect("test args should parse");
+        let prepared = prepare(args).expect("Extraction run intake should succeed");
+
+        assert!(prepared.notices.is_empty());
+        let output = produced(execute(prepared));
+        assert_eq!(output.emitted_images(), 2);
+        assert_eq!(output.documents_with_output(), 2);
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
@@ -279,114 +314,128 @@ mod tests {
         let prepared = prepare_from(["test"]);
         let cwd = std::env::current_dir().expect("current directory should be readable");
 
-        assert_eq!(prepared.options.inputs, vec![cwd.clone()]);
-        assert_eq!(prepared.defaulted_input, Some(cwd));
+        assert_eq!(
+            prepared.notices,
+            vec![PreRunNotice::DefaultedInput { path: cwd }]
+        );
+    }
+
+    #[test]
+    fn returns_defaulted_input_before_ignored_format_notices() {
+        let prepared = prepare_from(["test", "--formats", "unknown"]);
+        let cwd = std::env::current_dir().expect("current directory should be readable");
+
+        assert_eq!(
+            prepared.notices,
+            vec![
+                PreRunNotice::DefaultedInput { path: cwd },
+                PreRunNotice::IgnoredFormat {
+                    format: "unknown".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]
     fn parses_allowed_formats_and_records_ignored_tokens() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "png,unknown,jpeg"]);
-        let temp_dir = temp_test_dir("selected-formats");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
+        let (prepared, temp_dir, output_dir) = run_docx(
+            "selected-formats",
             vec![
                 ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
                 ("photo.bin", b"\xFF\xD8\xFF".to_vec()),
                 ("animation.bin", b"GIF89a".to_vec()),
             ],
+            &["--formats", "png,unknown,jpeg"],
         );
 
-        assert_eq!(result.get_emitted_images(), 2);
-        assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("input_1.png").exists());
-        assert!(temp_dir.join("input_2.jpg").exists());
-        assert!(!temp_dir.join("input_3.gif").exists());
+        assert_eq!(
+            prepared.notices,
+            vec![PreRunNotice::IgnoredFormat {
+                format: "unknown".to_string(),
+            }]
+        );
+        assert_eq!(produced(execute(prepared)).emitted_images(), 2);
+        assert!(output_dir.join("input_1.png").exists());
+        assert!(output_dir.join("input_2.jpg").exists());
+        assert!(!output_dir.join("input_3.gif").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "unknown"]);
-        let temp_dir = temp_test_dir("all-formats-fallback");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
+        let (prepared, temp_dir, output_dir) = run_docx(
+            "all-formats-fallback",
             vec![("vector.bin", b"<svg/>".to_vec())],
+            &["--formats", "unknown"],
         );
 
-        assert_eq!(result.get_emitted_images(), 1);
-        assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("input.svg").exists());
+        assert_eq!(
+            prepared.notices,
+            vec![PreRunNotice::IgnoredFormat {
+                format: "unknown".to_string(),
+            }]
+        );
+        assert_eq!(produced(execute(prepared)).emitted_images(), 1);
+        assert!(output_dir.join("input.svg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn gif_only_overrides_format_selection() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "png,jpg", "--gif-only"]);
-        let temp_dir = temp_test_dir("gif-only");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
+        let (prepared, temp_dir, output_dir) = run_docx(
+            "gif-only",
             vec![
                 ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
                 ("animation.bin", b"GIF89a".to_vec()),
             ],
+            &["--formats", "png,jpg", "--gif-only"],
         );
 
-        assert_eq!(result.get_emitted_images(), 1);
-        assert!(temp_dir.join("input.gif").exists());
-        assert!(!temp_dir.join("input.png").exists());
+        assert_eq!(produced(execute(prepared)).emitted_images(), 1);
+        assert!(output_dir.join("input.gif").exists());
+        assert!(!output_dir.join("input.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
     fn builds_default_conversion_policy() {
-        let prepared = prepare_from(["test", "book.epub", "--convert", "jpg"]);
-        let temp_dir = temp_test_dir("default-conversion");
+        let (prepared, temp_dir, output_dir) = run_docx(
+            "default-conversion",
+            vec![("image.png", valid_png())],
+            &["--convert", "jpg"],
+        );
 
-        let result = write_sources(&prepared, &temp_dir, vec![("image.png", valid_png())]);
-
-        assert_eq!(result.get_emitted_images(), 1);
-        assert_eq!(result.get_converted_images(), 1);
-        assert!(temp_dir.join("input.jpg").exists());
+        let output = produced(execute(prepared));
+        assert_eq!(output.emitted_images(), 1);
+        assert_eq!(
+            output
+                .conversion()
+                .expect("conversion facts should apply")
+                .converted_images(),
+            1
+        );
+        assert!(output_dir.join("input.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
-    fn retains_conversion_and_gif_summary_facts() {
-        let prepared = prepare_from([
-            "test",
-            "book.epub",
-            "--convert",
-            "webp",
-            "--quality",
-            "90",
-            "--gif-output",
-            "gifs",
-        ]);
-
-        assert!(prepared.has_convert);
-        assert_eq!(prepared.gif_output, Some(PathBuf::from("gifs")));
-    }
-
-    #[test]
     fn builds_validated_epub_cover_extraction_policy() {
-        let prepared = prepare_from(["test", "book.epub", "--cover-only", "--cover-fallback"]);
-
-        assert!(
-            prepared
-                .options
-                .document_extraction
-                .is_epub_cover_extraction_configured()
+        let (prepared, temp_dir, _) = run_docx(
+            "cover-policy",
+            Vec::new(),
+            &["--cover-only", "--cover-fallback"],
         );
+
+        assert_eq!(
+            execute(prepared),
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]

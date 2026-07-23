@@ -8,6 +8,18 @@ This context names the concepts involved in extracting images from document arch
 The project workflow for turning requested input paths into processed documents and a final outcome, including Document selection and per-document extraction.
 _Avoid_: CLI orchestration, processing loop
 
+**Extraction run request**:
+The ready-to-execute handoff produced by Extraction run intake, containing the requested inputs, workflow policies, and facts needed to classify the eventual Extraction run outcome. The Extraction run consumes it exactly once; it excludes pre-run intake notices and terminal wording.
+_Avoid_: Run options, prepared options, configuration bundle
+
+**Extraction run outcome**:
+The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts; the outcome excludes terminal wording and raw cross-module counters.
+_Avoid_: Run report, extraction summary, final counters
+
+**Extraction run observation**:
+One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It excludes terminal wording and user-interface commands.
+_Avoid_: Run event, progress callback, UI command
+
 **Document extraction**:
 The per-document responsibility within an Extraction run for turning one selected document into an extraction outcome, including document-kind handling, cover behavior, warnings, and output classification. It excludes Document selection, cross-document sequencing, and run-level presentation.
 _Avoid_: Per-document execution, document processor
