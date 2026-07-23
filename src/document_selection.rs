@@ -7,7 +7,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use crate::document_extraction::{DocumentExtractionPolicy, SelectedDocument};
 use crate::epub_declarations::EpubDeclarations;
 
 pub use self::progress::{
@@ -47,6 +46,102 @@ impl EpubFilter {
     }
 }
 
+/// Immutable handoff produced by Document selection for one eligible document.
+///
+/// The authoritative variant is consumed by Document extraction exactly once.
+#[derive(Debug)]
+pub(crate) enum SelectedDocument {
+    /// A selected DOCX document with DOCX-only extraction facts.
+    Docx(SelectedDocx),
+    /// A selected EPUB document with its optional declaration snapshot.
+    Epub(SelectedEpub),
+}
+
+/// Opaque DOCX payload whose fields and construction belong to Document selection.
+#[derive(Debug)]
+pub(crate) struct SelectedDocx {
+    path: PathBuf,
+    output_dir: PathBuf,
+    base_name: String,
+    display_name: String,
+}
+
+/// Opaque EPUB payload whose fields and construction belong to Document selection.
+#[derive(Debug)]
+pub(crate) struct SelectedEpub {
+    path: PathBuf,
+    output_dir: PathBuf,
+    base_name: String,
+    display_name: String,
+    epub_declarations: Option<EpubDeclarations>,
+}
+
+impl SelectedDocument {
+    /// Returns the source path visible to the Extraction run before handoff.
+    pub(crate) fn get_path(&self) -> &Path {
+        match self {
+            Self::Docx(document) => &document.path,
+            Self::Epub(document) => &document.path,
+        }
+    }
+
+    /// Returns the stable progress identity visible to the Extraction run.
+    pub(crate) fn get_display_name(&self) -> &str {
+        match self {
+            Self::Docx(document) => &document.display_name,
+            Self::Epub(document) => &document.display_name,
+        }
+    }
+}
+
+impl SelectedDocx {
+    /// Creates a DOCX handoff after selection has established eligibility.
+    fn new(path: PathBuf, output_dir: PathBuf, base_name: String, display_name: String) -> Self {
+        Self {
+            path,
+            output_dir,
+            base_name,
+            display_name,
+        }
+    }
+
+    /// Consumes the DOCX payload into the facts owned by Document extraction.
+    pub(crate) fn into_extraction_parts(self) -> (PathBuf, PathBuf, String) {
+        (self.path, self.output_dir, self.base_name)
+    }
+}
+
+impl SelectedEpub {
+    /// Creates an EPUB handoff after selection has established eligibility.
+    fn new(
+        path: PathBuf,
+        output_dir: PathBuf,
+        base_name: String,
+        display_name: String,
+        epub_declarations: Option<EpubDeclarations>,
+    ) -> Self {
+        Self {
+            path,
+            output_dir,
+            base_name,
+            display_name,
+            epub_declarations,
+        }
+    }
+
+    /// Consumes the EPUB payload into extraction facts and its declaration snapshot.
+    pub(crate) fn into_extraction_parts(
+        self,
+    ) -> (PathBuf, PathBuf, String, Option<EpubDeclarations>) {
+        (
+            self.path,
+            self.output_dir,
+            self.base_name,
+            self.epub_declarations,
+        )
+    }
+}
+
 /// Options used to select documents for one extraction run.
 pub struct DocumentSelectionOptions<'a> {
     /// Input files or directories to scan.
@@ -55,33 +150,37 @@ pub struct DocumentSelectionOptions<'a> {
     pub recursive: bool,
     /// Optional output directory shared by every selected document.
     pub output: Option<&'a Path>,
-    /// Document extraction policy used to derive EPUB display identity.
-    pub document_extraction_policy: DocumentExtractionPolicy,
     /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
 }
 
-/// Supported document types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DocumentType {
-    Docx,
-    Epub,
-}
-
+/// Private pre-eligibility representation used during filtering and deduplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DocumentCandidate {
-    path: PathBuf,
-    document_type: DocumentType,
-    epub_declarations: Option<EpubDeclarations>,
+enum DocumentCandidate {
+    Docx {
+        path: PathBuf,
+    },
+    Epub {
+        path: PathBuf,
+        epub_declarations: Option<EpubDeclarations>,
+    },
 }
 
 impl DocumentCandidate {
-    /// Creates a document candidate without retained EPUB declarations.
-    fn new(path: PathBuf, document_type: DocumentType) -> Self {
-        Self {
-            path,
-            document_type,
-            epub_declarations: None,
+    /// Classifies a supported path into its private pre-eligibility variant.
+    fn from_path(path: PathBuf) -> Option<Self> {
+        match path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_lowercase)
+            .as_deref()
+        {
+            Some("docx") => Some(Self::Docx { path }),
+            Some("epub") => Some(Self::Epub {
+                path,
+                epub_declarations: None,
+            }),
+            _ => None,
         }
     }
 }
@@ -117,36 +216,13 @@ pub fn select_documents(
 
     deduplicated
         .into_iter()
-        .map(|candidate| {
-            selected_document_from_candidate(
-                candidate,
-                options.output,
-                options.document_extraction_policy.is_epub_cover_only(),
-            )
-        })
+        .map(|candidate| selected_document_from_candidate(candidate, options.output))
         .collect()
-}
-
-/// Determines the document type based on file extension.
-fn get_document_type(path: &Path) -> Option<DocumentType> {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_lowercase())
-        .and_then(|ext| match ext.as_str() {
-            "docx" => Some(DocumentType::Docx),
-            "epub" => Some(DocumentType::Epub),
-            _ => None,
-        })
-}
-
-/// Checks if a path is a supported document type.
-fn is_supported_document(path: &Path) -> bool {
-    get_document_type(path).is_some()
 }
 
 /// Checks if a candidate is an EPUB file.
 fn is_epub(candidate: &DocumentCandidate) -> bool {
-    candidate.document_type == DocumentType::Epub
+    matches!(candidate, DocumentCandidate::Epub { .. })
 }
 
 /// Collects all document files from the input paths.
@@ -200,12 +276,11 @@ fn push_supported_document(
     files: &mut Vec<DocumentCandidate>,
     progress: &mut ScanningProgress<'_>,
 ) {
-    if !is_supported_document(&path) {
+    let Some(candidate) = DocumentCandidate::from_path(path) else {
         return;
-    }
+    };
 
-    let document_type = get_document_type(&path).expect("supported document type should exist");
-    files.push(DocumentCandidate::new(path, document_type));
+    files.push(candidate);
     progress.document_discovered();
 }
 
@@ -222,18 +297,23 @@ fn filter_epub_files(
     lifecycle.filtering(!epub_files.is_empty(), filter, total, |progress| {
         let mut matching_epubs = Vec::new();
 
-        for mut candidate in epub_files {
-            let outcome = match EpubDeclarations::acquire(&candidate.path) {
+        for candidate in epub_files {
+            let DocumentCandidate::Epub { path, .. } = candidate else {
+                continue;
+            };
+            let outcome = match EpubDeclarations::acquire(&path) {
                 Ok(declarations) if matches_filter(&declarations, filter) => {
-                    candidate.epub_declarations = Some(declarations);
-                    matching_epubs.push(candidate);
+                    matching_epubs.push(DocumentCandidate::Epub {
+                        path,
+                        epub_declarations: Some(declarations),
+                    });
                     EpubFilterCheck::Matched
                 }
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
                     // Filtering cannot accept an EPUB whose requested declarations are unreadable.
                     progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
-                        path: candidate.path,
+                        path,
                         purpose: EpubMetadataPurpose::Filtering,
                         detail: error.to_string(),
                     });
@@ -268,13 +348,20 @@ fn deduplicate_epubs_by_declarations(
         let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
         let mut unique_epubs = Vec::new();
 
-        for mut candidate in epub_files {
-            if candidate.epub_declarations.is_none() {
-                match EpubDeclarations::acquire(&candidate.path) {
-                    Ok(declarations) => candidate.epub_declarations = Some(declarations),
+        for candidate in epub_files {
+            let DocumentCandidate::Epub {
+                path,
+                mut epub_declarations,
+            } = candidate
+            else {
+                continue;
+            };
+            if epub_declarations.is_none() {
+                match EpubDeclarations::acquire(&path) {
+                    Ok(declarations) => epub_declarations = Some(declarations),
                     Err(error) => {
                         progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
-                            path: candidate.path.clone(),
+                            path: path.clone(),
                             purpose: EpubMetadataPurpose::Deduplication,
                             detail: error.to_string(),
                         })
@@ -282,20 +369,23 @@ fn deduplicate_epubs_by_declarations(
                 }
             }
 
-            let key = match candidate.epub_declarations.as_ref() {
+            let key = match epub_declarations.as_ref() {
                 Some(declarations)
                     if declarations.creator().is_some() || declarations.title().is_some() =>
                 {
                     epub_dedupe_key(declarations)
                 }
-                _ => filename_dedupe_key(&candidate.path),
+                _ => filename_dedupe_key(&path),
             };
 
             // Only add if we haven't seen this combination before.
             let outcome = if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key)
             {
-                entry.insert(candidate.path.clone());
-                unique_epubs.push(candidate);
+                entry.insert(path.clone());
+                unique_epubs.push(DocumentCandidate::Epub {
+                    path,
+                    epub_declarations,
+                });
                 EpubDeduplicationCheck::Unique
             } else {
                 EpubDeduplicationCheck::Duplicate
@@ -349,45 +439,55 @@ fn matches_filter(declarations: &EpubDeclarations, filter: &EpubFilter) -> bool 
     title_matches && author_matches
 }
 
-/// Builds one selected document from a discovered and filtered candidate.
+/// Builds one selected document from a filtered and deduplicated candidate.
 fn selected_document_from_candidate(
     candidate: DocumentCandidate,
     global_output: Option<&Path>,
-    cover_only: bool,
 ) -> SelectedDocument {
-    let output_dir = resolve_output_dir(&candidate.path, global_output);
-    let fallback_base_name = fallback_base_name(&candidate.path);
-    let display_name = fallback_display_name(&candidate.path);
-
-    match candidate.document_type {
-        DocumentType::Docx => {
-            SelectedDocument::docx(candidate.path, output_dir, fallback_base_name, display_name)
+    match candidate {
+        DocumentCandidate::Docx { path } => {
+            let output_dir = resolve_output_dir(&path, global_output);
+            let base_name = fallback_base_name(&path);
+            let display_name = fallback_display_name(&path);
+            SelectedDocument::Docx(SelectedDocx::new(path, output_dir, base_name, display_name))
         }
-        DocumentType::Epub => {
+        DocumentCandidate::Epub {
+            path,
+            epub_declarations,
+        } => {
+            let output_dir = resolve_output_dir(&path, global_output);
+            let fallback_base_name = fallback_base_name(&path);
+            let fallback_display_name = fallback_display_name(&path);
+            let has_declaration_identity = epub_declarations.as_ref().is_some_and(|declarations| {
+                declarations
+                    .creator()
+                    .is_some_and(|creator| !creator.trim().is_empty())
+                    || declarations
+                        .title()
+                        .is_some_and(|title| !title.trim().is_empty())
+            });
             let base_name = format_epub_base_name(
-                candidate
-                    .epub_declarations
+                epub_declarations
                     .as_ref()
                     .and_then(EpubDeclarations::creator),
-                candidate
-                    .epub_declarations
-                    .as_ref()
-                    .and_then(EpubDeclarations::title),
+                epub_declarations.as_ref().and_then(EpubDeclarations::title),
                 &fallback_base_name,
             );
-            let display_name = if cover_only {
+            // Selection fixes the run identity from retained declarations only;
+            // extraction-time declaration retries cannot revise this fallback.
+            let display_name = if has_declaration_identity {
                 base_name.clone()
             } else {
-                display_name
+                fallback_display_name
             };
 
-            SelectedDocument::epub(
-                candidate.path,
+            SelectedDocument::Epub(SelectedEpub::new(
+                path,
                 output_dir,
                 base_name,
                 display_name,
-                candidate.epub_declarations,
-            )
+                epub_declarations,
+            ))
         }
     }
 }
@@ -544,7 +644,6 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -595,7 +694,6 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -725,7 +823,6 @@ mod tests {
                 inputs: std::slice::from_ref(&missing),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -747,7 +844,6 @@ mod tests {
                 inputs: &[],
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -775,7 +871,6 @@ mod tests {
                 inputs: std::slice::from_ref(&epub_path),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -828,7 +923,6 @@ mod tests {
                 inputs: &inputs,
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -974,7 +1068,6 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -987,7 +1080,6 @@ mod tests {
                 inputs: std::slice::from_ref(&temp_dir),
                 recursive: true,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -1021,7 +1113,6 @@ mod tests {
                 inputs: std::slice::from_ref(&docx),
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &filter,
             },
             &mut observer,
@@ -1033,6 +1124,43 @@ mod tests {
             DocumentSelectionProgress::FilteringEpubs { .. }
                 | DocumentSelectionProgress::DeduplicatingEpubs { .. }
         )));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn select_documents_deduplicates_matching_readable_epub_declarations() {
+        let temp_dir = temp_test_dir("declaration-dedupe");
+        fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+        let first = temp_dir.join("first.epub");
+        let second = temp_dir.join("second.epub");
+        write_minimal_epub(&first, "Shared Creator", "Shared Title");
+        write_minimal_epub(&second, "Shared Creator", "Shared Title");
+
+        let mut observer = RecordingDocumentSelectionObserver::default();
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &[first.clone(), second],
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), first);
+        assert!(observer.progress.iter().any(|progress| {
+            matches!(
+                progress,
+                DocumentSelectionProgress::DeduplicatingEpubs {
+                    duplicates_found: 1,
+                    unique_remaining: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
+                }
+            )
+        }));
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -1055,7 +1183,6 @@ mod tests {
                 inputs: &[first.clone(), second],
                 recursive: false,
                 output: None,
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -1093,25 +1220,24 @@ mod tests {
     }
 
     #[test]
-    fn selected_epub_carries_base_name_and_cover_display_name() {
+    fn select_documents_uses_declaration_derived_display_name() {
         let temp_dir = temp_test_dir("selected-epub-identity");
         let epub_path = temp_dir.join("sample.epub");
         fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
         write_minimal_epub(&epub_path, "Tester", "Magic Test");
-        let declarations = EpubDeclarations::acquire(&epub_path)
-            .expect("test EPUB declarations should be readable");
-        let selected = selected_document_from_candidate(
-            DocumentCandidate {
-                path: epub_path,
-                document_type: DocumentType::Epub,
-                epub_declarations: Some(declarations),
+        let mut observer = RecordingDocumentSelectionObserver::default();
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&epub_path),
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
             },
-            None,
-            true,
+            &mut observer,
         );
 
-        assert_eq!(selected.get_base_name(), "Tester - Magic Test");
-        assert_eq!(selected.get_display_name(), "Tester - Magic Test");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_display_name(), "Tester - Magic Test");
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }

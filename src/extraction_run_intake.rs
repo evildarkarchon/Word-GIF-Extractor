@@ -176,8 +176,10 @@ fn select_allowed_formats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document_extraction::{
-        DocumentExtractionFacts, DocumentExtractionOutcome, SelectedDocument,
+    use crate::document_extraction::{DocumentExtractionFacts, DocumentExtractionOutcome};
+    use crate::document_selection::{
+        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
+        DocumentSelectionProgress, EpubFilter, select_documents,
     };
     use clap::Parser;
     use image::DynamicImage;
@@ -203,6 +205,17 @@ mod tests {
         ))
     }
 
+    #[derive(Default)]
+    struct SilentDocumentSelectionObserver;
+
+    impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
+        /// Ignores progress facts that are outside these intake-focused tests.
+        fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
+
+        /// Ignores diagnostics because the DOCX fixtures are readable selection inputs.
+        fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
+    }
+
     /// Writes sources through the prepared Document extraction interface.
     fn write_sources(
         prepared: &PreparedExtractionRun,
@@ -221,9 +234,20 @@ mod tests {
         }
         zip.finish().expect("test DOCX should finish");
 
-        let document =
-            SelectedDocument::docx(input_path, output_dir.to_path_buf(), "sample", "input.docx");
-        match prepared.options.document_extraction.extract(&document) {
+        let mut observer = SilentDocumentSelectionObserver;
+        let document = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&input_path),
+                recursive: false,
+                output: Some(output_dir),
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        )
+        .into_iter()
+        .next()
+        .expect("DOCX fixture should be selected");
+        match prepared.options.document_extraction.extract(document) {
             DocumentExtractionOutcome::Completed(result) => result,
             DocumentExtractionOutcome::Failed { error, .. } => {
                 panic!("prepared Document extraction should succeed: {error}")
@@ -276,9 +300,9 @@ mod tests {
 
         assert_eq!(result.get_emitted_images(), 2);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("sample_1.png").exists());
-        assert!(temp_dir.join("sample_2.jpg").exists());
-        assert!(!temp_dir.join("sample_3.gif").exists());
+        assert!(temp_dir.join("input_1.png").exists());
+        assert!(temp_dir.join("input_2.jpg").exists());
+        assert!(!temp_dir.join("input_3.gif").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -296,7 +320,7 @@ mod tests {
 
         assert_eq!(result.get_emitted_images(), 1);
         assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("sample.svg").exists());
+        assert!(temp_dir.join("input.svg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -316,8 +340,8 @@ mod tests {
         );
 
         assert_eq!(result.get_emitted_images(), 1);
-        assert!(temp_dir.join("sample.gif").exists());
-        assert!(!temp_dir.join("sample.png").exists());
+        assert!(temp_dir.join("input.gif").exists());
+        assert!(!temp_dir.join("input.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -331,7 +355,7 @@ mod tests {
 
         assert_eq!(result.get_emitted_images(), 1);
         assert_eq!(result.get_converted_images(), 1);
-        assert!(temp_dir.join("sample.jpg").exists());
+        assert!(temp_dir.join("input.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -357,11 +381,11 @@ mod tests {
     fn builds_validated_epub_cover_extraction_policy() {
         let prepared = prepare_from(["test", "book.epub", "--cover-only", "--cover-fallback"]);
 
-        assert_eq!(
-            prepared.options.document_extraction.get_policy(),
-            DocumentExtractionPolicy::EpubCover {
-                fallback_to_normal_images: true,
-            }
+        assert!(
+            prepared
+                .options
+                .document_extraction
+                .is_epub_cover_extraction_configured()
         );
     }
 

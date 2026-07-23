@@ -6,80 +6,9 @@ mod docx;
 mod epub;
 
 use std::fmt;
-use std::path::{Path, PathBuf};
 
-use crate::epub_declarations::EpubDeclarations;
+use crate::document_selection::SelectedDocument;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
-
-/// Opaque handoff from Document selection to Document extraction.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SelectedDocument {
-    kind: SelectedDocumentKind,
-    path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
-    display_name: String,
-    epub_declarations: Option<EpubDeclarations>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectedDocumentKind {
-    Docx,
-    Epub,
-}
-
-impl SelectedDocument {
-    /// Creates the extraction handoff for one selected DOCX document.
-    pub(crate) fn docx(
-        path: PathBuf,
-        output_dir: PathBuf,
-        base_name: impl Into<String>,
-        display_name: impl Into<String>,
-    ) -> Self {
-        Self {
-            kind: SelectedDocumentKind::Docx,
-            path,
-            output_dir,
-            base_name: base_name.into(),
-            display_name: display_name.into(),
-            epub_declarations: None,
-        }
-    }
-
-    /// Creates the extraction handoff for one selected EPUB document.
-    pub(crate) fn epub(
-        path: PathBuf,
-        output_dir: PathBuf,
-        base_name: impl Into<String>,
-        display_name: impl Into<String>,
-        epub_declarations: Option<EpubDeclarations>,
-    ) -> Self {
-        Self {
-            kind: SelectedDocumentKind::Epub,
-            path,
-            output_dir,
-            base_name: base_name.into(),
-            display_name: display_name.into(),
-            epub_declarations,
-        }
-    }
-
-    /// Returns the source path visible to the Extraction run.
-    pub(crate) fn get_path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Returns the progress identity visible to the Extraction run.
-    pub(crate) fn get_display_name(&self) -> &str {
-        &self.display_name
-    }
-
-    /// Returns the output base name for Document selection interface tests.
-    #[cfg(test)]
-    pub(crate) fn get_base_name(&self) -> &str {
-        &self.base_name
-    }
-}
 
 /// Valid per-run choices for normal images versus EPUB cover extraction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +24,7 @@ pub(crate) enum DocumentExtractionPolicy {
 
 impl DocumentExtractionPolicy {
     /// Returns whether EPUB documents should use required-cover extraction.
-    pub(crate) fn is_epub_cover_only(self) -> bool {
+    fn is_epub_cover_only(self) -> bool {
         matches!(self, Self::EpubCover { .. })
     }
 
@@ -128,32 +57,34 @@ impl DocumentExtraction {
         }
     }
 
-    /// Returns the validated policy shared by selection and extraction.
-    pub(crate) fn get_policy(&self) -> DocumentExtractionPolicy {
-        self.policy
+    /// Returns whether this module is configured to extract EPUB covers.
+    pub(crate) fn is_epub_cover_extraction_configured(&self) -> bool {
+        self.policy.is_epub_cover_only()
     }
 
-    /// Extracts one selected document through its format adapter.
+    /// Consumes one selected document and dispatches its authoritative variant.
     ///
     /// Document-local errors are returned as failed outcomes so the Extraction
     /// run can continue processing later documents.
-    pub(crate) fn extract(&self, document: &SelectedDocument) -> DocumentExtractionOutcome {
-        let result = match document.kind {
-            SelectedDocumentKind::Docx => docx::process_file(
-                &document.path,
-                &document.output_dir,
-                &document.base_name,
-                &self.image_write_pipeline,
-            ),
-            SelectedDocumentKind::Epub => epub::process_file(
-                &document.path,
-                &document.output_dir,
-                &document.base_name,
-                document.epub_declarations.as_ref(),
-                self.policy.is_epub_cover_only(),
-                self.policy.is_epub_cover_fallback_enabled(),
-                &self.image_write_pipeline,
-            ),
+    pub(crate) fn extract(&self, document: SelectedDocument) -> DocumentExtractionOutcome {
+        let result = match document {
+            SelectedDocument::Docx(document) => {
+                let (path, output_dir, base_name) = document.into_extraction_parts();
+                docx::process_file(&path, &output_dir, &base_name, &self.image_write_pipeline)
+            }
+            SelectedDocument::Epub(document) => {
+                let (path, output_dir, base_name, epub_declarations) =
+                    document.into_extraction_parts();
+                epub::process_file(
+                    &path,
+                    &output_dir,
+                    &base_name,
+                    epub_declarations.as_ref(),
+                    self.policy.is_epub_cover_only(),
+                    self.policy.is_epub_cover_fallback_enabled(),
+                    &self.image_write_pipeline,
+                )
+            }
         };
 
         match result {
@@ -408,6 +339,24 @@ mod tests {
         fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
     }
 
+    /// Obtains one extraction handoff through the production Document selection operation.
+    fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument {
+        let mut observer = SilentDocumentSelectionObserver;
+        let input_path = input_path.to_path_buf();
+        select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&input_path),
+                recursive: false,
+                output: Some(output_dir),
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        )
+        .into_iter()
+        .next()
+        .expect("document fixture should be selected")
+    }
+
     #[test]
     fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
         let temp_dir = temp_test_dir("docx-normal-images");
@@ -429,10 +378,9 @@ mod tests {
                 None,
             )),
         );
-        let document =
-            SelectedDocument::docx(input_path, output_dir.clone(), "sample", "sample.docx");
+        let document = select_one_document(&input_path, &output_dir);
 
-        let outcome = extraction.extract(&document);
+        let outcome = extraction.extract(document);
 
         let DocumentExtractionOutcome::Completed(facts) = outcome else {
             panic!("valid DOCX extraction should complete");
@@ -470,10 +418,9 @@ mod tests {
                 Some(blocked_gif_output),
             )),
         );
-        let document =
-            SelectedDocument::docx(input_path, output_dir.clone(), "sample", "sample.docx");
+        let document = select_one_document(&input_path, &output_dir);
 
-        let DocumentExtractionOutcome::Failed { facts, error } = extraction.extract(&document)
+        let DocumentExtractionOutcome::Failed { facts, error } = extraction.extract(document)
         else {
             panic!("blocked GIF destination should fail Document extraction");
         };
@@ -520,16 +467,15 @@ mod tests {
                 None,
             )),
         );
-        let document =
-            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
+        let document = select_one_document(&input_path, &output_dir);
 
-        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
             panic!("valid EPUB cover extraction should complete");
         };
 
         assert_eq!(result.get_emitted_images(), 1);
         assert!(!result.is_normal_image_output_present());
-        assert!(output_dir.join("sample.jpg").exists());
+        assert!(output_dir.join("Test.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -551,16 +497,15 @@ mod tests {
                 None,
             )),
         );
-        let document =
-            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
+        let document = select_one_document(&input_path, &output_dir);
 
-        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
             panic!("EPUB cover fallback should complete");
         };
 
         assert_eq!(result.get_emitted_images(), 1);
         assert!(result.is_normal_image_output_present());
-        assert!(output_dir.join("sample.jpg").exists());
+        assert!(output_dir.join("Test.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -585,16 +530,15 @@ mod tests {
                 None,
             )),
         );
-        let document =
-            SelectedDocument::epub(input_path, output_dir.clone(), "sample", "Test", None);
+        let document = select_one_document(&input_path, &output_dir);
 
-        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&document) else {
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
             panic!("normal EPUB extraction should complete");
         };
 
         assert_eq!(result.get_emitted_images(), 1);
         assert!(result.is_normal_image_output_present());
-        assert!(output_dir.join("sample.jpg").exists());
+        assert!(output_dir.join("Test.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
@@ -621,7 +565,6 @@ mod tests {
                 inputs: std::slice::from_ref(&input_path),
                 recursive: false,
                 output: Some(&output_dir),
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
@@ -643,7 +586,11 @@ mod tests {
             )),
         );
 
-        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&selected[0]) else {
+        let document = selected
+            .into_iter()
+            .next()
+            .expect("EPUB fixture should be selected");
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
             panic!("retained EPUB declarations should support extraction");
         };
 
@@ -657,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_declaration_failure_is_retried_during_extraction() {
+    fn selection_declaration_failure_is_retried_without_revising_selected_identity() {
         let temp_dir = temp_test_dir("retry-epub-declarations");
         let input_path = temp_dir.join("sample.epub");
         let output_dir = temp_dir.join("output");
@@ -669,12 +616,12 @@ mod tests {
                 inputs: std::slice::from_ref(&input_path),
                 recursive: false,
                 output: Some(&output_dir),
-                document_extraction_policy: DocumentExtractionPolicy::NormalImages,
                 epub_filter: &EpubFilter::default(),
             },
             &mut observer,
         );
         assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_display_name(), "sample.epub");
 
         write_epub(
             &input_path,
@@ -691,7 +638,11 @@ mod tests {
             )),
         );
 
-        let DocumentExtractionOutcome::Completed(result) = extraction.extract(&selected[0]) else {
+        let document = selected
+            .into_iter()
+            .next()
+            .expect("EPUB fixture should be selected");
+        let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
             panic!("Document extraction should retry unavailable EPUB declarations");
         };
 

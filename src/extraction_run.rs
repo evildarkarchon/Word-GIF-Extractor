@@ -98,14 +98,14 @@ pub trait RunObserver: DocumentSelectionObserver {
 /// Per-document failures are emitted as events and do not abort the run. Setup
 /// failures that prevent the run from starting are returned as errors.
 pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunReport> {
-    let document_extraction_policy = options.document_extraction.get_policy();
-    let cover_only = document_extraction_policy.is_epub_cover_only();
+    let cover_only = options
+        .document_extraction
+        .is_epub_cover_extraction_configured();
     let selected_documents = document_selection::select_documents(
         DocumentSelectionOptions {
             inputs: &options.inputs,
             recursive: options.recursive,
             output: options.output.as_deref(),
-            document_extraction_policy,
             epub_filter: &options.epub_filter,
         },
         observer,
@@ -125,11 +125,14 @@ pub fn run(options: RunOptions, observer: &mut impl RunObserver) -> Result<RunRe
         cover_only,
     });
 
-    for selected_document in &selected_documents {
+    for selected_document in selected_documents {
+        // The run retains only observer-facing facts before transferring the
+        // selection-owned handoff into Document extraction exactly once.
         let path = selected_document.get_path().to_path_buf();
+        let display_name = selected_document.get_display_name().to_string();
         observer.on_event(RunEvent::DocumentStarted {
             path: path.clone(),
-            display_name: selected_document.get_display_name().to_string(),
+            display_name,
         });
 
         let (facts, error) = match options.document_extraction.extract(selected_document) {
@@ -283,6 +286,49 @@ mod tests {
         zip.finish().expect("test DOCX should finish");
     }
 
+    /// Writes an EPUB fixture with declaration-derived identity and one cover image.
+    fn write_epub_with_cover(path: &Path, creator: &str, title: &str) {
+        let file = fs::File::create(path).expect("test EPUB should be creatable");
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        zip.start_file("mimetype", options)
+            .expect("mimetype entry should start");
+        zip.write_all(b"application/epub+zip")
+            .expect("mimetype should be writable");
+        zip.start_file("META-INF/container.xml", options)
+            .expect("container entry should start");
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#,
+        )
+        .expect("container should be writable");
+        let opf = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>{creator}</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+  </manifest>
+  <spine></spine>
+</package>"#
+        );
+        zip.start_file("OEBPS/content.opf", options)
+            .expect("OPF entry should start");
+        zip.write_all(opf.as_bytes())
+            .expect("OPF should be writable");
+        zip.start_file("OEBPS/images/cover.jpg", options)
+            .expect("cover entry should start");
+        zip.write_all(b"\xFF\xD8\xFFcover")
+            .expect("cover payload should be writable");
+        zip.finish().expect("test EPUB should finish");
+    }
+
     /// Encodes a valid PNG payload for run-level conversion assertions.
     fn valid_png() -> Vec<u8> {
         let mut cursor = Cursor::new(Vec::new());
@@ -340,6 +386,85 @@ mod tests {
         assert!(report.is_normal_image_output_present());
         assert!(!report.is_cover_only());
         assert_eq!(report.get_documents_to_process(), 1);
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn epub_identity_is_consistent_across_normal_and_cover_runs() {
+        let temp_dir = temp_test_dir("epub-identity-across-policies");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let input_path = temp_dir.join("filename.epub");
+        write_epub_with_cover(&input_path, "Test Creator", "Declared Title");
+        let run_cases = [
+            (
+                DocumentExtractionPolicy::NormalImages,
+                false,
+                temp_dir.join("normal-output"),
+            ),
+            (
+                DocumentExtractionPolicy::EpubCover {
+                    fallback_to_normal_images: false,
+                },
+                true,
+                temp_dir.join("cover-output"),
+            ),
+        ];
+        let mut display_names = Vec::new();
+
+        for (policy, expected_cover_only, output) in run_cases {
+            let options = RunOptions {
+                inputs: vec![input_path.clone()],
+                recursive: false,
+                output: Some(output),
+                epub_filter: EpubFilter::default(),
+                document_extraction: DocumentExtraction::new(
+                    policy,
+                    ImageWritePipeline::new(ImageWritePolicy::new(
+                        HashSet::from([ImageFormat::Jpg]),
+                        None,
+                        None,
+                    )),
+                ),
+            };
+            let mut observer = RecordingRunObserver::default();
+
+            let report = run(options, &mut observer).expect("Extraction run should complete");
+
+            assert_eq!(report.is_cover_only(), expected_cover_only);
+            assert!(observer.events.iter().any(|event| {
+                matches!(
+                    event,
+                    RunEvent::ExtractionStarted {
+                        total: 1,
+                        cover_only
+                    } if *cover_only == expected_cover_only
+                )
+            }));
+            assert!(
+                !observer
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, RunEvent::DocumentError { .. }))
+            );
+            let display_name = observer
+                .events
+                .iter()
+                .find_map(|event| match event {
+                    RunEvent::DocumentStarted { display_name, .. } => Some(display_name.clone()),
+                    _ => None,
+                })
+                .expect("selected EPUB should emit a start event");
+            display_names.push(display_name);
+        }
+
+        assert_eq!(
+            display_names,
+            [
+                "Test Creator - Declared Title",
+                "Test Creator - Declared Title"
+            ]
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
