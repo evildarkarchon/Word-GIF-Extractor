@@ -1,7 +1,5 @@
 //! EPUB file processing module
 
-#[path = "epub/cover_extraction.rs"]
-mod cover_extraction;
 #[path = "epub/resource_archive.rs"]
 mod resource_archive;
 
@@ -14,10 +12,9 @@ use crate::document_selection::SelectedEpub;
 use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
-    ImageWriteRequest,
+    ImageWriteRequest, ImageWriteResult, RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
 };
 
-use self::cover_extraction::{EpubCoverRequest, extract_required_cover};
 use self::resource_archive::{ArchiveResourceIdentity, EpubResource, EpubResourceArchive};
 
 /// Common JPEG file extensions for cover image fallback detection
@@ -66,7 +63,7 @@ pub(super) fn extract(
         ),
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images,
-        } => extract_cover_only(
+        } => extract_required_cover(
             &mut archive,
             &resources,
             declarations.cover_id(),
@@ -133,36 +130,84 @@ fn find_cover_by_filename(resources: &[EpubResource]) -> Option<&EpubResource> {
     })
 }
 
-/// Extracts only the cover image from an EPUB file
-/// If cover_fallback is true and no cover is found, extracts all images instead
+/// Extracts one required EPUB cover and optionally falls back to normal images.
+///
+/// The declared metadata cover precedes the first deterministic JPEG-family
+/// filename candidate. Archive resource identities are recorded before attempts,
+/// suppress aliases, and exclude every attempted payload from normal fallback.
+/// Only retry dispositions advance; every completed Image write decision is terminal.
 ///
 /// # Errors
 ///
-/// Returns an error when output emission fails. Unreadable cover resources become
-/// warnings and advance through declared identity, filename, then optional batch fallback.
-fn extract_cover_only(
+/// Returns an error when cover or fallback emission fails. Facts from earlier cover
+/// attempts and successful normal-image writes remain attached to the failure.
+fn extract_required_cover(
     archive: &mut EpubResourceArchive,
     resources: &[EpubResource],
     cover_id: Option<&str>,
     output_base_dir: &Path,
     base_name: &str,
-    cover_fallback: bool,
+    fallback_to_normal_images: bool,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
     let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id() == id));
     let filename_cover = find_cover_by_filename(resources);
-    extract_required_cover(
-        archive,
-        EpubCoverRequest {
+    let mut attempted_identities = HashSet::new();
+    let mut aggregate = ImageWriteResult::default();
+
+    for candidate in [metadata_cover, filename_cover].into_iter().flatten() {
+        if !attempted_identities.insert(candidate.identity().clone()) {
+            continue;
+        }
+
+        let outcome = match pipeline.write_required_cover(
+            RequiredCoverWriteRequest::new(output_base_dir, base_name),
+            |visitor| {
+                let source =
+                    ArchiveImageSource::required_cover(candidate.manifest_path(), candidate.mime());
+                let acquisition = archive
+                    .with_reader(candidate, |reader| visitor.visit(source.clone(), reader))?;
+                if let Err(error) = acquisition {
+                    visitor.unreadable(source, error)?;
+                }
+                Ok(())
+            },
+        ) {
+            Ok(outcome) => outcome,
+            Err(mut failure) => {
+                failure.prepend(aggregate);
+                return Err(failure);
+            }
+        };
+
+        match outcome {
+            RequiredCoverWriteOutcome::Retry(result) => aggregate.append(result),
+            RequiredCoverWriteOutcome::Completed(result) => {
+                aggregate.append(result);
+                return Ok(aggregate);
+            }
+        }
+    }
+
+    if fallback_to_normal_images {
+        let fallback = match extract_all_images(
+            archive,
             resources,
-            metadata_cover,
-            filename_cover,
-            cover_fallback,
-            output_dir: output_base_dir,
+            &attempted_identities,
+            output_base_dir,
             base_name,
             pipeline,
-        },
-    )
+        ) {
+            Ok(fallback) => fallback,
+            Err(mut failure) => {
+                failure.prepend(aggregate);
+                return Err(failure);
+            }
+        };
+        aggregate.append(fallback);
+    }
+
+    Ok(aggregate)
 }
 
 /// Visits one manifest resource while keeping its `ZipFile` borrow scoped.
@@ -189,6 +234,7 @@ fn visit_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
     use crate::document_extraction::DocumentExtractionPolicy;
     use crate::document_selection::{
         DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
@@ -261,6 +307,24 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Builds the production Image write pipeline with one validated Conversion policy.
+    fn pipeline_with_conversion(
+        allowed_formats: HashSet<ImageFormat>,
+        target: ConversionTarget,
+    ) -> ImageWritePipeline {
+        let conversion = ConversionPolicy::try_from(ConversionRequest {
+            target,
+            quality: None,
+            lossless: false,
+        })
+        .expect("test Conversion policy should be valid");
+        ImageWritePipeline::new(ImageWritePolicy::new(
+            allowed_formats,
+            Some(conversion),
+            None,
+        ))
     }
 
     fn write_minimal_epub(path: &Path, image_href: &str, image_mime: &str, image_data: &[u8]) {
@@ -411,19 +475,106 @@ mod tests {
     }
 
     #[test]
-    fn test_jpeg_extensions_contains_common_extensions() {
-        assert!(JPEG_EXTENSIONS.contains(&"jpg"));
-        assert!(JPEG_EXTENSIONS.contains(&"jpeg"));
-        assert!(JPEG_EXTENSIONS.contains(&"jpe"));
-        assert!(JPEG_EXTENSIONS.contains(&"jfif"));
+    fn filename_cover_heuristics_are_observable_through_epub_extraction() {
+        for (extension, should_match) in [
+            ("jpg", true),
+            ("jpeg", true),
+            ("jpe", true),
+            ("jfif", true),
+            ("png", false),
+            ("gif", false),
+            ("webp", false),
+            ("bmp", false),
+        ] {
+            let temp_dir = temp_test_dir(&format!("filename-cover-{extension}"));
+            let input_path = temp_dir.join("sample.epub");
+            let output_dir = temp_dir.join("out");
+            fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+            let manifest_path = format!("images/CoVeR.{extension}");
+            let archive_path = format!("OEBPS/{manifest_path}");
+            write_epub_fixture(
+                &input_path,
+                &[(
+                    "filename-candidate",
+                    manifest_path.as_str(),
+                    "application/octet-stream",
+                    None,
+                )],
+                &[(archive_path.as_str(), b"\xFF\xD8\xFFcover")],
+            );
+            let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+                HashSet::from([ImageFormat::Jpg]),
+                None,
+                None,
+            ));
+            let selected = select_epub(&input_path, &output_dir);
+
+            let result = extract(
+                selected,
+                DocumentExtractionPolicy::EpubCover {
+                    fallback_to_normal_images: false,
+                },
+                &pipeline,
+            )
+            .expect("filename cover discovery should complete normally");
+
+            assert_eq!(
+                result.counts.extracted,
+                usize::from(should_match),
+                "unexpected filename-cover decision for .{extension}"
+            );
+            assert_eq!(
+                output_dir.join("Tester - Magic Test.jpg").exists(),
+                should_match,
+                "unexpected filename-cover output for .{extension}"
+            );
+
+            fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+        }
     }
 
     #[test]
-    fn test_jpeg_extensions_does_not_contain_other_formats() {
-        assert!(!JPEG_EXTENSIONS.contains(&"png"));
-        assert!(!JPEG_EXTENSIONS.contains(&"gif"));
-        assert!(!JPEG_EXTENSIONS.contains(&"webp"));
-        assert!(!JPEG_EXTENSIONS.contains(&"bmp"));
+    fn filename_cover_uses_first_deterministic_jpeg_family_candidate() {
+        let temp_dir = temp_test_dir("deterministic-filename-cover");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        let first_cover = b"\xFF\xD8\xFFfirst";
+        let later_cover = b"\xFF\xD8\xFFlater";
+        write_epub_fixture(
+            &input_path,
+            &[
+                ("later", "z/cover.jpg", "image/jpeg", None),
+                ("first", "a/cover.jpeg", "image/jpeg", None),
+            ],
+            &[
+                ("OEBPS/z/cover.jpg", later_cover),
+                ("OEBPS/a/cover.jpeg", first_cover),
+            ],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg]),
+            None,
+            None,
+        ));
+        let selected = select_epub(&input_path, &output_dir);
+
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: false,
+            },
+            &pipeline,
+        )
+        .expect("the first deterministic filename candidate should be emitted");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert_eq!(
+            fs::read(output_dir.join("Tester - Magic Test.jpg")).unwrap(),
+            first_cover
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
@@ -686,6 +837,179 @@ mod tests {
     }
 
     #[test]
+    fn filtered_metadata_cover_is_terminal_before_filename_and_normal_fallback() {
+        let temp_dir = temp_test_dir("filtered-cover-terminal");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/art.png",
+                    "image/png",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.jpg", "image/jpeg", None),
+            ],
+            &[
+                ("OEBPS/images/art.png", MINIMAL_PNG),
+                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfilename"),
+                ("OEBPS/images/page.jpg", b"\xFF\xD8\xFFpage"),
+            ],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Jpg]),
+            None,
+            None,
+        ));
+        let selected = select_epub(&input_path, &output_dir);
+
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
+            &pipeline,
+        )
+        .expect("a filtered cover should complete without another candidate or fallback");
+
+        assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::UnsupportedCoverFormat {
+                format: ImageFormat::Png,
+            }]
+        );
+        assert!(
+            fs::read_dir(&output_dir)
+                .expect("output directory should remain readable")
+                .next()
+                .is_none()
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn unsupported_cover_conversion_is_terminal_before_filename_and_normal_fallback() {
+        let temp_dir = temp_test_dir("unsupported-cover-conversion-terminal");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/art.svg",
+                    "image/svg+xml",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.jpg", "image/jpeg", None),
+            ],
+            &[
+                ("OEBPS/images/art.svg", b"<svg/>"),
+                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfilename"),
+                ("OEBPS/images/page.jpg", b"\xFF\xD8\xFFpage"),
+            ],
+        );
+        let pipeline = pipeline_with_conversion(
+            HashSet::from([ImageFormat::Svg, ImageFormat::Jpg]),
+            ConversionTarget::Png,
+        );
+        let selected = select_epub(&input_path, &output_dir);
+
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
+            &pipeline,
+        )
+        .expect("an unsupported cover conversion should be a terminal decision");
+
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert!(!result.has_normal_image_output());
+        assert_eq!(
+            result.warnings,
+            vec![ImageWriteWarning::CoverConversionSkipped {
+                format: ImageFormat::Svg,
+            }]
+        );
+        assert!(
+            fs::read_dir(&output_dir)
+                .expect("output directory should remain readable")
+                .next()
+                .is_none()
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn failed_cover_conversion_is_terminal_before_filename_and_normal_fallback() {
+        let temp_dir = temp_test_dir("failed-cover-conversion-terminal");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/art.png",
+                    "image/png",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.jpg", "image/jpeg", None),
+            ],
+            &[
+                ("OEBPS/images/art.png", b"\x89PNG\r\n\x1A\ninvalid"),
+                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfilename"),
+                ("OEBPS/images/page.jpg", b"\xFF\xD8\xFFpage"),
+            ],
+        );
+        let pipeline = pipeline_with_conversion(
+            HashSet::from([ImageFormat::Png, ImageFormat::Jpg]),
+            ConversionTarget::Jpg,
+        );
+        let selected = select_epub(&input_path, &output_dir);
+
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
+            &pipeline,
+        )
+        .expect("a failed cover conversion should be a terminal decision");
+
+        assert_eq!(result.counts.extracted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert!(!result.has_normal_image_output());
+        assert!(matches!(
+            &result.warnings[..],
+            [ImageWriteWarning::CoverConversionFailed { message }]
+                if message.contains("Failed to decode image")
+        ));
+        assert!(
+            fs::read_dir(&output_dir)
+                .expect("output directory should remain readable")
+                .next()
+                .is_none()
+        );
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
     fn unreadable_metadata_cover_warns_then_filename_cover_succeeds() {
         let temp_dir = temp_test_dir("unreadable-cover-fallback");
         let input_path = temp_dir.join("sample.epub");
@@ -737,11 +1061,12 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_cover_candidates_fall_back_to_batch_images() {
+    fn cover_retry_warnings_precede_normal_fallback_warning() {
         let temp_dir = temp_test_dir("unreadable-covers-batch-fallback");
         let input_path = temp_dir.join("sample.epub");
         let output_dir = temp_dir.join("out");
         fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        let extension_only_page = b"extension-only-page";
         write_epub_fixture(
             &input_path,
             &[
@@ -754,7 +1079,7 @@ mod tests {
                 ("filename-cover", "images/cover.jpg", "image/jpeg", None),
                 ("page", "images/page.png", "image/png", None),
             ],
-            &[("OEBPS/images/page.png", MINIMAL_PNG)],
+            &[("OEBPS/images/page.png", extension_only_page)],
         );
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
@@ -774,13 +1099,40 @@ mod tests {
 
         assert_eq!(result.counts.extracted, 1);
         assert!(result.has_normal_image_output());
+        assert!(matches!(
+            &result.warnings[..],
+            [
+                ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                    source_name: metadata_source,
+                    ..
+                },
+                ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                    source_name: filename_source,
+                    ..
+                },
+                ImageWriteWarning::ExtensionFallback {
+                    source_name: fallback_source,
+                    format: ImageFormat::Png,
+                },
+            ] if metadata_source == "OEBPS/images/missing.png"
+                && filename_source == "OEBPS/images/cover.jpg"
+                && fallback_source == "OEBPS/images/page.png"
+        ));
         assert_eq!(
-            acquisition_failure_sources(&result.warnings),
-            vec!["OEBPS/images/missing.png", "OEBPS/images/cover.jpg"]
+            result
+                .warnings
+                .iter()
+                .map(ImageWriteWarning::message)
+                .collect::<Vec<_>>(),
+            vec![
+                "Could not read archive resource 'OEBPS/images/missing.png': EPUB resource not found: OEBPS/images/missing.png",
+                "Could not read archive resource 'OEBPS/images/cover.jpg': EPUB resource not found: OEBPS/images/cover.jpg",
+                "Magic detection failed for OEBPS/images/page.png; falling back to .png extension",
+            ]
         );
         assert_eq!(
             fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
-            MINIMAL_PNG
+            extension_only_page
         );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
@@ -918,16 +1270,20 @@ mod tests {
             &[
                 (
                     "metadata-cover",
-                    "images/art.jpg",
-                    "application/octet-stream",
+                    "images/missing.png",
+                    "image/png",
                     Some("cover-image"),
                 ),
-                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                (
+                    "filename-cover",
+                    "images/cover.jpg",
+                    "application/octet-stream",
+                    None,
+                ),
                 ("page", "images/page.png", "image/png", None),
             ],
             &[
-                ("OEBPS/images/art.jpg", b"unidentified-cover"),
-                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfallback"),
+                ("OEBPS/images/cover.jpg", b"unidentified-cover"),
                 ("OEBPS/images/page.png", MINIMAL_PNG),
             ],
         );
@@ -949,11 +1305,72 @@ mod tests {
 
         assert!(format!("{:#}", error.error).contains("Failed to create output directory"));
         assert_eq!(error.partial.counts.extracted, 0);
-        assert_eq!(
-            error.partial.warnings,
-            vec![ImageWriteWarning::CoverDefaultToJpeg {
-                mime: "application/octet-stream".to_string(),
-            }]
+        assert!(matches!(
+            &error.partial.warnings[..],
+            [
+                ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. },
+                ImageWriteWarning::CoverDefaultToJpeg { mime },
+            ] if source_name == "OEBPS/images/missing.png"
+                && mime == "application/octet-stream"
+        ));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn fatal_metadata_cover_emission_stops_filename_candidate_and_normal_fallback() {
+        let temp_dir = temp_test_dir("fatal-cover-stops-later-work");
+        let input_path = temp_dir.join("sample.epub");
+        let output_dir = temp_dir.join("out");
+        let blocked_gif_output = temp_dir.join("blocked-gifs");
+        fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+        fs::write(&blocked_gif_output, b"not a directory")
+            .expect("blocked GIF destination should be creatable");
+        write_epub_fixture(
+            &input_path,
+            &[
+                (
+                    "metadata-cover",
+                    "images/art.gif",
+                    "image/gif",
+                    Some("cover-image"),
+                ),
+                ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+                ("page", "images/page.png", "image/png", None),
+            ],
+            &[
+                ("OEBPS/images/art.gif", b"GIF89a"),
+                ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfilename"),
+                ("OEBPS/images/page.png", MINIMAL_PNG),
+            ],
+        );
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Gif, ImageFormat::Jpg, ImageFormat::Png]),
+            None,
+            Some(blocked_gif_output),
+        ));
+        let selected = select_epub(&input_path, &output_dir);
+
+        let failure = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
+            &pipeline,
+        )
+        .expect_err("fatal metadata cover emission should abort the EPUB");
+
+        assert!(format!("{:#}", failure.error).contains("Failed to create output directory"));
+        assert_eq!(failure.partial.counts.extracted, 0);
+        assert_eq!(failure.partial.counts.gifs_routed, 0);
+        assert!(!failure.partial.has_normal_image_output());
+        assert!(failure.partial.warnings.is_empty());
+        assert!(
+            fs::read_dir(&output_dir)
+                .expect("normal output directory should remain readable")
+                .next()
+                .is_none(),
+            "neither the filename cover nor normal fallback may run after a fatal cover"
         );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
