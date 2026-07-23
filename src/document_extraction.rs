@@ -27,16 +27,6 @@ impl DocumentExtractionPolicy {
     fn is_epub_cover_only(self) -> bool {
         matches!(self, Self::EpubCover { .. })
     }
-
-    /// Returns whether failed EPUB cover discovery should fall back to normal images.
-    fn is_epub_cover_fallback_enabled(self) -> bool {
-        match self {
-            Self::NormalImages => false,
-            Self::EpubCover {
-                fallback_to_normal_images,
-            } => fallback_to_normal_images,
-        }
-    }
 }
 
 /// Immutable Document extraction module configured for one Extraction run.
@@ -73,17 +63,7 @@ impl DocumentExtraction {
                 docx::process_file(&path, &output_dir, &base_name, &self.image_write_pipeline)
             }
             SelectedDocument::Epub(document) => {
-                let (path, output_dir, base_name, epub_declarations) =
-                    document.into_extraction_parts();
-                epub::process_file(
-                    &path,
-                    &output_dir,
-                    &base_name,
-                    epub_declarations.as_ref(),
-                    self.policy.is_epub_cover_only(),
-                    self.policy.is_epub_cover_fallback_enabled(),
-                    &self.image_write_pipeline,
-                )
+                epub::extract(document, self.policy, &self.image_write_pipeline)
             }
         };
 

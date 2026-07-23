@@ -9,6 +9,8 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::DocumentExtractionPolicy;
+use crate::document_selection::SelectedEpub;
 use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
@@ -21,61 +23,59 @@ use self::resource_archive::{ArchiveResourceIdentity, EpubResource, EpubResource
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
-/// Processes a single .epub file, extracting images accepted by the requested Image formats.
-/// Uses the selected document base name for output files.
-/// If cover_only is true, only extracts the cover image.
-/// If cover_fallback is true and cover_only is true but no cover is found, extracts all images.
-/// The configured Image write pipeline owns bounded source acquisition, image
-/// acceptance, and output policy. Retained EPUB declarations drive manifest and
-/// cover traversal while a separate read-only ZIP handle lends scoped readers.
+/// Consumes one authoritative Selected EPUB and applies its Document extraction policy.
+///
+/// Retained declarations remain authoritative; when selection retained none, extraction
+/// retries declaration acquisition without revising the selected output placement or base
+/// name. Resource payloads are read through an independently opened archive with scoped
+/// readers, and any partial Image write facts are preserved by the returned outcome.
 ///
 /// # Errors
 ///
-/// Returns an error when EPUB declarations cannot be acquired, an archive cannot be opened,
-/// or when collision-safe output emission cannot create or complete a file.
-pub(super) fn process_file(
-    input_path: &Path,
-    output_base_dir: &Path,
-    base_name: &str,
-    retained_declarations: Option<&EpubDeclarations>,
-    cover_only: bool,
-    cover_fallback: bool,
+/// Returns an error when EPUB declarations cannot be acquired, the resource archive cannot
+/// be opened, or collision-safe output emission cannot create or complete a file.
+pub(super) fn extract(
+    document: SelectedEpub,
+    policy: DocumentExtractionPolicy,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
+    let (input_path, output_dir, base_name, retained_declarations) =
+        document.into_extraction_parts();
     let acquired_declarations;
-    let declarations = match retained_declarations {
+    let declarations = match retained_declarations.as_ref() {
         Some(declarations) => declarations,
         None => {
             acquired_declarations =
-                EpubDeclarations::acquire(input_path).map_err(anyhow::Error::new)?;
+                EpubDeclarations::acquire(&input_path).map_err(anyhow::Error::new)?;
             &acquired_declarations
         }
     };
     // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
     // even when declaration facts were retained earlier by Document selection.
-    let mut archive = EpubResourceArchive::open(input_path, declarations.resources())?;
+    let mut archive = EpubResourceArchive::open(&input_path, declarations.resources())?;
     let resources = archive.resources().to_vec();
 
-    if cover_only {
-        return extract_cover_only(
+    match policy {
+        DocumentExtractionPolicy::NormalImages => extract_all_images(
+            &mut archive,
+            &resources,
+            &HashSet::new(),
+            &output_dir,
+            &base_name,
+            pipeline,
+        ),
+        DocumentExtractionPolicy::EpubCover {
+            fallback_to_normal_images,
+        } => extract_cover_only(
             &mut archive,
             &resources,
             declarations.cover_id(),
-            output_base_dir,
-            base_name,
-            cover_fallback,
+            &output_dir,
+            &base_name,
+            fallback_to_normal_images,
             pipeline,
-        );
+        ),
     }
-
-    extract_all_images(
-        &mut archive,
-        &resources,
-        &HashSet::new(),
-        output_base_dir,
-        base_name,
-        pipeline,
-    )
 }
 
 /// Extracts every non-excluded manifest resource in deterministic resolved-path order.
@@ -189,6 +189,11 @@ fn visit_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document_extraction::DocumentExtractionPolicy;
+    use crate::document_selection::{
+        DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
+        DocumentSelectionProgress, EpubFilter, SelectedDocument, SelectedEpub, select_documents,
+    };
     use crate::image_format::ImageFormat;
     use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
     use std::collections::HashSet;
@@ -209,6 +214,40 @@ mod tests {
             "word-image-extractor-epub-{test_name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[derive(Default)]
+    struct SilentDocumentSelectionObserver;
+
+    impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
+        /// Ignores progress facts that are outside this extraction-focused test seam.
+        fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
+
+        /// Ignores diagnostics because the readable fixtures retain their declarations.
+        fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
+    }
+
+    /// Obtains one owned EPUB handoff through the production Document selection operation.
+    fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
+        let mut observer = SilentDocumentSelectionObserver;
+        let input_path = input_path.to_path_buf();
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&input_path),
+                recursive: false,
+                output: Some(output_dir),
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        )
+        .into_iter()
+        .next()
+        .expect("EPUB fixture should be selected");
+
+        match selected {
+            SelectedDocument::Epub(document) => document,
+            SelectedDocument::Docx(_) => panic!("EPUB fixture should retain its selected kind"),
+        }
     }
 
     /// Returns archive acquisition warning sources in their observed order.
@@ -407,17 +446,10 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "Tester - Magic Test",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("EPUB extraction should succeed");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 1);
         assert!(output_dir.join("Tester - Magic Test.png").exists());
@@ -446,17 +478,10 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "Tester - Magic Test",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("EPUB extraction should succeed");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 1);
         assert!(output_dir.join("Tester - Magic Test.png").exists());
@@ -483,17 +508,10 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("a missing resource should not abort the EPUB");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("a missing resource should not abort the EPUB");
 
         assert_eq!(result.counts.extracted, 1);
         assert!(matches!(
@@ -505,7 +523,7 @@ mod tests {
                 && message.contains("EPUB resource not found")
         ));
         assert_eq!(
-            fs::read(output_dir.join("sample.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -538,25 +556,18 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("EPUB extraction should succeed");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 2);
         assert_eq!(
-            fs::read(output_dir.join("sample_1.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
             first_by_path
         );
         assert_eq!(
-            fs::read(output_dir.join("sample_2.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
             second_by_path
         );
 
@@ -589,25 +600,18 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("EPUB extraction should succeed");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("EPUB extraction should succeed");
 
         assert_eq!(result.counts.extracted, 2);
         assert_eq!(
-            fs::read(output_dir.join("sample_1.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
             first_by_resolved_path
         );
         assert_eq!(
-            fs::read(output_dir.join("sample_2.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
             second_by_resolved_path
         );
 
@@ -630,21 +634,14 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("percent-decoded lookup should preserve EPUB crate behavior");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("percent-decoded lookup should preserve EPUB crate behavior");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
-            fs::read(output_dir.join("sample.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -674,21 +671,14 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            false,
-            false,
-            &pipeline,
-        )
-        .expect("exact ZIP lookup should take precedence");
+        let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+            .expect("exact ZIP lookup should take precedence");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(
-            fs::read(output_dir.join("sample.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             exact_payload
         );
 
@@ -720,14 +710,13 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            true,
-            false,
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: false,
+            },
             &pipeline,
         )
         .expect("an unreadable metadata cover should allow filename fallback");
@@ -739,7 +728,10 @@ mod tests {
             [ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. }]
                 if source_name == "OEBPS/images/missing.png"
         ));
-        assert_eq!(fs::read(output_dir.join("sample.jpg")).unwrap(), cover);
+        assert_eq!(
+            fs::read(output_dir.join("Tester - Magic Test.jpg")).unwrap(),
+            cover
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -769,14 +761,13 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            true,
-            true,
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
             &pipeline,
         )
         .expect("unreadable cover candidates should allow batch fallback");
@@ -788,7 +779,7 @@ mod tests {
             vec!["OEBPS/images/missing.png", "OEBPS/images/cover.jpg"]
         );
         assert_eq!(
-            fs::read(output_dir.join("sample.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -827,14 +818,13 @@ mod tests {
             None,
             Some(blocked_gif_output),
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let failure = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            true,
-            true,
+        let failure = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
             &pipeline,
         )
         .expect_err("fallback emission failure should retain earlier normal output");
@@ -847,7 +837,7 @@ mod tests {
             vec!["OEBPS/images/missing.png", "OEBPS/images/cover.jpg"]
         );
         assert_eq!(
-            fs::read(output_dir.join("sample_1.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -884,14 +874,13 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &output_dir);
 
-        let result = process_file(
-            &input_path,
-            &output_dir,
-            "sample",
-            None,
-            true,
-            true,
+        let result = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
             &pipeline,
         )
         .expect("one failed resolved cover should allow batch fallback");
@@ -910,7 +899,7 @@ mod tests {
             1
         );
         assert_eq!(
-            fs::read(output_dir.join("sample.png")).unwrap(),
+            fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             MINIMAL_PNG
         );
 
@@ -947,14 +936,13 @@ mod tests {
             None,
             None,
         ));
+        let selected = select_epub(&input_path, &blocked_output);
 
-        let error = process_file(
-            &input_path,
-            &blocked_output,
-            "sample",
-            None,
-            true,
-            true,
+        let error = extract(
+            selected,
+            DocumentExtractionPolicy::EpubCover {
+                fallback_to_normal_images: true,
+            },
             &pipeline,
         )
         .expect_err("Image file emission failure must abort cover extraction");

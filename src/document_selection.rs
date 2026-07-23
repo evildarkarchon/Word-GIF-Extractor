@@ -129,7 +129,10 @@ impl SelectedEpub {
         }
     }
 
-    /// Consumes the EPUB payload into extraction facts and its declaration snapshot.
+    /// Transfers the EPUB handoff into the facts interpreted by the EPUB adapter.
+    ///
+    /// The selected identity and output placement remain fixed even when extraction must
+    /// reacquire declarations because selection retained none.
     pub(crate) fn into_extraction_parts(
         self,
     ) -> (PathBuf, PathBuf, String, Option<EpubDeclarations>) {
