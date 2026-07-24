@@ -146,7 +146,7 @@ impl ImageWritePurpose for RequiredCover {
         PurposeDecision {
             action: UnidentifiedFormatAction::ContinueWith(ImageFormat::Jpg),
             warning: Some(ImageWriteWarning::CoverDefaultToJpeg {
-                mime: source.mime.clone().unwrap_or_default(),
+                mime: source.declared_mime().unwrap_or_default().to_string(),
             }),
         }
     }
@@ -189,8 +189,7 @@ impl ImageWritePurpose for RequiredCover {
 /// Returns whether discovery would inspect this normal-image source.
 fn is_normal_source_safe(source: &ArchiveImageSource) -> bool {
     source
-        .format_source_name
-        .as_deref()
+        .path_evidence_name()
         .is_some_and(is_safe_archive_path)
 }
 

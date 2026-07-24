@@ -13,50 +13,12 @@ use std::path::{Path, PathBuf};
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
 
+pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::ImageFileEmission;
 use self::purpose::{
     ConversionAction, ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility,
 };
-
-/// Metadata supplied before Archive image discovery reads one archive resource.
-#[derive(Debug, Clone)]
-pub(crate) struct ArchiveImageSource {
-    diagnostic_name: String,
-    format_source_name: Option<String>,
-    mime: Option<String>,
-}
-
-impl ArchiveImageSource {
-    /// Creates a normal archive source whose name is also Image format evidence.
-    pub(crate) fn named(source_name: impl Into<String>) -> Self {
-        let source_name = source_name.into();
-        Self {
-            diagnostic_name: source_name.clone(),
-            format_source_name: Some(source_name),
-            mime: None,
-        }
-    }
-
-    /// Adds the document-declared MIME type used by Image format identification.
-    #[must_use]
-    pub(crate) fn with_mime(mut self, mime: impl Into<String>) -> Self {
-        self.mime = Some(mime.into());
-        self
-    }
-
-    /// Creates a required-cover source whose path is diagnostic identity, not format evidence.
-    ///
-    /// EPUB covers intentionally use byte evidence before MIME and never fall back
-    /// to a manifest path extension.
-    pub(crate) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
-        Self {
-            diagnostic_name: source_name.into(),
-            format_source_name: None,
-            mime: Some(mime.into()),
-        }
-    }
-}
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -442,7 +404,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
         self.result
             .warnings
             .push(ImageWriteWarning::archive_image_acquisition_failed(
-                source.diagnostic_name,
+                source.diagnostic_name(),
                 error,
             ));
         self.disposition = Some(RequiredCoverWriteDisposition::Retry);
@@ -555,7 +517,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         ) {
             self.discovery_warnings
                 .push(ImageWriteWarning::archive_image_acquisition_failed(
-                    source.diagnostic_name,
+                    source.diagnostic_name(),
                     error,
                 ));
         }
@@ -756,6 +718,29 @@ mod tests {
 
     const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR";
 
+    /// Returns representative magic-byte payloads for every supported Image format.
+    fn magic_format_cases() -> Vec<(ImageFormat, Vec<u8>)> {
+        let mut emf = vec![0x01, 0x00, 0x00, 0x00];
+        emf.resize(40, 0);
+        emf.extend_from_slice(b" EMF payload");
+
+        vec![
+            (ImageFormat::Jpg, b"\xFF\xD8\xFF\xE0jpeg payload".to_vec()),
+            (ImageFormat::Png, MINIMAL_PNG.to_vec()),
+            (ImageFormat::Gif, b"GIF89a payload".to_vec()),
+            (ImageFormat::Bmp, b"BM bitmap payload".to_vec()),
+            (ImageFormat::Tiff, b"II\x2A\x00tiff payload".to_vec()),
+            (ImageFormat::Svg, b"<?xml version=\"1.0\"?><svg/>".to_vec()),
+            (ImageFormat::Wmf, b"\xD7\xCD\xC6\x9Awmf payload".to_vec()),
+            (ImageFormat::Emf, emf),
+            (
+                ImageFormat::Webp,
+                b"RIFF\x00\x00\x00\x00WEBP payload".to_vec(),
+            ),
+            (ImageFormat::Ico, b"\x00\x00\x01\x00ico payload".to_vec()),
+        ]
+    }
+
     struct FailAfterReader {
         cursor: Cursor<Vec<u8>>,
         fail_at: u64,
@@ -878,7 +863,7 @@ mod tests {
                 |visitor| {
                     visitor.visit(
                         ArchiveImageSource::required_cover(
-                            "OPS/cover.bin",
+                            "OPS/cover.png",
                             "application/octet-stream",
                         ),
                         &mut reader,
@@ -1094,31 +1079,100 @@ mod tests {
     }
 
     #[test]
-    fn normal_images_are_discovered_and_written_through_pipeline_interface() {
+    fn magic_evidence_identifies_and_emits_every_supported_format() {
+        let temp_dir = temp_test_dir("all-magic-formats");
+        let pipeline =
+            ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+
+        for (format, payload) in magic_format_cases() {
+            let output_dir = temp_dir.join(format.extension());
+            let result = write_sources(
+                &pipeline,
+                ImageWriteRequest::normal_images(&output_dir, "sample"),
+                vec![named_source(payload.clone(), "word/media/image.bin")],
+            )
+            .expect("magic-identified image should be emitted");
+
+            assert_eq!(result.counts.extracted, 1, "{format:?}");
+            assert_eq!(result.counts.gifs_routed, 0, "{format:?}");
+            assert_eq!(result.counts.converted, 0, "{format:?}");
+            assert_eq!(result.counts.skipped, 0, "{format:?}");
+            assert!(result.has_normal_image_output(), "{format:?}");
+            assert!(result.warnings.is_empty(), "{format:?}");
+            assert_eq!(
+                fs::read(output_dir.join(format!("sample.{}", format.extension()))).unwrap(),
+                payload,
+                "{format:?}"
+            );
+        }
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn magic_evidence_outranks_conflicting_extension_and_mime() {
+        let temp_dir = temp_test_dir("magic-precedence");
+        let pipeline =
+            ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+
+        let result = write_sources(
+            &pipeline,
+            ImageWriteRequest::normal_images(&temp_dir, "sample"),
+            vec![mime_source(
+                MINIMAL_PNG,
+                "word/media/image.jpg",
+                "image/gif",
+            )],
+        )
+        .expect("magic-identified image should be emitted");
+
+        assert_eq!(result.counts.extracted, 1);
+        assert!(result.warnings.is_empty());
+        assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
+        assert!(!temp_dir.join("sample.jpg").exists());
+        assert!(!temp_dir.join("sample.gif").exists());
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn accepted_source_reuses_evidence_prefix_and_completes_payload_incrementally() {
         let temp_dir = temp_test_dir("normal-images");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
             None,
             None,
         ));
+        let mut original = vec![0; 4096];
+        original[..MINIMAL_PNG.len()].copy_from_slice(MINIMAL_PNG);
+        for (index, byte) in original[MINIMAL_PNG.len()..].iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        let mut reader = Cursor::new(original.clone());
 
-        let result = write_sources(
-            &pipeline,
-            ImageWriteRequest::normal_images(&temp_dir, "sample"),
-            vec![named_source(MINIMAL_PNG, "word/media/image.bin")],
-        )
-        .expect("normal image write should succeed");
+        let result = pipeline
+            .write_from(
+                ImageWriteRequest::normal_images(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::named("word/media/image.bin"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("normal image write should succeed");
 
+        assert_eq!(reader.position(), original.len() as u64);
         assert_eq!(result.counts.extracted, 1);
         assert!(result.has_normal_image_output());
         assert!(result.warnings.is_empty());
-        assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
+        assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]
-    fn rejected_source_reads_only_format_evidence_through_pipeline_interface() {
+    fn unidentified_normal_source_is_silent_and_reads_only_bounded_evidence() {
         let temp_dir = temp_test_dir("bounded-discovery");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
@@ -1132,7 +1186,7 @@ mod tests {
                 ImageWriteRequest::normal_images(&temp_dir, "sample"),
                 |visitor| {
                     visitor.visit(
-                        ArchiveImageSource::named("word/document.xml"),
+                        ArchiveImageSource::named("word/media/image.bin"),
                         &mut rejected_source,
                     )?;
                     Ok(())
@@ -1463,7 +1517,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_images_return_extension_fallback_warning_before_writing() {
+    fn eligible_extension_outranks_mime_and_warns_before_writing() {
         let temp_dir = temp_test_dir("extension-fallback");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
@@ -1474,9 +1528,10 @@ mod tests {
         let result = write_sources(
             &pipeline,
             ImageWriteRequest::normal_images(&temp_dir, "sample"),
-            vec![named_source(
+            vec![mime_source(
                 b"not actually a png".as_slice(),
                 "word/media/image.png",
+                "image/jpeg",
             )],
         )
         .expect("extension fallback image should be written");
@@ -1489,7 +1544,11 @@ mod tests {
                 format: ImageFormat::Png,
             }]
         );
-        assert!(temp_dir.join("sample.png").exists());
+        assert_eq!(
+            fs::read(temp_dir.join("sample.png")).unwrap(),
+            b"not actually a png"
+        );
+        assert!(!temp_dir.join("sample.jpg").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -1714,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_source_can_be_identified_from_mime() {
+    fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
         let temp_dir = temp_test_dir("mime-source");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
@@ -1735,7 +1794,10 @@ mod tests {
 
         assert_eq!(result.counts.extracted, 1);
         assert!(result.warnings.is_empty());
-        assert!(temp_dir.join("sample.png").exists());
+        assert_eq!(
+            fs::read(temp_dir.join("sample.png")).unwrap(),
+            b"unknown bytes"
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
