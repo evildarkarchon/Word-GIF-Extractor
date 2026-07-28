@@ -48,6 +48,10 @@ _Avoid_: Cover flags, extraction booleans
 The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across Document extraction policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
 _Avoid_: File collection, scan results, work item builder
 
+**Document discovery**:
+The part of Document selection that inspects requested files and directories, reports non-fatal inspection failures, and yields supported document candidates in encounter order. It excludes EPUB filtering, deduplication, identity, and output placement.
+_Avoid_: File collection, directory scan, input traversal, source discovery
+
 **Selected document**:
 The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, display identity, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
 _Avoid_: Extraction work item, selected file, document task
@@ -57,7 +61,7 @@ The live, user-observable status of Document selection while it scans inputs, fi
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:
-A non-fatal fact explaining why Document selection skipped an input or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
+A non-fatal fact explaining why Document selection skipped a requested input, could not inspect part of its document search, or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
 _Avoid_: Warning string, selection error, progress message
 
 **Extraction run intake**:
