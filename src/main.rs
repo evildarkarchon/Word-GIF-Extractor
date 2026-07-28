@@ -293,6 +293,13 @@ impl IndicatifRunObserver {
             DocumentSelectionDiagnostic::MissingInput { path } => {
                 eprintln!("Warning: Input path does not exist: {}", path.display());
             }
+            DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail } => {
+                eprintln!(
+                    "Warning: Could not inspect {} during document discovery: {}",
+                    path.display(),
+                    detail
+                );
+            }
             DocumentSelectionDiagnostic::UnreadableEpubMetadata {
                 path,
                 purpose,

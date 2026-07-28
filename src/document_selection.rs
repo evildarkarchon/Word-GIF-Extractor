@@ -1,13 +1,15 @@
 //! Document selection for turning requested input paths into extraction work.
 
+mod discovery;
 mod progress;
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 use crate::epub_declarations::EpubDeclarations;
+
+#[cfg(test)]
+use std::fs;
 
 pub use self::progress::{
     DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
@@ -193,23 +195,17 @@ impl DocumentCandidate {
 /// Selection owns document discovery, EPUB declaration filtering, EPUB dedupe,
 /// display identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
-/// filters. Missing inputs and unreadable EPUB declarations are reported as
-/// structured, non-fatal diagnostics through the informational observer.
+/// filters. Missing inputs, requested-root inspection failures, and unreadable
+/// EPUB declarations are reported as structured, non-fatal diagnostics through
+/// the informational observer.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
     observer: &mut impl DocumentSelectionObserver,
 ) -> Vec<SelectedDocument> {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
 
-    for input_path in options.inputs {
-        if !input_path.exists() {
-            lifecycle.diagnostic(DocumentSelectionDiagnostic::MissingInput {
-                path: input_path.clone(),
-            });
-        }
-    }
-
-    let candidates = collect_document_files(options.inputs, options.recursive, &mut lifecycle);
+    let candidates =
+        discovery::discover_documents(options.inputs, options.recursive, &mut lifecycle);
     let filtered = if !options.epub_filter.is_empty() {
         filter_epub_files(candidates, options.epub_filter, &mut lifecycle)
     } else {
@@ -226,65 +222,6 @@ pub fn select_documents(
 /// Checks if a candidate is an EPUB file.
 fn is_epub(candidate: &DocumentCandidate) -> bool {
     matches!(candidate, DocumentCandidate::Epub { .. })
-}
-
-/// Collects all document files from the input paths.
-fn collect_document_files(
-    inputs: &[PathBuf],
-    recursive: bool,
-    lifecycle: &mut DocumentSelectionLifecycle<'_>,
-) -> Vec<DocumentCandidate> {
-    let scope = if recursive && inputs.iter().any(|path| path.is_dir()) {
-        DocumentSelectionScanScope::RecursiveDirectories
-    } else {
-        DocumentSelectionScanScope::RequestedInputs
-    };
-
-    lifecycle.scanning(!inputs.is_empty(), scope, |progress| {
-        let mut files = Vec::new();
-
-        for input_path in inputs {
-            if !input_path.exists() {
-                continue;
-            }
-
-            if input_path.is_file() {
-                push_supported_document(input_path.to_path_buf(), &mut files, progress);
-            } else if input_path.is_dir() {
-                if recursive {
-                    for entry in WalkDir::new(input_path).into_iter().flatten() {
-                        let path = entry.path();
-                        if path.is_file() {
-                            push_supported_document(path.to_path_buf(), &mut files, progress);
-                        }
-                    }
-                } else if let Ok(entries) = fs::read_dir(input_path) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_file() {
-                            push_supported_document(path, &mut files, progress);
-                        }
-                    }
-                }
-            }
-        }
-
-        files
-    })
-}
-
-/// Adds a path to the selected candidate list when it is a supported document.
-fn push_supported_document(
-    path: PathBuf,
-    files: &mut Vec<DocumentCandidate>,
-    progress: &mut ScanningProgress<'_>,
-) {
-    let Some(candidate) = DocumentCandidate::from_path(path) else {
-        return;
-    };
-
-    files.push(candidate);
-    progress.document_discovered();
 }
 
 /// Filters EPUB files by title and creator declarations while passing non-EPUB files through.
@@ -575,6 +512,45 @@ mod tests {
         }
     }
 
+    struct RemoveDirectoryOnScanStartObserver {
+        directory: Option<PathBuf>,
+        recording: RecordingDocumentSelectionObserver,
+    }
+
+    impl RemoveDirectoryOnScanStartObserver {
+        /// Creates an observer that removes one empty directory after root classification.
+        fn new(directory: PathBuf) -> Self {
+            Self {
+                directory: Some(directory),
+                recording: RecordingDocumentSelectionObserver::default(),
+            }
+        }
+    }
+
+    impl DocumentSelectionObserver for RemoveDirectoryOnScanStartObserver {
+        /// Removes the directory at the initial scan snapshot, then records the snapshot.
+        fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+            if matches!(
+                progress,
+                DocumentSelectionProgress::Scanning {
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }
+            ) && let Some(directory) = self.directory.take()
+            {
+                fs::remove_dir(directory)
+                    .expect("classified directory should be removable before opening");
+            }
+            self.recording.on_document_selection_progress(progress);
+        }
+
+        /// Records diagnostics emitted after the induced real-filesystem open failure.
+        fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+            self.recording.on_document_selection_diagnostic(diagnostic);
+        }
+    }
+
     fn temp_test_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -584,6 +560,63 @@ mod tests {
             "word-image-extractor-document-selection-{test_name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    /// Creates a directory link used to exercise the platform filesystem through selection.
+    #[cfg(unix)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link)
+            .expect("test directory symlink should be creatable");
+    }
+
+    /// Creates a directory link without requiring Windows symbolic-link privileges.
+    #[cfg(windows)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return;
+        }
+
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("Windows junction command should run");
+        assert!(
+            output.status.success(),
+            "test directory link should be creatable: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Removes a directory link without following it into its target.
+    #[cfg(unix)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_file(link).expect("test directory symlink should be removable");
+    }
+
+    /// Removes a Windows directory symlink or junction without following it.
+    #[cfg(windows)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_dir(link).expect("test directory link should be removable");
+    }
+
+    /// Creates a file symlink used to preserve nested supported-file eligibility.
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).expect("test file symlink should be creatable");
+        true
+    }
+
+    /// Attempts to create a genuine Windows file symlink when the host permits it.
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+
+    /// Removes a file symlink without removing its target.
+    fn remove_file_symlink(link: &Path) {
+        fs::remove_file(link).expect("test file symlink should be removable");
     }
 
     /// Writes a minimal EPUB whose declarations can be read by the production adapter.
@@ -836,6 +869,291 @@ mod tests {
             observer.diagnostics,
             vec![DocumentSelectionDiagnostic::MissingInput { path: missing }]
         );
+    }
+
+    #[test]
+    fn select_documents_reports_broken_requested_link_and_continues_to_supported_sibling() {
+        let temp_dir = temp_test_dir("broken-requested-link");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = temp_dir.join("broken-link");
+        let unsupported_sibling = temp_dir.join("notes.txt");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        fs::write(&unsupported_sibling, []).expect("unsupported sibling should be writable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        assert!(fs::symlink_metadata(&broken_link).is_ok());
+        assert!(fs::metadata(&broken_link).is_err());
+        let inputs = vec![
+            broken_link.clone(),
+            unsupported_sibling,
+            readable_sibling.clone(),
+        ];
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
+                }),
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+        assert!(!observer.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            DocumentSelectionDiagnostic::MissingInput { path } if path == &broken_link
+        )));
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies that a nested inspection failure stays ordered inside active scanning.
+    #[test]
+    fn select_documents_reports_broken_nested_link_before_later_supported_input() {
+        let temp_dir = temp_test_dir("broken-nested-link");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        let unsupported_entry = requested_directory.join("notes.txt");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        fs::write(unsupported_entry, []).expect("unsupported entry should be writable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let inputs = vec![requested_directory, readable_sibling.clone()];
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
+                }),
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies requested-root fallback and continuation when opening a directory fails.
+    #[test]
+    fn select_documents_reports_directory_open_failure_and_continues_to_supported_input() {
+        let temp_dir = temp_test_dir("directory-open-failure");
+        let removed_directory = temp_dir.join("removed-before-open");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&removed_directory).expect("requested directory should be creatable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let inputs = vec![removed_directory.clone(), readable_sibling.clone()];
+        let mut observer = RemoveDirectoryOnScanStartObserver::new(removed_directory.clone());
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.recording.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
+                }),
+            ] if path == &removed_directory && !detail.is_empty()
+        ));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies that a supported nested file link remains eligible without recursive scanning.
+    #[test]
+    fn select_documents_keeps_nested_supported_file_link_eligible() {
+        let temp_dir = temp_test_dir("nested-supported-file-link");
+        let requested_directory = temp_dir.join("requested");
+        let target_directory = temp_dir.join("targets");
+        let target = target_directory.join("target.docx");
+        let linked_document = requested_directory.join("linked.docx");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&target_directory).expect("target directory should be creatable");
+        fs::write(&target, []).expect("linked DOCX target should be writable");
+        if !create_file_symlink(&target, &linked_document) {
+            eprintln!("skipping file-symlink eligibility: Windows denied symlink creation");
+            fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+            return;
+        }
+        assert!(
+            fs::symlink_metadata(&linked_document)
+                .expect("linked document should have link metadata")
+                .file_type()
+                .is_symlink(),
+            "fixture must be a genuine file symlink"
+        );
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_directory),
+                recursive: false,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), linked_document);
+        assert!(observer.diagnostics.is_empty());
+        assert!(matches!(
+            observer.progress.as_slice(),
+            [
+                DocumentSelectionProgress::Scanning {
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                },
+                DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                    ..
+                },
+                DocumentSelectionProgress::Scanning {
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                    ..
+                },
+            ]
+        ));
+
+        remove_file_symlink(&linked_document);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    #[test]
+    fn select_documents_follows_requested_directory_link_during_recursive_scanning() {
+        let temp_dir = temp_test_dir("requested-directory-link");
+        let target = temp_dir.join("target");
+        let requested_link = temp_dir.join("requested-link");
+        let linked_document = requested_link.join("linked.docx");
+        fs::create_dir_all(&target).expect("link target should be creatable");
+        fs::write(target.join("linked.docx"), []).expect("linked DOCX should be writable");
+        create_directory_link(&target, &requested_link);
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_link),
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), linked_document);
+        assert!(observer.diagnostics.is_empty());
+        assert!(matches!(
+            observer.progress.as_slice(),
+            [
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                },
+            ]
+        ));
+
+        remove_directory_link(&requested_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
     #[test]

@@ -547,6 +547,45 @@ mod tests {
         ))
     }
 
+    /// Creates a directory link used to induce a nested discovery inspection failure.
+    #[cfg(unix)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link)
+            .expect("test directory symlink should be creatable");
+    }
+
+    /// Creates a directory link without requiring Windows symbolic-link privileges.
+    #[cfg(windows)]
+    fn create_directory_link(target: &Path, link: &Path) {
+        if std::os::windows::fs::symlink_dir(target, link).is_ok() {
+            return;
+        }
+
+        let output = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .expect("Windows junction command should run");
+        assert!(
+            output.status.success(),
+            "test directory link should be creatable: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Removes a directory link without following it into its target.
+    #[cfg(unix)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_file(link).expect("test directory symlink should be removable");
+    }
+
+    /// Removes a Windows directory symlink or junction without following it.
+    #[cfg(windows)]
+    fn remove_directory_link(link: &Path) {
+        fs::remove_dir(link).expect("test directory link should be removable");
+    }
+
     /// Writes a DOCX fixture containing the supplied archive entries in order.
     fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
         let file = fs::File::create(path).expect("test DOCX should be creatable");
@@ -644,6 +683,132 @@ mod tests {
                 | ExtractionRunObservation::DocumentStarted { .. }
         )));
 
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    #[test]
+    fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
+        let temp_dir = temp_test_dir("all-failed-requested-inputs");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let first_failed_path = temp_dir.join("first\0input.docx");
+        let second_failed_path = temp_dir.join("second\0input.epub");
+        let request = prepare_request(vec![
+            "test".to_string(),
+            first_failed_path.to_string_lossy().into_owned(),
+            second_failed_path.to_string_lossy().into_owned(),
+        ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
+
+        assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+        assert_eq!(observer.observations.len(), 5);
+        assert!(matches!(
+            &observer.observations[0],
+            ExtractionRunObservation::DocumentSelectionDiagnostic(
+                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+            ) if path == &first_failed_path && !detail.is_empty()
+        ));
+        assert!(matches!(
+            &observer.observations[1],
+            ExtractionRunObservation::DocumentSelectionDiagnostic(
+                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+            ) if path == &second_failed_path && !detail.is_empty()
+        ));
+        assert_eq!(
+            observer.observations[2],
+            ExtractionRunObservation::DocumentSelectionProgress(
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RequestedInputs,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }
+            )
+        );
+        assert_eq!(
+            observer.observations[3],
+            ExtractionRunObservation::DocumentSelectionProgress(
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RequestedInputs,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                }
+            )
+        );
+        assert_single_terminal_observation(&observer, &outcome);
+        assert!(!observer.observations.iter().any(|observation| matches!(
+            observation,
+            ExtractionRunObservation::ExtractionStarted { .. }
+                | ExtractionRunObservation::DocumentStarted { .. }
+        )));
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    /// Verifies in-scan discovery diagnostics retain their order through the run seam.
+    #[test]
+    fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream() {
+        let temp_dir = temp_test_dir("nested-discovery-failure");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        let readable_sibling = temp_dir.join("readable.docx");
+        let output_directory = temp_dir.join("output");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        fs::create_dir_all(&output_directory).expect("output directory should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        write_docx(&readable_sibling, &[]);
+        let request = prepare_request(vec![
+            "test".to_string(),
+            requested_directory.to_string_lossy().into_owned(),
+            readable_sibling.to_string_lossy().into_owned(),
+            "--output".to_string(),
+            output_directory.to_string_lossy().into_owned(),
+        ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        );
+        assert!(matches!(
+            observer.observations.as_slice(),
+            [
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        discovered: 0,
+                        status: DocumentSelectionPhaseStatus::Running,
+                        ..
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionDiagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Running,
+                        ..
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Finished,
+                        ..
+                    }
+                ),
+                ExtractionRunObservation::ExtractionStarted { total: 1, .. },
+                ..
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+        assert_single_terminal_observation(&observer, &outcome);
+
+        remove_directory_link(&broken_link);
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
 

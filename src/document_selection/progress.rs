@@ -68,6 +68,8 @@ pub enum EpubMetadataPurpose {
 pub enum DocumentSelectionDiagnostic {
     /// A requested input path does not exist and was skipped.
     MissingInput { path: PathBuf },
+    /// A Document discovery path could not be inspected; detail remains presentation-neutral.
+    DocumentDiscoveryFailed { path: PathBuf, detail: String },
     /// EPUB metadata could not be read for the stated selection purpose.
     UnreadableEpubMetadata {
         path: PathBuf,
@@ -286,6 +288,13 @@ pub(super) struct ScanningProgress<'observer> {
 }
 
 impl ScanningProgress<'_> {
+    /// Emits one diagnostic at its encounter position inside active scanning.
+    pub(super) fn diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
+        if self.active {
+            self.observer.on_document_selection_diagnostic(diagnostic);
+        }
+    }
+
     /// Records one discovered document and emits the resulting running snapshot.
     pub(super) fn document_discovered(&mut self) {
         self.discovered += 1;
