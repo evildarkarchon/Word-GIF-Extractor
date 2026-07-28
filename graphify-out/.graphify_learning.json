@@ -1,5 +1,70 @@
 {
-  "generated_at": "2026-07-28T06:52:27.696273+00:00",
-  "nodes": {},
+  "generated_at": "2026-07-28T11:04:26.549314+00:00",
+  "nodes": {
+    "src_epub_extract_all_images": {
+      "code_fingerprint": "f558ed8a3e9366ec9da469cb8ad24956530426ea31ab527eb53420067141a88e",
+      "label": "extract_all_images()",
+      "last": "2026-07-28T10:56:37.769920+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T10:56:37.769920+00:00",
+          "outcome": "useful",
+          "q": "How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
+        }
+      ],
+      "score": 0.999874648,
+      "source_file": "src/epub.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "src_epub_extract_required_cover": {
+      "code_fingerprint": "f558ed8a3e9366ec9da469cb8ad24956530426ea31ab527eb53420067141a88e",
+      "label": "extract_required_cover()",
+      "last": "2026-07-28T10:56:37.769920+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T10:56:37.769920+00:00",
+          "outcome": "useful",
+          "q": "How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
+        }
+      ],
+      "score": 0.999874648,
+      "source_file": "src/epub.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "src_epub_resource_archive_archiveresourceidentity": {
+      "code_fingerprint": "6177790d98b43a47b330631d748932ef1768d50a7f2a78f872b50c879f781ffb",
+      "label": "ArchiveResourceIdentity",
+      "last": "2026-07-28T10:56:37.769920+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T10:56:37.769920+00:00",
+          "outcome": "useful",
+          "q": "How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
+        }
+      ],
+      "score": 0.999874648,
+      "source_file": "src/epub/resource_archive.rs",
+      "status": "tentative",
+      "uses": 1
+    },
+    "src_epub_resource_archive_epubresourcearchive": {
+      "code_fingerprint": "6177790d98b43a47b330631d748932ef1768d50a7f2a78f872b50c879f781ffb",
+      "label": "EpubResourceArchive",
+      "last": "2026-07-28T10:56:37.769920+00:00",
+      "provenance": [
+        {
+          "date": "2026-07-28T10:56:37.769920+00:00",
+          "outcome": "useful",
+          "q": "How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
+        }
+      ],
+      "score": 0.999874648,
+      "source_file": "src/epub/resource_archive.rs",
+      "status": "tentative",
+      "uses": 1
+    }
+  },
   "version": 1
 }

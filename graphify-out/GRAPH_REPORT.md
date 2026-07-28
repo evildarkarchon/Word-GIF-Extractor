@@ -1,16 +1,16 @@
 # Graph Report - Word-GIF-Extractor  (2026-07-28)
 
 ## Corpus Check
-- 39 files · ~48,319 words
+- 40 files · ~49,910 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 881 nodes · 2275 edges · 32 communities
+- 918 nodes · 2385 edges · 33 communities
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 19 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `b69ef395`
+- Built from commit: `00d78e58`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -47,18 +47,19 @@
 - produced_outcome
 - RecordingTerm
 - IndicatifRunObserver
+- Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?
 
 ## God Nodes (most connected - your core abstractions)
 1. `ImageFormat` - 38 edges
 2. `select_documents()` - 37 edges
 3. `temp_test_dir()` - 30 edges
-4. `extract()` - 25 edges
-5. `ArchiveImageSource` - 25 edges
-6. `temp_test_dir()` - 24 edges
-7. `write_sources()` - 23 edges
-8. `select_epub()` - 22 edges
-9. `convert_image()` - 21 edges
-10. `temp_test_dir()` - 20 edges
+4. `extract()` - 28 edges
+5. `ArchiveImageSource` - 26 edges
+6. `select_epub()` - 25 edges
+7. `temp_test_dir()` - 24 edges
+8. `temp_test_dir()` - 23 edges
+9. `write_sources()` - 23 edges
+10. `convert_image()` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Document Archive Extraction Flow` --semantically_similar_to--> `Extraction Run`  [INFERRED] [semantically similar]
@@ -87,19 +88,19 @@
 - **Extraction Run Flow** — context_extraction_run_intake, context_extraction_run_request, context_extraction_run, context_document_selection, context_document_extraction, context_extraction_run_outcome, context_extraction_run_observation [EXTRACTED 1.00]
 - **Image Write Flow** — context_image_write_policy, context_image_write_pipeline, context_archive_image_discovery, context_image_file_emission, context_image_format, context_conversion_policy, context_image_write_purpose [EXTRACTED 1.00]
 
-## Communities (32 total, 0 thin omitted)
+## Communities (33 total, 0 thin omitted)
 
 ### Community 0 - "image_write_pipeline.rs"
 Cohesion: 0.07
 Nodes (77): Cursor, accepted_source_reuses_evidence_prefix_and_completes_payload_incrementally(), AcceptedImage, ArchiveImageVisitor, ArchiveImageVisitor<'policy, 'request>, AssertOutputBeforeTailReader, bom_prefixed_svg_at_end_of_evidence_window_is_discovered(), bom_prefixed_svg_beyond_evidence_window_is_not_discovered() (+69 more)
 
 ### Community 1 - "resource_archive.rs"
-Cohesion: 0.12
-Nodes (31): archive_path(), ArchiveResourceIdentity, EpubResource, EpubResourceArchive, exact_manifest_path_wins_before_percent_decoded_alias(), invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure(), malformed_percent_escape_is_retained_as_typed_acquisition_failure(), normalized_sort_path() (+23 more)
+Cohesion: 0.09
+Nodes (48): PhantomData, archive_path(), ArchiveResourceIdentity, catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session(), CatalogSeed, consumer_failure_propagates_with_its_concrete_error_identity(), ConsumerFailure, EpubResource (+40 more)
 
 ### Community 2 - "document_selection.rs"
-Cohesion: 0.08
-Nodes (67): create_directory_link(), create_file_symlink(), declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read(), deduplicate_epubs_by_declarations(), DocumentCandidate, DocumentSelectionOptions, epub_dedupe_key(), EpubFilter (+59 more)
+Cohesion: 0.09
+Nodes (66): create_directory_link(), create_file_symlink(), declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read(), deduplicate_epubs_by_declarations(), DocumentCandidate, DocumentSelectionOptions, epub_dedupe_key(), EpubFilter (+58 more)
 
 ### Community 3 - "extraction_run.rs"
 Cohesion: 0.09
@@ -107,7 +108,7 @@ Nodes (50): NonZeroUsize, Observer, all_failed_requested_inputs_reach_one_no_doc
 
 ### Community 4 - "ImageFormat"
 Cohesion: 0.06
-Nodes (35): Action, ImageFormat, HashSet, Option, ArchiveImageDiscoveryOutcome, ArchiveImageSource, discover_image(), DiscoveredImage (+27 more)
+Nodes (37): Action, EpubImagePlan<'session>, Self, ImageFormat, HashSet, Option, ArchiveImageDiscoveryOutcome, ArchiveImageSource (+29 more)
 
 ### Community 5 - "main.rs"
 Cohesion: 0.07
@@ -127,11 +128,11 @@ Nodes (44): Document Archive Extraction Flow, Graphify Workflow, Word Image Extr
 
 ### Community 9 - "DocumentSelectionDiagnostic"
 Cohesion: 0.08
-Nodes (23): R, SilentDocumentSelectionObserver, DocumentSelectionDiagnostic, DocumentSelectionLifecycle<'observer>, DocumentSelectionObserver, DocumentSelectionPhaseStatus, DocumentSelectionProgress, DocumentSelectionScanScope (+15 more)
+Nodes (24): R, SilentDocumentSelectionObserver, DocumentSelectionDiagnostic, DocumentSelectionLifecycle, DocumentSelectionLifecycle<'observer>, DocumentSelectionObserver, DocumentSelectionPhaseStatus, DocumentSelectionProgress (+16 more)
 
 ### Community 10 - "epub.rs"
-Cohesion: 0.18
-Nodes (38): acquisition_failure_sources(), corrupt_stored_payload(), cover_emission_failure_aborts_the_document(), cover_retries_precede_partial_normal_fallback_facts(), cover_retry_warnings_precede_normal_fallback_warning(), epub_batch_output_uses_resolved_path_order(), exact_manifest_path_wins_before_percent_decoded_alias(), extract() (+30 more)
+Cohesion: 0.16
+Nodes (44): acquisition_failure_sources(), archive_open_failure_after_selection_is_a_fatal_extraction_error(), archive_parse_failure_after_selection_is_a_fatal_extraction_error(), corrupt_stored_payload(), cover_emission_failure_aborts_the_document(), cover_retries_precede_partial_normal_fallback_facts(), cover_retry_warnings_precede_normal_fallback_warning(), encoded_test_png() (+36 more)
 
 ### Community 11 - "extraction_run_intake.rs"
 Cohesion: 0.11
@@ -217,24 +218,28 @@ Nodes (7): Arc, Mutex, FilesystemIndicatifObserver, RecordingTerm, Result, Termi
 Cohesion: 0.30
 Nodes (7): F, ProgressBar, ProgressStyle, create_progress_style(), create_spinner_style(), IndicatifRunObserver, Option
 
+### Community 32 - "Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
+Cohesion: 0.40
+Nodes (4): Answer, Outcome, Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?, Source Nodes
+
 ## Knowledge Gaps
-- **30 isolated node(s):** `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>`, `RequiredCoverWriteRequest<'a>`, `Semantic Extraction Cache`, `Manifest and Cost Tracking` (+25 more)
+- **34 isolated node(s):** `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>`, `RequiredCoverWriteRequest<'a>`, `Answer` (+29 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `ImageFormat` connect `ImageFormat` to `image_write_pipeline.rs`, `extraction_run.rs`, `conversion.rs`, `epub.rs`, `extraction_run_intake.rs`, `emission.rs`?**
-  _High betweenness centrality (0.147) - this node is a cross-community bridge._
+  _High betweenness centrality (0.145) - this node is a cross-community bridge._
 - **Why does `EpubDeclarations` connect `document_selection.rs` to `epub.rs`, `EpubResourceDeclaration`?**
-  _High betweenness centrality (0.064) - this node is a cross-community bridge._
-- **Why does `ArchiveImageSource` connect `ImageFormat` to `image_write_pipeline.rs`, `epub.rs`?**
+  _High betweenness centrality (0.062) - this node is a cross-community bridge._
+- **Why does `ArchiveImageSource` connect `ImageFormat` to `image_write_pipeline.rs`?**
   _High betweenness centrality (0.030) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `select_documents()` (e.g. with `retained_epub_declarations_are_authoritative_during_extraction()` and `select_one_document()`) actually correct?**
   _`select_documents()` has 4 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>`, `RequiredCoverWriteRequest<'a>` to the rest of the system?**
-  _30 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **What connects `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>` to the rest of the system?**
+  _34 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `image_write_pipeline.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.06781326781326781 - nodes in this community are weakly interconnected._
 - **Should `resource_archive.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.11538461538461539 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0907103825136612 - nodes in this community are weakly interconnected._

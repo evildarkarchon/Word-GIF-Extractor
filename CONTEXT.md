@@ -93,11 +93,11 @@ The per-resource policy within the Image write pipeline for acquiring archive so
 _Avoid_: Candidate normalization, resource filter
 
 **Archive resource identity**:
-The stable identity of one archive payload across multiple document references, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. References that cannot be resolved to a payload remain distinct.
+The stable identity of one archive payload across multiple document references within a single EPUB resource archive, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. It has no equality meaning across different archives or archive sessions. References that cannot be resolved to a payload remain distinct.
 _Avoid_: ZIP index, resource path
 
 **EPUB resource archive**:
-The ordered set of resources declared by an EPUB together with their available archive payloads. It preserves document-facing resource facts while distinguishing references from Archive resource identity.
+The ordered custody of resources declared by an EPUB together with their available archive payloads. It owns deterministic ordering, the distinction between document-facing references and Archive resource identity, and scoped payload acquisition. Failure to establish that custody fails Document extraction, while the unavailability of one declared resource is a non-fatal acquisition fact. It excludes cover-candidate ordering, retry or completion decisions, fallback behavior, Archive image discovery, and Image file emission.
 _Avoid_: Direct ZIP adapter, resource list
 
 **EPUB declarations**:

@@ -1,9 +1,4 @@
 {
-  ".codex/hooks.json": {
-    "mtime": 1785217016.8280244,
-    "ast_hash": "611d48e08353296f515ceb648a64bc8a",
-    "semantic_hash": "611d48e08353296f515ceb648a64bc8a"
-  },
   "src/conversion.rs": {
     "mtime": 1783667718.5172195,
     "ast_hash": "bde28b2e51d023eff004858c026fffc3",
@@ -35,14 +30,14 @@
     "semantic_hash": "cfb64c7a825483ab31463abeae3248ac"
   },
   "src/epub.rs": {
-    "mtime": 1784770739.4514346,
-    "ast_hash": "4af227574ff7bbca43211ce67de0abe3",
-    "semantic_hash": "4af227574ff7bbca43211ce67de0abe3"
+    "mtime": 1785239164.1053445,
+    "ast_hash": "8897448deda0c589fd48ab1d9a44bc27",
+    "semantic_hash": ""
   },
   "src/epub/resource_archive.rs": {
-    "mtime": 1783751588.2454746,
-    "ast_hash": "5d9207531f0f559a7bf29a26b6e0d7c1",
-    "semantic_hash": "5d9207531f0f559a7bf29a26b6e0d7c1"
+    "mtime": 1785239059.620466,
+    "ast_hash": "d6f234528454010abeabceb30f16558f",
+    "semantic_hash": ""
   },
   "src/epub_declarations.rs": {
     "mtime": 1783751803.3114042,
@@ -170,9 +165,9 @@
     "semantic_hash": "6ca95d9f989a40c34eb5ed175b4eb868"
   },
   "CONTEXT.md": {
-    "mtime": 1785211068.2167437,
-    "ast_hash": "5f81ddb7bdb54857fd2f0b3a40e671fa",
-    "semantic_hash": "5f81ddb7bdb54857fd2f0b3a40e671fa"
+    "mtime": 1785228979.9785843,
+    "ast_hash": "36ad421f4da90978478c29776de3bfb4",
+    "semantic_hash": ""
   },
   "README.md": {
     "mtime": 1783667425.8821182,
@@ -193,5 +188,10 @@
     "mtime": 1766969144.2349093,
     "ast_hash": "0b13824cad78bc7fb1ef32cecbb10dd1",
     "semantic_hash": "0b13824cad78bc7fb1ef32cecbb10dd1"
+  },
+  "graphify-out/memory/query_20260728_105637_how_should_github_issue__22_be_decomposed_into_dep.md": {
+    "mtime": 1785236197.7702205,
+    "ast_hash": "dd1e007e6e991d287644b8c4b1b65ddd",
+    "semantic_hash": ""
   }
 }

@@ -30,5 +30,6 @@
   "28": "pre_run_notices_cli.rs",
   "29": "produced_outcome",
   "30": "RecordingTerm",
-  "31": "IndicatifRunObserver"
+  "31": "IndicatifRunObserver",
+  "32": "Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?"
 }
