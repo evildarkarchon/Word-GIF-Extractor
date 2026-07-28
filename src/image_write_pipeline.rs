@@ -718,26 +718,93 @@ mod tests {
 
     const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR";
 
-    /// Returns representative magic-byte payloads for every supported Image format.
-    fn magic_format_cases() -> Vec<(ImageFormat, Vec<u8>)> {
+    /// One operation-level magic-evidence fixture with an independent expected extension.
+    struct MagicFormatCase {
+        name: &'static str,
+        format: ImageFormat,
+        expected_extension: &'static str,
+        payload: Vec<u8>,
+    }
+
+    /// Returns representative magic-byte payloads and literal canonical extensions.
+    fn magic_format_cases() -> Vec<MagicFormatCase> {
         let mut emf = vec![0x01, 0x00, 0x00, 0x00];
         emf.resize(40, 0);
         emf.extend_from_slice(b" EMF payload");
 
         vec![
-            (ImageFormat::Jpg, b"\xFF\xD8\xFF\xE0jpeg payload".to_vec()),
-            (ImageFormat::Png, MINIMAL_PNG.to_vec()),
-            (ImageFormat::Gif, b"GIF89a payload".to_vec()),
-            (ImageFormat::Bmp, b"BM bitmap payload".to_vec()),
-            (ImageFormat::Tiff, b"II\x2A\x00tiff payload".to_vec()),
-            (ImageFormat::Svg, b"<?xml version=\"1.0\"?><svg/>".to_vec()),
-            (ImageFormat::Wmf, b"\xD7\xCD\xC6\x9Awmf payload".to_vec()),
-            (ImageFormat::Emf, emf),
-            (
-                ImageFormat::Webp,
-                b"RIFF\x00\x00\x00\x00WEBP payload".to_vec(),
-            ),
-            (ImageFormat::Ico, b"\x00\x00\x01\x00ico payload".to_vec()),
+            MagicFormatCase {
+                name: "jpeg",
+                format: ImageFormat::Jpg,
+                expected_extension: "jpg",
+                payload: b"\xFF\xD8\xFF\xE0jpeg payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "png",
+                format: ImageFormat::Png,
+                expected_extension: "png",
+                payload: MINIMAL_PNG.to_vec(),
+            },
+            MagicFormatCase {
+                name: "gif",
+                format: ImageFormat::Gif,
+                expected_extension: "gif",
+                payload: b"GIF89a payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "bmp",
+                format: ImageFormat::Bmp,
+                expected_extension: "bmp",
+                payload: b"BM bitmap payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "tiff-little-endian",
+                format: ImageFormat::Tiff,
+                expected_extension: "tiff",
+                payload: b"II\x2A\x00tiff payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "tiff-big-endian",
+                format: ImageFormat::Tiff,
+                expected_extension: "tiff",
+                payload: b"MM\x00\x2Atiff payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "svg",
+                format: ImageFormat::Svg,
+                expected_extension: "svg",
+                payload: b"<?xml version=\"1.0\"?><svg/>".to_vec(),
+            },
+            MagicFormatCase {
+                name: "wmf-placeable",
+                format: ImageFormat::Wmf,
+                expected_extension: "wmf",
+                payload: b"\xD7\xCD\xC6\x9Awmf payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "wmf-standard",
+                format: ImageFormat::Wmf,
+                expected_extension: "wmf",
+                payload: b"\x01\x00\x09\x00wmf payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "emf",
+                format: ImageFormat::Emf,
+                expected_extension: "emf",
+                payload: emf,
+            },
+            MagicFormatCase {
+                name: "webp",
+                format: ImageFormat::Webp,
+                expected_extension: "webp",
+                payload: b"RIFF\x00\x00\x00\x00WEBP payload".to_vec(),
+            },
+            MagicFormatCase {
+                name: "ico",
+                format: ImageFormat::Ico,
+                expected_extension: "ico",
+                payload: b"\x00\x00\x01\x00ico payload".to_vec(),
+            },
         ]
     }
 
@@ -846,6 +913,7 @@ mod tests {
         )
     }
 
+    /// Proves required-cover path exclusion, JPEG fallback, and complete payload reuse.
     #[test]
     fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
         let temp_dir = temp_test_dir("required-cover-default-jpeg");
@@ -854,7 +922,7 @@ mod tests {
             None,
             None,
         ));
-        let original = b"unidentified cover payload".to_vec();
+        let original = vec![0x5a; 4096];
         let mut reader = Cursor::new(original.clone());
 
         let outcome = pipeline
@@ -875,7 +943,11 @@ mod tests {
         let RequiredCoverWriteOutcome::Completed(result) = outcome else {
             panic!("a readable required cover should complete the cover decision");
         };
+        assert_eq!(reader.position(), original.len() as u64);
         assert_eq!(result.counts.extracted, 1);
+        assert_eq!(result.counts.gifs_routed, 0);
+        assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.counts.skipped, 0);
         assert!(!result.has_normal_image_output());
         assert_eq!(
             result.warnings,
@@ -884,6 +956,7 @@ mod tests {
             }]
         );
         assert_eq!(fs::read(temp_dir.join("sample.jpg")).unwrap(), original);
+        assert!(!temp_dir.join("sample.png").exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
@@ -1078,31 +1151,37 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Verifies every magic signature through emission using literal expected extensions.
     #[test]
     fn magic_evidence_identifies_and_emits_every_supported_format() {
         let temp_dir = temp_test_dir("all-magic-formats");
         let pipeline =
             ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
 
-        for (format, payload) in magic_format_cases() {
-            let output_dir = temp_dir.join(format.extension());
+        for test_case in magic_format_cases() {
+            let output_dir = temp_dir.join(test_case.name);
             let result = write_sources(
                 &pipeline,
                 ImageWriteRequest::normal_images(&output_dir, "sample"),
-                vec![named_source(payload.clone(), "word/media/image.bin")],
+                vec![named_source(
+                    test_case.payload.clone(),
+                    "word/media/image.bin",
+                )],
             )
             .expect("magic-identified image should be emitted");
 
-            assert_eq!(result.counts.extracted, 1, "{format:?}");
-            assert_eq!(result.counts.gifs_routed, 0, "{format:?}");
-            assert_eq!(result.counts.converted, 0, "{format:?}");
-            assert_eq!(result.counts.skipped, 0, "{format:?}");
-            assert!(result.has_normal_image_output(), "{format:?}");
-            assert!(result.warnings.is_empty(), "{format:?}");
+            assert_eq!(result.counts.extracted, 1, "{:?}", test_case.format);
+            assert_eq!(result.counts.gifs_routed, 0, "{:?}", test_case.format);
+            assert_eq!(result.counts.converted, 0, "{:?}", test_case.format);
+            assert_eq!(result.counts.skipped, 0, "{:?}", test_case.format);
+            assert!(result.has_normal_image_output(), "{:?}", test_case.format);
+            assert!(result.warnings.is_empty(), "{:?}", test_case.format);
             assert_eq!(
-                fs::read(output_dir.join(format!("sample.{}", format.extension()))).unwrap(),
-                payload,
-                "{format:?}"
+                fs::read(output_dir.join(format!("sample.{}", test_case.expected_extension)))
+                    .unwrap(),
+                test_case.payload,
+                "{:?}",
+                test_case.format
             );
         }
 
@@ -1259,16 +1338,16 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Pins extension-fallback warning order when later payload acquisition fails.
     #[test]
-    fn tail_read_failure_warns_and_later_resource_keeps_singular_name() {
+    fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
         let temp_dir = temp_test_dir("tail-read-failure");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
             None,
             None,
         ));
-        let mut failing_payload = vec![0; 2048];
-        failing_payload[..8].copy_from_slice(b"\x89PNG\r\n\x1A\n");
+        let failing_payload = vec![0; 2048];
         let mut failing_source = FailAfterReader::new(failing_payload, 1100);
         let mut valid_source = Cursor::new(MINIMAL_PNG);
 
@@ -1277,7 +1356,7 @@ mod tests {
                 ImageWriteRequest::normal_images(&temp_dir, "sample"),
                 |visitor| {
                     visitor.visit(
-                        ArchiveImageSource::named("word/media/broken.png"),
+                        ArchiveImageSource::named("word/media/broken.png").with_mime("image/jpeg"),
                         &mut failing_source,
                     )?;
                     visitor.visit(
@@ -1292,10 +1371,17 @@ mod tests {
         assert_eq!(result.counts.extracted, 1);
         assert!(matches!(
             &result.warnings[..],
-            [ImageWriteWarning::ArchiveImageAcquisitionFailed {
-                source_name,
-                message,
-            }] if source_name == "word/media/broken.png"
+            [
+                ImageWriteWarning::ExtensionFallback {
+                    source_name: extension_source_name,
+                    format: ImageFormat::Png,
+                },
+                ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                    source_name: acquisition_source_name,
+                    message,
+                }
+            ] if extension_source_name == "word/media/broken.png"
+                && acquisition_source_name == "word/media/broken.png"
                 && message.contains("injected archive resource failure")
         ));
         assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
@@ -1329,6 +1415,39 @@ mod tests {
         assert_eq!(fs::read(temp_dir.join("sample.svg")).unwrap(), svg);
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Rejects an SVG marker beginning immediately after the bounded evidence prefix.
+    #[test]
+    fn bom_prefixed_svg_beyond_evidence_window_is_not_discovered() {
+        let temp_dir = temp_test_dir("svg-beyond-evidence-window");
+        let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Svg]),
+            None,
+            None,
+        ));
+        let mut svg = b"\xEF\xBB\xBF".to_vec();
+        svg.extend(std::iter::repeat_n(b' ', 1024));
+        svg.extend_from_slice(b"<svg>");
+        let mut reader = Cursor::new(svg);
+
+        let result = pipeline
+            .write_from(
+                ImageWriteRequest::normal_images(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::named("word/media/vector.bin"),
+                        &mut reader,
+                    )
+                },
+            )
+            .expect("SVG markup beyond the bounded evidence window should be ignored");
+
+        assert_eq!(reader.position(), 1027);
+        assert_eq!(result.counts.extracted, 0);
+        assert!(!result.has_normal_image_output());
+        assert!(result.warnings.is_empty());
+        assert!(!temp_dir.exists());
     }
 
     #[test]
@@ -1516,8 +1635,9 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Proves extension evidence outranks MIME and returns the exact fallback warning.
     #[test]
-    fn eligible_extension_outranks_mime_and_warns_before_writing() {
+    fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
         let temp_dir = temp_test_dir("extension-fallback");
         let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
@@ -1745,11 +1865,13 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Verifies routed GIF emission retains exact bytes and complete count semantics.
     #[test]
     fn routed_gif_bypasses_conversion() {
         let temp_dir = temp_test_dir("gif-routing");
         let gif_dir = temp_dir.join("gifs");
         let output_dir = temp_dir.join("images");
+        let original = b"GIF89a routed payload".to_vec();
         let pipeline = pipeline_with_conversion(
             HashSet::from([ImageFormat::Gif]),
             ConversionTarget::Png,
@@ -1759,15 +1881,18 @@ mod tests {
         let result = write_sources(
             &pipeline,
             ImageWriteRequest::normal_images(&output_dir, "sample"),
-            vec![named_source(b"GIF89a".as_slice(), "media/image.gif")],
+            vec![named_source(original.clone(), "media/image.gif")],
         )
         .expect("routed GIF should be written without conversion");
 
         assert_eq!(result.counts.extracted, 1);
         assert_eq!(result.counts.gifs_routed, 1);
         assert_eq!(result.counts.converted, 0);
+        assert_eq!(result.counts.skipped, 0);
+        assert!(result.has_normal_image_output());
         assert!(result.warnings.is_empty());
-        assert!(gif_dir.join("sample.gif").exists());
+        assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), original);
+        assert!(!output_dir.exists());
 
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
