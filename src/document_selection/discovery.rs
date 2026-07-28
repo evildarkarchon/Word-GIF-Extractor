@@ -54,8 +54,8 @@ impl RequestedInput {
 ///
 /// Every requested root is classified once before scanning, so root diagnostics
 /// precede the initial snapshot and independently readable inputs still continue.
-/// Requested directory links are followed, while existing nested traversal policy
-/// and later EPUB selection phases remain unchanged.
+/// Recursive failures retain their traversal position and nearest available path.
+/// Requested directory links are followed, while nested directory links are not.
 pub(super) fn discover_documents(
     inputs: &[PathBuf],
     recursive: bool,
@@ -108,10 +108,69 @@ pub(super) fn discover_documents(
                     record_supported(path, &mut candidates, progress);
                 }
                 RequestedInput::Directory(path) if recursive => {
-                    for entry in WalkDir::new(path).min_depth(1).into_iter().flatten() {
-                        let entry_path = entry.path();
-                        if entry_path.is_file() {
-                            record_supported(entry_path.to_path_buf(), &mut candidates, progress);
+                    // Index each known directory by WalkDir depth so truncation leaves
+                    // the nearest confirmed parent available when an error has no path.
+                    let mut known_directories = vec![path.clone()];
+                    let mut traversal = WalkDir::new(&path).min_depth(1).into_iter();
+                    while let Some(entry_result) = traversal.next() {
+                        match entry_result {
+                            Ok(entry) => {
+                                known_directories.truncate(entry.depth());
+                                let was_directory = entry.file_type().is_dir();
+                                if was_directory {
+                                    known_directories.push(entry.path().to_path_buf());
+                                }
+
+                                let entry_path = entry.into_path();
+                                match fs::metadata(&entry_path) {
+                                    Ok(metadata) if metadata.is_file() => {
+                                        if was_directory {
+                                            // The entry changed after enumeration; do not descend
+                                            // using its now-stale directory classification.
+                                            traversal.skip_current_dir();
+                                        }
+                                        record_supported(entry_path, &mut candidates, progress);
+                                    }
+                                    Ok(metadata) => {
+                                        if was_directory && !metadata.is_dir() {
+                                            // The stale directory entry no longer names a
+                                            // directory, so its old traversal branch is invalid.
+                                            traversal.skip_current_dir();
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if was_directory {
+                                            // One failed inspection should not be followed by a
+                                            // second failure while opening the same directory.
+                                            traversal.skip_current_dir();
+                                        }
+                                        progress.diagnostic(
+                                            DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                                path: entry_path,
+                                                detail: error.to_string(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                known_directories.truncate(error.depth());
+                                let failure_path = error.path().map_or_else(
+                                    || {
+                                        known_directories
+                                            .last()
+                                            .cloned()
+                                            .unwrap_or_else(|| path.clone())
+                                    },
+                                    Path::to_path_buf,
+                                );
+                                progress.diagnostic(
+                                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                        path: failure_path,
+                                        detail: error.to_string(),
+                                    },
+                                );
+                            }
                         }
                     }
                 }

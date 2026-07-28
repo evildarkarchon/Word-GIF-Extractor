@@ -812,6 +812,87 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
 
+    /// Verifies recursive discovery diagnostics retain order in the unified run stream.
+    #[test]
+    fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
+        let temp_dir = temp_test_dir("recursive-nested-discovery-failure");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        let readable_sibling = temp_dir.join("readable.docx");
+        let output_directory = temp_dir.join("output");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        fs::create_dir_all(&output_directory).expect("output directory should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        write_docx(&readable_sibling, &[]);
+        let request = prepare_request(vec![
+            "test".to_string(),
+            requested_directory.to_string_lossy().into_owned(),
+            readable_sibling.to_string_lossy().into_owned(),
+            "--recursive".to_string(),
+            "--output".to_string(),
+            output_directory.to_string_lossy().into_owned(),
+        ]);
+        let mut observer = RecordingRunObserver::default();
+
+        let outcome = run(request, &mut observer);
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        );
+        assert!(matches!(
+            observer.observations.as_slice(),
+            [
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RecursiveDirectories,
+                        discovered: 0,
+                        status: DocumentSelectionPhaseStatus::Running,
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionDiagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RecursiveDirectories,
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Running,
+                    }
+                ),
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RecursiveDirectories,
+                        discovered: 1,
+                        status: DocumentSelectionPhaseStatus::Finished,
+                    }
+                ),
+                ExtractionRunObservation::ExtractionStarted { total: 1, .. },
+                ..
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+        assert_eq!(
+            observer
+                .observations
+                .iter()
+                .filter(|observation| matches!(
+                    observation,
+                    ExtractionRunObservation::DocumentSelectionDiagnostic(
+                        DocumentSelectionDiagnostic::DocumentDiscoveryFailed { .. }
+                    )
+                ))
+                .count(),
+            1
+        );
+        assert_single_terminal_observation(&observer, &outcome);
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
     #[test]
     fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_stream() {
         let temp_dir = temp_test_dir("selection-extraction-boundary");

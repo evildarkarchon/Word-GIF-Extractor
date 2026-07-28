@@ -28,7 +28,8 @@
   "26": "Graph Query Flow",
   "27": "Graph Build and Analysis",
   "28": "pre_run_notices_cli.rs",
-  "29": "Path",
+  "29": "PathBuf",
   "30": ".new",
-  "31": "DocumentSelectionLifecycle<'observer>"
+  "31": "DocumentSelectionLifecycle<'observer>",
+  "32": "Path"
 }

@@ -157,3 +157,53 @@ fn warns_once_for_broken_nested_link_during_non_recursive_discovery() {
     remove_directory_link(&broken_link);
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
+
+/// Verifies a recursive warning renders once and leaves normal CLI completion intact.
+#[test]
+fn warns_once_for_broken_nested_link_during_recursive_discovery() {
+    let temp_dir = temp_test_dir("recursive-broken-nested-link");
+    let requested_directory = temp_dir.join("requested");
+    let removed_target = temp_dir.join("removed-target");
+    let broken_link = requested_directory.join("broken-link");
+    fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+    fs::create_dir_all(&removed_target).expect("link target should be creatable");
+    fs::write(requested_directory.join("notes.txt"), [])
+        .expect("unsupported entry should be writable");
+    create_directory_link(&removed_target, &broken_link);
+    fs::remove_dir(&removed_target).expect("link target should be removable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"))
+        .arg(&requested_directory)
+        .arg("--recursive")
+        .output()
+        .expect("extractor binary should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be UTF-8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["No documents found to process."]
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    let normalized_stderr = stderr.replace("\r\n", "\n");
+    assert!(
+        !normalized_stderr.contains(['\r', '\u{1b}']),
+        "stderr contained terminal control sequences: {stderr:?}"
+    );
+    let stderr_lines = normalized_stderr.lines().collect::<Vec<_>>();
+    assert_eq!(stderr_lines.len(), 1, "unexpected stderr: {stderr}");
+    let stable_prefix = format!(
+        "Warning: Could not inspect {} during document discovery: ",
+        broken_link.display()
+    );
+    let detail = stderr_lines[0]
+        .strip_prefix(&stable_prefix)
+        .unwrap_or_else(|| panic!("stderr did not use the stable discovery warning: {stderr}"));
+    assert!(
+        !detail.is_empty(),
+        "discovery detail should remain non-empty"
+    );
+
+    remove_directory_link(&broken_link);
+    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}

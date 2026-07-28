@@ -15,8 +15,8 @@
     "semantic_hash": "1adcb5dbdc87f51c629006116d6390f2"
   },
   "src/document_selection.rs": {
-    "mtime": 1785224375.653196,
-    "ast_hash": "a204539fdcc3f7b37aa46727d6ce2028",
+    "mtime": 1785224693.4890807,
+    "ast_hash": "0feaf2a5ca2309b076761446c471b9cd",
     "semantic_hash": ""
   },
   "src/document_selection/discovery.rs": {

@@ -294,11 +294,16 @@ impl IndicatifRunObserver {
                 eprintln!("Warning: Input path does not exist: {}", path.display());
             }
             DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail } => {
-                eprintln!(
-                    "Warning: Could not inspect {} during document discovery: {}",
-                    path.display(),
-                    detail
-                );
+                let render = || {
+                    eprintln!(
+                        "Warning: Could not inspect {} during document discovery: {}",
+                        path.display(),
+                        detail
+                    );
+                };
+                // Recursive discovery can warn while its spinner is active; suspending
+                // prevents the next redraw from corrupting or overwriting the warning.
+                Self::suspend_progress_bar(self.scan_pb.as_ref(), render);
             }
             DocumentSelectionDiagnostic::UnreadableEpubMetadata {
                 path,
@@ -474,7 +479,158 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use crate::extraction_run::{ConversionFacts, GifRoutingFacts};
+    use indicatif::{ProgressDrawTarget, TermLike};
+    use std::fs;
+    use std::io;
     use std::num::NonZeroUsize;
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug, Default)]
+    struct TerminalActivity {
+        clear_lines: usize,
+        writes: usize,
+    }
+
+    #[derive(Debug)]
+    struct RecordingTerm {
+        activity: Arc<Mutex<TerminalActivity>>,
+    }
+
+    impl TermLike for RecordingTerm {
+        fn width(&self) -> u16 {
+            80
+        }
+
+        fn move_cursor_up(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_down(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_right(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_left(&self, _n: usize) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn write_line(&self, _s: &str) -> io::Result<()> {
+            self.activity
+                .lock()
+                .expect("terminal activity should be available")
+                .writes += 1;
+            Ok(())
+        }
+
+        fn write_str(&self, _s: &str) -> io::Result<()> {
+            self.activity
+                .lock()
+                .expect("terminal activity should be available")
+                .writes += 1;
+            Ok(())
+        }
+
+        fn clear_line(&self) -> io::Result<()> {
+            self.activity
+                .lock()
+                .expect("terminal activity should be available")
+                .clear_lines += 1;
+            Ok(())
+        }
+
+        fn flush(&self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FilesystemIndicatifObserver {
+        inner: IndicatifRunObserver,
+        remove_on_scan_start: Option<PathBuf>,
+        terminal_activity: Arc<Mutex<TerminalActivity>>,
+        discovery_diagnostics: usize,
+        diagnostic_clear_lines: usize,
+        diagnostic_writes: usize,
+    }
+
+    impl ExtractionRunObserver for FilesystemIndicatifObserver {
+        /// Delegates observations while inducing one real post-classification traversal failure.
+        fn on_observation(&mut self, observation: ExtractionRunObservation) {
+            let starts_recursive_scan = matches!(
+                &observation,
+                ExtractionRunObservation::DocumentSelectionProgress(
+                    DocumentSelectionProgress::Scanning {
+                        scope: DocumentSelectionScanScope::RecursiveDirectories,
+                        discovered: 0,
+                        status: DocumentSelectionPhaseStatus::Running,
+                    }
+                )
+            );
+            let is_discovery_diagnostic = matches!(
+                &observation,
+                ExtractionRunObservation::DocumentSelectionDiagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { .. }
+                )
+            );
+            // Snapshot before delegation so only the diagnostic's suspend operation
+            // contributes to the clear/redraw deltas measured below.
+            let before = if is_discovery_diagnostic {
+                let activity = self
+                    .terminal_activity
+                    .lock()
+                    .expect("terminal activity should be available");
+                Some((activity.clear_lines, activity.writes))
+            } else {
+                None
+            };
+
+            self.inner.on_observation(observation);
+
+            if starts_recursive_scan {
+                // Delegation creates the production spinner. Attach a drawing terminal
+                // before removing the classified root so traversal fails while it is active.
+                let progress = self
+                    .inner
+                    .scan_pb
+                    .as_ref()
+                    .expect("recursive scanning should create a spinner");
+                progress.disable_steady_tick();
+                progress.set_draw_target(ProgressDrawTarget::term_like(Box::new(RecordingTerm {
+                    activity: Arc::clone(&self.terminal_activity),
+                })));
+                progress.tick();
+                if let Some(directory) = self.remove_on_scan_start.take() {
+                    fs::remove_dir(directory)
+                        .expect("classified directory should be removable before traversal");
+                }
+            }
+
+            if let Some((clear_lines, writes)) = before {
+                let activity = self
+                    .terminal_activity
+                    .lock()
+                    .expect("terminal activity should be available");
+                self.discovery_diagnostics += 1;
+                self.diagnostic_clear_lines += activity.clear_lines - clear_lines;
+                self.diagnostic_writes += activity.writes - writes;
+            }
+        }
+    }
+
+    /// Returns an isolated temporary directory for one observer test.
+    fn observer_temp_test_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "word-image-extractor-observer-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
 
     /// Builds one state-valid produced outcome through the production constructor.
     fn produced_outcome(
@@ -774,6 +930,44 @@ mod tests {
             final_summary_message(&ExtractionRunOutcome::NoDocuments),
             "No documents found to process."
         );
+    }
+
+    /// Verifies a real recursive failure suspends and then normally completes the scan spinner.
+    #[test]
+    fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
+        let temp_dir = observer_temp_test_dir("recursive-suspension");
+        let requested_directory = temp_dir.join("requested");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        let input = requested_directory.to_string_lossy().into_owned();
+        let args = Args::try_parse_from(["test", input.as_str(), "--recursive"])
+            .expect("recursive arguments should parse");
+        let prepared =
+            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        let terminal_activity = Arc::new(Mutex::new(TerminalActivity::default()));
+        let mut observer = FilesystemIndicatifObserver {
+            inner: IndicatifRunObserver::new(),
+            remove_on_scan_start: Some(requested_directory),
+            terminal_activity,
+            discovery_diagnostics: 0,
+            diagnostic_clear_lines: 0,
+            diagnostic_writes: 0,
+        };
+
+        let outcome = extraction_run::run(prepared.request, &mut observer);
+
+        assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+        assert_eq!(observer.discovery_diagnostics, 1);
+        assert!(
+            observer.diagnostic_clear_lines > 0,
+            "suspension should clear the active spinner before rendering the warning"
+        );
+        assert!(
+            observer.diagnostic_writes > 0,
+            "suspension should redraw the active spinner after rendering the warning"
+        );
+        assert!(observer.inner.scan_pb.is_none());
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }
 
     #[test]

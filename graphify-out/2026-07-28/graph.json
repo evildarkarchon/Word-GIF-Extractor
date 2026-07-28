@@ -1288,7 +1288,7 @@
       "_origin": "ast",
       "id": "src_document_selection_rs_string",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "string"
     },
     {
@@ -1310,7 +1310,7 @@
       "_origin": "ast",
       "id": "src_document_selection_rs_option",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "option"
     },
     {
@@ -1343,7 +1343,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selecteddocx",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "selecteddocx"
     },
     {
@@ -1354,7 +1354,7 @@
       "_origin": "ast",
       "id": "src_document_selection_rs_pathbuf",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "pathbuf"
     },
     {
@@ -1365,7 +1365,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selectedepub",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "selectedepub"
     },
     {
@@ -1386,7 +1386,7 @@
       "source_location": "",
       "_origin": "ast",
       "id": "src_document_selection_rs_path",
-      "community": 29,
+      "community": 32,
       "community_name": "Path",
       "norm_label": "path"
     },
@@ -1409,7 +1409,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selecteddocx_new",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": ".new()"
     },
     {
@@ -1420,7 +1420,7 @@
       "_origin": "ast",
       "id": "src_document_selection_rs_self",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "self"
     },
     {
@@ -1431,7 +1431,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selecteddocx_into_extraction_parts",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": ".into_extraction_parts()"
     },
     {
@@ -1442,7 +1442,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selectedepub_new",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": ".new()"
     },
     {
@@ -1453,7 +1453,7 @@
       "_origin": "ast",
       "id": "src_document_selection_selectedepub_into_extraction_parts",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": ".into_extraction_parts()"
     },
     {
@@ -1464,7 +1464,7 @@
       "_origin": "ast",
       "id": "src_document_selection_documentselectionoptions",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "documentselectionoptions"
     },
     {
@@ -1475,7 +1475,7 @@
       "_origin": "ast",
       "id": "src_document_selection_documentcandidate",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": "documentcandidate"
     },
     {
@@ -1486,7 +1486,7 @@
       "_origin": "ast",
       "id": "src_document_selection_documentcandidate_from_path",
       "community": 29,
-      "community_name": "Path",
+      "community_name": "PathBuf",
       "norm_label": ".from_path()"
     },
     {
@@ -1584,7 +1584,7 @@
       "source_location": "L383",
       "_origin": "ast",
       "id": "src_document_selection_selected_document_from_candidate",
-      "community": 29,
+      "community": 32,
       "community_name": "Path",
       "norm_label": "selected_document_from_candidate()"
     },
@@ -1606,7 +1606,7 @@
       "source_location": "L451",
       "_origin": "ast",
       "id": "src_document_selection_fallback_base_name",
-      "community": 29,
+      "community": 32,
       "community_name": "Path",
       "norm_label": "fallback_base_name()"
     },
@@ -1617,7 +1617,7 @@
       "source_location": "L458",
       "_origin": "ast",
       "id": "src_document_selection_fallback_display_name",
-      "community": 29,
+      "community": 32,
       "community_name": "Path",
       "norm_label": "fallback_display_name()"
     },
@@ -1754,32 +1754,32 @@
       "norm_label": "remove_directory_link()"
     },
     {
-      "label": "create_file_link()",
+      "label": "create_file_symlink()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
       "source_location": "L606",
       "_origin": "ast",
-      "id": "src_document_selection_create_file_link",
-      "community": 2,
-      "community_name": "document_selection.rs",
-      "norm_label": "create_file_link()"
+      "id": "src_document_selection_create_file_symlink",
+      "community": 32,
+      "community_name": "Path",
+      "norm_label": "create_file_symlink()"
     },
     {
-      "label": "remove_file_link()",
+      "label": "remove_file_symlink()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L621",
+      "source_location": "L618",
       "_origin": "ast",
-      "id": "src_document_selection_remove_file_link",
-      "community": 2,
-      "community_name": "document_selection.rs",
-      "norm_label": "remove_file_link()"
+      "id": "src_document_selection_remove_file_symlink",
+      "community": 32,
+      "community_name": "Path",
+      "norm_label": "remove_file_symlink()"
     },
     {
       "label": "write_minimal_epub()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L626",
+      "source_location": "L623",
       "_origin": "ast",
       "id": "src_document_selection_write_minimal_epub",
       "community": 2,
@@ -1790,7 +1790,7 @@
       "label": "select_documents_reports_scanning_through_its_public_interface()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L674",
+      "source_location": "L671",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_scanning_through_its_public_interface",
       "community": 2,
@@ -1801,7 +1801,7 @@
       "label": "select_documents_reports_ordered_monotonic_phase_snapshots()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L718",
+      "source_location": "L715",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_ordered_monotonic_phase_snapshots",
       "community": 2,
@@ -1812,7 +1812,7 @@
       "label": "select_documents_reports_missing_input_as_a_structured_diagnostic()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L856",
+      "source_location": "L853",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_missing_input_as_a_structured_diagnostic",
       "community": 2,
@@ -1823,7 +1823,7 @@
       "label": "select_documents_reports_broken_requested_link_and_continues_to_supported_sibling()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L878",
+      "source_location": "L875",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_broken_requested_link_and_continues_to_supported_sibling",
       "community": 2,
@@ -1834,7 +1834,7 @@
       "label": "select_documents_reports_broken_nested_link_before_later_supported_input()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L944",
+      "source_location": "L941",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_broken_nested_link_before_later_supported_input",
       "community": 2,
@@ -1845,7 +1845,7 @@
       "label": "select_documents_reports_directory_open_failure_and_continues_to_supported_input()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1002",
+      "source_location": "L999",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_directory_open_failure_and_continues_to_supported_input",
       "community": 2,
@@ -1856,18 +1856,18 @@
       "label": "select_documents_keeps_nested_supported_file_link_eligible()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1052",
+      "source_location": "L1049",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_keeps_nested_supported_file_link_eligible",
-      "community": 2,
-      "community_name": "document_selection.rs",
+      "community": 32,
+      "community_name": "Path",
       "norm_label": "select_documents_keeps_nested_supported_file_link_eligible()"
     },
     {
       "label": "select_documents_follows_requested_directory_link_during_recursive_scanning()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1103",
+      "source_location": "L1111",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_follows_requested_directory_link_during_recursive_scanning",
       "community": 2,
@@ -1878,7 +1878,7 @@
       "label": "select_documents_keeps_scanning_silent_when_no_inputs_are_requested()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1152",
+      "source_location": "L1160",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_keeps_scanning_silent_when_no_inputs_are_requested",
       "community": 2,
@@ -1889,7 +1889,7 @@
       "label": "select_documents_reports_filtering_metadata_failure_and_skips_deduplication()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1171",
+      "source_location": "L1179",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_reports_filtering_metadata_failure_and_skips_deduplication",
       "community": 2,
@@ -1900,7 +1900,7 @@
       "label": "select_documents_orders_filter_diagnostic_before_progress_advances_and_finish()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1220",
+      "source_location": "L1228",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_orders_filter_diagnostic_before_progress_advances_and_finish",
       "community": 2,
@@ -1911,7 +1911,7 @@
       "label": "resolves_output_dir_uses_global_when_set()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1344",
+      "source_location": "L1352",
       "_origin": "ast",
       "id": "src_document_selection_resolves_output_dir_uses_global_when_set",
       "community": 30,
@@ -1922,7 +1922,7 @@
       "label": "resolves_output_dir_beside_file_in_subdir()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1351",
+      "source_location": "L1359",
       "_origin": "ast",
       "id": "src_document_selection_resolves_output_dir_beside_file_in_subdir",
       "community": 30,
@@ -1933,7 +1933,7 @@
       "label": "resolves_output_dir_bare_filename_defaults_to_dot()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1357",
+      "source_location": "L1365",
       "_origin": "ast",
       "id": "src_document_selection_resolves_output_dir_bare_filename_defaults_to_dot",
       "community": 30,
@@ -1944,7 +1944,7 @@
       "label": "resolves_output_dir_absolute_input()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1363",
+      "source_location": "L1371",
       "_origin": "ast",
       "id": "src_document_selection_resolves_output_dir_absolute_input",
       "community": 30,
@@ -1955,7 +1955,7 @@
       "label": "select_documents_respects_recursive_scanning_through_its_public_interface()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1370",
+      "source_location": "L1378",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_respects_recursive_scanning_through_its_public_interface",
       "community": 2,
@@ -1966,7 +1966,7 @@
       "label": "select_documents_skips_epub_filter_progress_when_no_epubs_are_selected()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1413",
+      "source_location": "L1421",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_skips_epub_filter_progress_when_no_epubs_are_selected",
       "community": 2,
@@ -1977,7 +1977,7 @@
       "label": "select_documents_deduplicates_matching_readable_epub_declarations()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1445",
+      "source_location": "L1453",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_deduplicates_matching_readable_epub_declarations",
       "community": 2,
@@ -1988,7 +1988,7 @@
       "label": "declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1482",
+      "source_location": "L1490",
       "_origin": "ast",
       "id": "src_document_selection_declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read",
       "community": 2,
@@ -1999,7 +1999,7 @@
       "label": "select_documents_uses_declaration_derived_display_name()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1536",
+      "source_location": "L1544",
       "_origin": "ast",
       "id": "src_document_selection_select_documents_uses_declaration_derived_display_name",
       "community": 2,
@@ -2010,7 +2010,7 @@
       "label": "test_format_epub_base_name_both()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1559",
+      "source_location": "L1567",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_both",
       "community": 2,
@@ -2021,7 +2021,7 @@
       "label": "test_format_epub_base_name_title_only()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1565",
+      "source_location": "L1573",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_title_only",
       "community": 2,
@@ -2032,7 +2032,7 @@
       "label": "test_format_epub_base_name_author_only()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1571",
+      "source_location": "L1579",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_author_only",
       "community": 2,
@@ -2043,7 +2043,7 @@
       "label": "test_format_epub_base_name_neither()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1577",
+      "source_location": "L1585",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_neither",
       "community": 2,
@@ -2054,7 +2054,7 @@
       "label": "test_format_epub_base_name_empty_strings()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1583",
+      "source_location": "L1591",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_empty_strings",
       "community": 2,
@@ -2065,7 +2065,7 @@
       "label": "test_format_epub_base_name_sanitizes()",
       "file_type": "code",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1589",
+      "source_location": "L1597",
       "_origin": "ast",
       "id": "src_document_selection_test_format_epub_base_name_sanitizes",
       "community": 2,
@@ -8397,8 +8397,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "full graphify pipeline",
-      "id": "_codex_skills_graphify_skill_full_graphify_pipeline",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_skill_full_graphify_pipeline"
     },
     {
       "label": "Existing Graph Fast Path",
@@ -8411,8 +8411,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "existing graph fast path",
-      "id": "_codex_skills_graphify_skill_existing_graph_fast_path",
-      "community_name": "Graph Query Flow"
+      "community_name": "Graph Query Flow",
+      "id": "_codex_skills_graphify_skill_existing_graph_fast_path"
     },
     {
       "label": "Parallel Structural and Semantic Extraction",
@@ -8425,8 +8425,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "parallel structural and semantic extraction",
-      "id": "_codex_skills_graphify_skill_parallel_structural_and_semantic_extraction",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_skill_parallel_structural_and_semantic_extraction"
     },
     {
       "label": "Semantic Extraction Cache",
@@ -8439,8 +8439,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "semantic extraction cache",
-      "id": "_codex_skills_graphify_skill_semantic_extraction_cache",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_skill_semantic_extraction_cache"
     },
     {
       "label": "Graph Build and Analysis",
@@ -8453,8 +8453,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "graph build and analysis",
-      "id": "_codex_skills_graphify_skill_graph_build_and_analysis",
-      "community_name": "Graph Build and Analysis"
+      "community_name": "Graph Build and Analysis",
+      "id": "_codex_skills_graphify_skill_graph_build_and_analysis"
     },
     {
       "label": "Graph Health Gate",
@@ -8467,8 +8467,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "graph health gate",
-      "id": "_codex_skills_graphify_skill_graph_health_gate",
-      "community_name": "Graph Build and Analysis"
+      "community_name": "Graph Build and Analysis",
+      "id": "_codex_skills_graphify_skill_graph_health_gate"
     },
     {
       "label": "Community-Labeled Graph Outputs",
@@ -8481,8 +8481,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "community-labeled graph outputs",
-      "id": "_codex_skills_graphify_skill_community_labeled_outputs",
-      "community_name": "Graph Build and Analysis"
+      "community_name": "Graph Build and Analysis",
+      "id": "_codex_skills_graphify_skill_community_labeled_outputs"
     },
     {
       "label": "Manifest and Cost Tracking",
@@ -8495,8 +8495,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "manifest and cost tracking",
-      "id": "_codex_skills_graphify_skill_manifest_and_cost_tracking",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_skill_manifest_and_cost_tracking"
     },
     {
       "label": "Graph Honesty Rules",
@@ -8509,8 +8509,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "graph honesty rules",
-      "id": "_codex_skills_graphify_skill_honesty_rules",
-      "community_name": "Graph Build and Analysis"
+      "community_name": "Graph Build and Analysis",
+      "id": "_codex_skills_graphify_skill_honesty_rules"
     },
     {
       "label": "URL Ingestion",
@@ -8523,8 +8523,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "url ingestion",
-      "id": "_codex_skills_graphify_references_add_watch_url_ingestion",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_add_watch_url_ingestion"
     },
     {
       "label": "Supported URL Types",
@@ -8537,8 +8537,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "supported url types",
-      "id": "_codex_skills_graphify_references_add_watch_supported_url_types",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_add_watch_supported_url_types"
     },
     {
       "label": "Folder Watch Mode",
@@ -8551,8 +8551,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "folder watch mode",
-      "id": "_codex_skills_graphify_references_add_watch_folder_watch_mode",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_add_watch_folder_watch_mode"
     },
     {
       "label": "Semantic Update Flag",
@@ -8565,8 +8565,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "semantic update flag",
-      "id": "_codex_skills_graphify_references_add_watch_semantic_update_flag",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_add_watch_semantic_update_flag"
     },
     {
       "label": "Watch Debounce",
@@ -8579,8 +8579,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "watch debounce",
-      "id": "_codex_skills_graphify_references_add_watch_watch_debounce",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_add_watch_watch_debounce"
     },
     {
       "label": "Optional Graph Exports",
@@ -8593,8 +8593,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "optional graph exports",
-      "id": "_codex_skills_graphify_references_exports_optional_exports",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_exports_optional_exports"
     },
     {
       "label": "Graph Database Exports",
@@ -8607,8 +8607,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "graph database exports",
-      "id": "_codex_skills_graphify_references_exports_graph_database_exports",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_exports_graph_database_exports"
     },
     {
       "label": "MCP Graph Server",
@@ -8621,8 +8621,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "mcp graph server",
-      "id": "_codex_skills_graphify_references_exports_mcp_graph_server",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_exports_mcp_graph_server"
     },
     {
       "label": "Token Reduction Benchmark",
@@ -8635,8 +8635,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "token reduction benchmark",
-      "id": "_codex_skills_graphify_references_exports_token_reduction_benchmark",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_exports_token_reduction_benchmark"
     },
     {
       "label": "Extraction Subagent Contract",
@@ -8649,8 +8649,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "extraction subagent contract",
-      "id": "_codex_skills_graphify_references_extraction_spec_extraction_subagent_contract",
-      "community_name": "Extraction Subagent Contract"
+      "community_name": "Extraction Subagent Contract",
+      "id": "_codex_skills_graphify_references_extraction_spec_extraction_subagent_contract"
     },
     {
       "label": "Provenance Confidence Model",
@@ -8663,8 +8663,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "provenance confidence model",
-      "id": "_codex_skills_graphify_references_extraction_spec_provenance_confidence_model",
-      "community_name": "Extraction Subagent Contract"
+      "community_name": "Extraction Subagent Contract",
+      "id": "_codex_skills_graphify_references_extraction_spec_provenance_confidence_model"
     },
     {
       "label": "Deterministic Node Identity",
@@ -8677,8 +8677,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "deterministic node identity",
-      "id": "_codex_skills_graphify_references_extraction_spec_deterministic_node_identity",
-      "community_name": "Extraction Subagent Contract"
+      "community_name": "Extraction Subagent Contract",
+      "id": "_codex_skills_graphify_references_extraction_spec_deterministic_node_identity"
     },
     {
       "label": "Semantic Similarity Edges",
@@ -8691,8 +8691,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "semantic similarity edges",
-      "id": "_codex_skills_graphify_references_extraction_spec_semantic_similarity_edges",
-      "community_name": "Extraction Subagent Contract"
+      "community_name": "Extraction Subagent Contract",
+      "id": "_codex_skills_graphify_references_extraction_spec_semantic_similarity_edges"
     },
     {
       "label": "Hyperedge Extraction",
@@ -8705,8 +8705,8 @@
       "contributor": null,
       "community": 25,
       "norm_label": "hyperedge extraction",
-      "id": "_codex_skills_graphify_references_extraction_spec_hyperedge_extraction",
-      "community_name": "Extraction Subagent Contract"
+      "community_name": "Extraction Subagent Contract",
+      "id": "_codex_skills_graphify_references_extraction_spec_hyperedge_extraction"
     },
     {
       "label": "Verbatim Source Identity",
@@ -8719,8 +8719,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "verbatim source identity",
-      "id": "_codex_skills_graphify_references_extraction_spec_verbatim_source_identity",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_extraction_spec_verbatim_source_identity"
     },
     {
       "label": "GitHub Clone Flow",
@@ -8733,8 +8733,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "github clone flow",
-      "id": "_codex_skills_graphify_references_github_and_merge_github_clone_flow",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_github_and_merge_github_clone_flow"
     },
     {
       "label": "Cross-Repository Graph Merge",
@@ -8747,8 +8747,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "cross-repository graph merge",
-      "id": "_codex_skills_graphify_references_github_and_merge_cross_repo_graph_merge",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_github_and_merge_cross_repo_graph_merge"
     },
     {
       "label": "Repository Origin Attribute",
@@ -8761,8 +8761,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "repository origin attribute",
-      "id": "_codex_skills_graphify_references_github_and_merge_repository_origin_attribute",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_github_and_merge_repository_origin_attribute"
     },
     {
       "label": "Monorepo Isolated Extraction",
@@ -8775,8 +8775,8 @@
       "contributor": null,
       "community": 17,
       "norm_label": "monorepo isolated extraction",
-      "id": "_codex_skills_graphify_references_github_and_merge_monorepo_isolated_extraction",
-      "community_name": "Full Graphify Pipeline"
+      "community_name": "Full Graphify Pipeline",
+      "id": "_codex_skills_graphify_references_github_and_merge_monorepo_isolated_extraction"
     },
     {
       "label": "Post-Commit Graph Hook",
@@ -8789,8 +8789,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "post-commit graph hook",
-      "id": "_codex_skills_graphify_references_hooks_post_commit_graph_hook",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_hooks_post_commit_graph_hook"
     },
     {
       "label": "Code-Only Hook Update",
@@ -8803,8 +8803,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "code-only hook update",
-      "id": "_codex_skills_graphify_references_hooks_code_only_hook_update",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_hooks_code_only_hook_update"
     },
     {
       "label": "Claude Project Integration",
@@ -8817,8 +8817,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "claude project integration",
-      "id": "_codex_skills_graphify_references_hooks_claude_project_integration",
-      "community_name": "Graph Query Flow"
+      "community_name": "Graph Query Flow",
+      "id": "_codex_skills_graphify_references_hooks_claude_project_integration"
     },
     {
       "label": "Graph Query Flow",
@@ -8831,8 +8831,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "graph query flow",
-      "id": "_codex_skills_graphify_references_query_graph_query_flow",
-      "community_name": "Graph Query Flow"
+      "community_name": "Graph Query Flow",
+      "id": "_codex_skills_graphify_references_query_graph_query_flow"
     },
     {
       "label": "Constrained Query Expansion",
@@ -8845,8 +8845,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "constrained query expansion",
-      "id": "_codex_skills_graphify_references_query_constrained_query_expansion",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_constrained_query_expansion"
     },
     {
       "label": "Graph Vocabulary",
@@ -8859,8 +8859,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "graph vocabulary",
-      "id": "_codex_skills_graphify_references_query_graph_vocabulary",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_graph_vocabulary"
     },
     {
       "label": "Breadth-First Traversal",
@@ -8873,8 +8873,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "breadth-first traversal",
-      "id": "_codex_skills_graphify_references_query_breadth_first_traversal",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_breadth_first_traversal"
     },
     {
       "label": "Depth-First Traversal",
@@ -8887,8 +8887,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "depth-first traversal",
-      "id": "_codex_skills_graphify_references_query_depth_first_traversal",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_depth_first_traversal"
     },
     {
       "label": "Graph-Grounded Answering",
@@ -8901,8 +8901,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "graph-grounded answering",
-      "id": "_codex_skills_graphify_references_query_graph_grounded_answering",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_graph_grounded_answering"
     },
     {
       "label": "Save-Result Feedback Loop",
@@ -8915,8 +8915,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "save-result feedback loop",
-      "id": "_codex_skills_graphify_references_query_save_result_feedback",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_save_result_feedback"
     },
     {
       "label": "Work Memory Reflection",
@@ -8929,8 +8929,8 @@
       "contributor": null,
       "community": 21,
       "norm_label": "work memory reflection",
-      "id": "_codex_skills_graphify_references_query_work_memory_reflection",
-      "community_name": "Constrained Query Expansion"
+      "community_name": "Constrained Query Expansion",
+      "id": "_codex_skills_graphify_references_query_work_memory_reflection"
     },
     {
       "label": "Shortest Path Query",
@@ -8943,8 +8943,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "shortest path query",
-      "id": "_codex_skills_graphify_references_query_shortest_path_query",
-      "community_name": "Graph Query Flow"
+      "community_name": "Graph Query Flow",
+      "id": "_codex_skills_graphify_references_query_shortest_path_query"
     },
     {
       "label": "Node Explanation",
@@ -8957,8 +8957,8 @@
       "contributor": null,
       "community": 26,
       "norm_label": "node explanation",
-      "id": "_codex_skills_graphify_references_query_node_explanation",
-      "community_name": "Graph Query Flow"
+      "community_name": "Graph Query Flow",
+      "id": "_codex_skills_graphify_references_query_node_explanation"
     },
     {
       "label": "Media Transcription Flow",
@@ -8971,8 +8971,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "media transcription flow",
-      "id": "_codex_skills_graphify_references_transcribe_media_transcription_flow",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_references_transcribe_media_transcription_flow"
     },
     {
       "label": "Domain Hint Prompt",
@@ -8985,8 +8985,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "domain hint prompt",
-      "id": "_codex_skills_graphify_references_transcribe_domain_hint_prompt",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_references_transcribe_domain_hint_prompt"
     },
     {
       "label": "Whisper Configuration",
@@ -8999,8 +8999,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "whisper configuration",
-      "id": "_codex_skills_graphify_references_transcribe_whisper_configuration",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_references_transcribe_whisper_configuration"
     },
     {
       "label": "Transcript Documents",
@@ -9013,8 +9013,8 @@
       "contributor": null,
       "community": 23,
       "norm_label": "transcript documents",
-      "id": "_codex_skills_graphify_references_transcribe_transcript_documents",
-      "community_name": "Media Transcription Flow"
+      "community_name": "Media Transcription Flow",
+      "id": "_codex_skills_graphify_references_transcribe_transcript_documents"
     },
     {
       "label": "Incremental Update Flow",
@@ -9027,8 +9027,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "incremental update flow",
-      "id": "_codex_skills_graphify_references_update_incremental_update_flow",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_incremental_update_flow"
     },
     {
       "label": "Changed Subset and Full Corpus",
@@ -9041,8 +9041,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "changed subset and full corpus",
-      "id": "_codex_skills_graphify_references_update_changed_subset_and_full_corpus",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_changed_subset_and_full_corpus"
     },
     {
       "label": "Code-Only Update Path",
@@ -9055,8 +9055,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "code-only update path",
-      "id": "_codex_skills_graphify_references_update_code_only_update_path",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_update_code_only_update_path"
     },
     {
       "label": "Semantic Update Path",
@@ -9069,8 +9069,8 @@
       "contributor": null,
       "community": 20,
       "norm_label": "semantic update path",
-      "id": "_codex_skills_graphify_references_update_semantic_update_path",
-      "community_name": "Semantic Update Path"
+      "community_name": "Semantic Update Path",
+      "id": "_codex_skills_graphify_references_update_semantic_update_path"
     },
     {
       "label": "Deletion Pruning",
@@ -9083,8 +9083,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "deletion pruning",
-      "id": "_codex_skills_graphify_references_update_deletion_pruning",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_deletion_pruning"
     },
     {
       "label": "Replace-on-Reextract Merge",
@@ -9097,8 +9097,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "replace-on-reextract merge",
-      "id": "_codex_skills_graphify_references_update_replace_on_reextract_merge",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_replace_on_reextract_merge"
     },
     {
       "label": "Directed Update Parity",
@@ -9111,8 +9111,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "directed update parity",
-      "id": "_codex_skills_graphify_references_update_directed_update_parity",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_directed_update_parity"
     },
     {
       "label": "Manifest Stamp Gating",
@@ -9125,8 +9125,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "manifest stamp gating",
-      "id": "_codex_skills_graphify_references_update_manifest_stamp_gating",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_manifest_stamp_gating"
     },
     {
       "label": "Graph Diff",
@@ -9139,8 +9139,8 @@
       "contributor": null,
       "community": 16,
       "norm_label": "graph diff",
-      "id": "_codex_skills_graphify_references_update_graph_diff",
-      "community_name": "Incremental Update Flow"
+      "community_name": "Incremental Update Flow",
+      "id": "_codex_skills_graphify_references_update_graph_diff"
     },
     {
       "label": "Cluster-Only Refresh",
@@ -9153,8 +9153,8 @@
       "contributor": null,
       "community": 27,
       "norm_label": "cluster-only refresh",
-      "id": "_codex_skills_graphify_references_update_cluster_only_refresh",
-      "community_name": "Graph Build and Analysis"
+      "community_name": "Graph Build and Analysis",
+      "id": "_codex_skills_graphify_references_update_cluster_only_refresh"
     },
     {
       "label": "Word Image Extractor CLI",
@@ -9167,8 +9167,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "word image extractor cli",
-      "id": "agents_word_image_extractor_cli",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "agents_word_image_extractor_cli"
     },
     {
       "label": "Document Archive Extraction Flow",
@@ -9181,8 +9181,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document archive extraction flow",
-      "id": "agents_document_archive_extraction_flow",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "agents_document_archive_extraction_flow"
     },
     {
       "label": "Graphify Workflow",
@@ -9195,8 +9195,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "graphify workflow",
-      "id": "agents_graphify_workflow",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "agents_graphify_workflow"
     },
     {
       "label": "Repository Guidance",
@@ -9209,8 +9209,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "repository guidance",
-      "id": "claude_repository_guidance",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "claude_repository_guidance"
     },
     {
       "label": "Extraction Run",
@@ -9223,8 +9223,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "extraction run",
-      "id": "context_extraction_run",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_extraction_run"
     },
     {
       "label": "Extraction Run Request",
@@ -9237,8 +9237,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "extraction run request",
-      "id": "context_extraction_run_request",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_extraction_run_request"
     },
     {
       "label": "Extraction Run Outcome",
@@ -9251,8 +9251,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "extraction run outcome",
-      "id": "context_extraction_run_outcome",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_extraction_run_outcome"
     },
     {
       "label": "Extraction Run Observation",
@@ -9265,8 +9265,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "extraction run observation",
-      "id": "context_extraction_run_observation",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_extraction_run_observation"
     },
     {
       "label": "Document Extraction",
@@ -9279,8 +9279,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document extraction",
-      "id": "context_document_extraction",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_extraction"
     },
     {
       "label": "Document Extraction Facts",
@@ -9293,8 +9293,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document extraction facts",
-      "id": "context_document_extraction_facts",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_extraction_facts"
     },
     {
       "label": "Document Extraction Warning",
@@ -9307,8 +9307,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document extraction warning",
-      "id": "context_document_extraction_warning",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_extraction_warning"
     },
     {
       "label": "Document Extraction Policy",
@@ -9321,8 +9321,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document extraction policy",
-      "id": "context_document_extraction_policy",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_extraction_policy"
     },
     {
       "label": "Document Selection",
@@ -9335,8 +9335,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document selection",
-      "id": "context_document_selection",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_selection"
     },
     {
       "label": "Document Discovery",
@@ -9349,8 +9349,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document discovery",
-      "id": "context_document_discovery",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_discovery"
     },
     {
       "label": "Selected Document",
@@ -9363,8 +9363,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "selected document",
-      "id": "context_selected_document",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_selected_document"
     },
     {
       "label": "Document Selection Progress",
@@ -9377,8 +9377,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document selection progress",
-      "id": "context_document_selection_progress",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_selection_progress"
     },
     {
       "label": "Document Selection Diagnostic",
@@ -9391,8 +9391,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "document selection diagnostic",
-      "id": "context_document_selection_diagnostic",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_document_selection_diagnostic"
     },
     {
       "label": "Extraction Run Intake",
@@ -9405,8 +9405,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "extraction run intake",
-      "id": "context_extraction_run_intake",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_extraction_run_intake"
     },
     {
       "label": "Image Write Pipeline",
@@ -9419,8 +9419,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image write pipeline",
-      "id": "context_image_write_pipeline",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_image_write_pipeline"
     },
     {
       "label": "Image File Emission",
@@ -9433,8 +9433,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image file emission",
-      "id": "context_image_file_emission",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_image_file_emission"
     },
     {
       "label": "Image Write Policy",
@@ -9447,8 +9447,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image write policy",
-      "id": "context_image_write_policy",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_image_write_policy"
     },
     {
       "label": "Image Write Purpose",
@@ -9461,8 +9461,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image write purpose",
-      "id": "context_image_write_purpose",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_image_write_purpose"
     },
     {
       "label": "EPUB Cover Extraction",
@@ -9475,8 +9475,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub cover extraction",
-      "id": "context_epub_cover_extraction",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_epub_cover_extraction"
     },
     {
       "label": "Archive Image Discovery",
@@ -9489,8 +9489,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "archive image discovery",
-      "id": "context_archive_image_discovery",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_archive_image_discovery"
     },
     {
       "label": "Archive Resource Identity",
@@ -9503,8 +9503,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "archive resource identity",
-      "id": "context_archive_resource_identity",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_archive_resource_identity"
     },
     {
       "label": "EPUB Resource Archive",
@@ -9517,8 +9517,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub resource archive",
-      "id": "context_epub_resource_archive",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_epub_resource_archive"
     },
     {
       "label": "EPUB Declarations",
@@ -9531,8 +9531,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub declarations",
-      "id": "context_epub_declarations",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_epub_declarations"
     },
     {
       "label": "Image Format",
@@ -9545,8 +9545,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image format",
-      "id": "context_image_format",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_image_format"
     },
     {
       "label": "Conversion Policy",
@@ -9559,8 +9559,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "conversion policy",
-      "id": "context_conversion_policy",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "context_conversion_policy"
     },
     {
       "label": "Word Image Extractor",
@@ -9573,8 +9573,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "word image extractor",
-      "id": "readme_word_image_extractor",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "readme_word_image_extractor"
     },
     {
       "label": "EPUB Metadata Naming",
@@ -9587,8 +9587,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub metadata naming",
-      "id": "readme_epub_metadata_naming",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "readme_epub_metadata_naming"
     },
     {
       "label": "Image Conversion Behavior",
@@ -9601,8 +9601,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "image conversion behavior",
-      "id": "readme_conversion_policy",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "readme_conversion_policy"
     },
     {
       "label": "DOCX Output Naming",
@@ -9615,8 +9615,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "docx output naming",
-      "id": "readme_docx_output_naming",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "readme_docx_output_naming"
     },
     {
       "label": "Incremental EPUB Resource Reads",
@@ -9630,8 +9630,8 @@
       "rationale": "Reopening the EPUB through a direct ZIP adapter separates payload-free declaration facts from bounded incremental payload access and avoids eager buffering or maintaining a crate fork.",
       "community": 8,
       "norm_label": "incremental epub resource reads",
-      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_incremental_epub_resource_reads",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_incremental_epub_resource_reads"
     },
     {
       "label": "EPUB Declaration Acquisition",
@@ -9644,8 +9644,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub declaration acquisition",
-      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_epub_declaration_acquisition",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_epub_declaration_acquisition"
     },
     {
       "label": "Direct ZIP Payload Reads",
@@ -9658,8 +9658,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "direct zip payload reads",
-      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_direct_zip_payload_reads",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0001_reopen_epub_for_incremental_resource_reads_direct_zip_payload_reads"
     },
     {
       "label": "Retained EPUB Declarations",
@@ -9673,8 +9673,8 @@
       "rationale": "Retaining declarations once provides a consistent authoritative run snapshot and avoids repeated EPUB parsing or observing declaration changes mid-run.",
       "community": 8,
       "norm_label": "retained epub declarations",
-      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_retained_epub_declarations",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_retained_epub_declarations"
     },
     {
       "label": "Selection-Owned Declaration Acquisition",
@@ -9687,8 +9687,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "selection-owned declaration acquisition",
-      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_selection_owned_acquisition",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_selection_owned_acquisition"
     },
     {
       "label": "Retry When Declarations Are Missing",
@@ -9701,8 +9701,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "retry when declarations are missing",
-      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_retry_when_declarations_missing",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "docs_adr_0002_retain_epub_declarations_for_the_extraction_run_retry_when_declarations_missing"
     },
     {
       "label": "EPUB Support",
@@ -9715,8 +9715,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub support",
-      "id": "plans_epub_support_plan_epub_support",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "plans_epub_support_plan_epub_support"
     },
     {
       "label": "EPUB Crate Integration",
@@ -9729,8 +9729,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "epub crate integration",
-      "id": "plans_epub_support_plan_epub_crate_integration",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "plans_epub_support_plan_epub_crate_integration"
     },
     {
       "label": "Metadata-Based EPUB Naming",
@@ -9743,8 +9743,8 @@
       "contributor": null,
       "community": 8,
       "norm_label": "metadata-based epub naming",
-      "id": "plans_epub_support_plan_metadata_based_naming",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "plans_epub_support_plan_metadata_based_naming"
     },
     {
       "label": "Modular Document Processing",
@@ -9758,8 +9758,8 @@
       "rationale": "Separating DOCX, EPUB, and shared image utilities was recommended to keep document-specific processing organized.",
       "community": 8,
       "norm_label": "modular document processing",
-      "id": "plans_epub_support_plan_modular_document_processing",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "plans_epub_support_plan_modular_document_processing"
     },
     {
       "label": "Incremental Image Processing",
@@ -9773,8 +9773,8 @@
       "rationale": "Processing one image at a time mitigates memory use for large EPUB archives.",
       "community": 8,
       "norm_label": "incremental image processing",
-      "id": "plans_epub_support_plan_incremental_image_processing",
-      "community_name": "Document Selection"
+      "community_name": "Document Selection",
+      "id": "plans_epub_support_plan_incremental_image_processing"
     }
   ],
   "links": [
@@ -13206,18 +13206,18 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L612",
+      "source_location": "L613",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
-      "target": "src_document_selection_create_file_link",
+      "target": "src_document_selection_create_file_symlink",
       "confidence_score": 1.0
     },
     {
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1482",
+      "source_location": "L1490",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13393,11 +13393,11 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L621",
+      "source_location": "L618",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
-      "target": "src_document_selection_remove_file_link",
+      "target": "src_document_selection_remove_file_symlink",
       "confidence_score": 1.0
     },
     {
@@ -13426,7 +13426,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1363",
+      "source_location": "L1371",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13437,7 +13437,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1357",
+      "source_location": "L1365",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13448,7 +13448,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1351",
+      "source_location": "L1359",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13459,7 +13459,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1344",
+      "source_location": "L1352",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13504,7 +13504,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1445",
+      "source_location": "L1453",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13515,7 +13515,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1103",
+      "source_location": "L1111",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13526,7 +13526,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1052",
+      "source_location": "L1049",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13537,7 +13537,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1152",
+      "source_location": "L1160",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13548,7 +13548,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1220",
+      "source_location": "L1228",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13559,7 +13559,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L944",
+      "source_location": "L941",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13570,7 +13570,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L878",
+      "source_location": "L875",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13581,7 +13581,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1002",
+      "source_location": "L999",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13592,7 +13592,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1171",
+      "source_location": "L1179",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13603,7 +13603,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L856",
+      "source_location": "L853",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13614,7 +13614,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L718",
+      "source_location": "L715",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13625,7 +13625,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L674",
+      "source_location": "L671",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13636,7 +13636,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1370",
+      "source_location": "L1378",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13647,7 +13647,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1413",
+      "source_location": "L1421",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13658,7 +13658,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1536",
+      "source_location": "L1544",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13724,7 +13724,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1571",
+      "source_location": "L1579",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13735,7 +13735,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1559",
+      "source_location": "L1567",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13746,7 +13746,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1583",
+      "source_location": "L1591",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13757,7 +13757,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1577",
+      "source_location": "L1585",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13768,7 +13768,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1589",
+      "source_location": "L1597",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13779,7 +13779,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1565",
+      "source_location": "L1573",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -13790,7 +13790,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L626",
+      "source_location": "L623",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection",
@@ -14694,11 +14694,11 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L612",
+      "source_location": "L613",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
-      "source": "src_document_selection_create_file_link",
+      "source": "src_document_selection_create_file_symlink",
       "target": "src_document_selection_rs_path",
       "confidence_score": 1.0
     },
@@ -14766,11 +14766,11 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L621",
+      "source_location": "L618",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
-      "source": "src_document_selection_remove_file_link",
+      "source": "src_document_selection_remove_file_symlink",
       "target": "src_document_selection_rs_path",
       "confidence_score": 1.0
     },
@@ -14802,7 +14802,7 @@
       "relation": "references",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L626",
+      "source_location": "L623",
       "weight": 1.0,
       "context": "parameter_type",
       "_origin": "ast",
@@ -14982,7 +14982,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1494",
+      "source_location": "L1502",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read",
@@ -15066,7 +15066,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1454",
+      "source_location": "L1462",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_deduplicates_matching_readable_epub_declarations",
@@ -15078,7 +15078,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1113",
+      "source_location": "L1121",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_follows_requested_directory_link_during_recursive_scanning",
@@ -15090,7 +15090,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1064",
+      "source_location": "L1072",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_keeps_nested_supported_file_link_eligible",
@@ -15102,7 +15102,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1155",
+      "source_location": "L1163",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_keeps_scanning_silent_when_no_inputs_are_requested",
@@ -15114,7 +15114,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1234",
+      "source_location": "L1242",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_orders_filter_diagnostic_before_progress_advances_and_finish",
@@ -15126,7 +15126,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L960",
+      "source_location": "L957",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_nested_link_before_later_supported_input",
@@ -15138,7 +15138,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L898",
+      "source_location": "L895",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_requested_link_and_continues_to_supported_sibling",
@@ -15150,7 +15150,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1011",
+      "source_location": "L1008",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_directory_open_failure_and_continues_to_supported_input",
@@ -15162,7 +15162,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1182",
+      "source_location": "L1190",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_filtering_metadata_failure_and_skips_deduplication",
@@ -15174,7 +15174,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L860",
+      "source_location": "L857",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_missing_input_as_a_structured_diagnostic",
@@ -15186,7 +15186,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L731",
+      "source_location": "L728",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_ordered_monotonic_phase_snapshots",
@@ -15198,7 +15198,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L681",
+      "source_location": "L678",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_scanning_through_its_public_interface",
@@ -15210,7 +15210,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1379",
+      "source_location": "L1387",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_respects_recursive_scanning_through_its_public_interface",
@@ -15222,7 +15222,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1424",
+      "source_location": "L1432",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_skips_epub_filter_progress_when_no_epubs_are_selected",
@@ -15234,7 +15234,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1542",
+      "source_location": "L1550",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_uses_declaration_derived_display_name",
@@ -15474,7 +15474,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1365",
+      "source_location": "L1373",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_absolute_input",
@@ -15486,7 +15486,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1358",
+      "source_location": "L1366",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_bare_filename_defaults_to_dot",
@@ -15498,7 +15498,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1352",
+      "source_location": "L1360",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_beside_file_in_subdir",
@@ -15510,7 +15510,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1346",
+      "source_location": "L1354",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_uses_global_when_set",
@@ -15522,7 +15522,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1572",
+      "source_location": "L1580",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_author_only",
@@ -15534,7 +15534,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1560",
+      "source_location": "L1568",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_both",
@@ -15546,7 +15546,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1584",
+      "source_location": "L1592",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_empty_strings",
@@ -15558,7 +15558,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1578",
+      "source_location": "L1586",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_neither",
@@ -15570,7 +15570,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1590",
+      "source_location": "L1598",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_sanitizes",
@@ -15582,7 +15582,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1566",
+      "source_location": "L1574",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_test_format_epub_base_name_title_only",
@@ -15779,7 +15779,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1364",
+      "source_location": "L1372",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_absolute_input",
@@ -15791,7 +15791,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1358",
+      "source_location": "L1366",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_bare_filename_defaults_to_dot",
@@ -15803,7 +15803,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1352",
+      "source_location": "L1360",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_beside_file_in_subdir",
@@ -15815,7 +15815,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1345",
+      "source_location": "L1353",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_resolves_output_dir_uses_global_when_set",
@@ -15827,7 +15827,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1009",
+      "source_location": "L1006",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_directory_open_failure_and_continues_to_supported_input",
@@ -15839,7 +15839,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L628",
+      "source_location": "L625",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_write_minimal_epub",
@@ -15875,7 +15875,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1483",
+      "source_location": "L1491",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read",
@@ -15887,7 +15887,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1446",
+      "source_location": "L1454",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_deduplicates_matching_readable_epub_declarations",
@@ -15899,7 +15899,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1104",
+      "source_location": "L1112",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_follows_requested_directory_link_during_recursive_scanning",
@@ -15911,7 +15911,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1053",
+      "source_location": "L1050",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_keeps_nested_supported_file_link_eligible",
@@ -15923,7 +15923,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1221",
+      "source_location": "L1229",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_orders_filter_diagnostic_before_progress_advances_and_finish",
@@ -15935,7 +15935,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L945",
+      "source_location": "L942",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_nested_link_before_later_supported_input",
@@ -15947,7 +15947,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L879",
+      "source_location": "L876",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_requested_link_and_continues_to_supported_sibling",
@@ -15959,7 +15959,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1003",
+      "source_location": "L1000",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_directory_open_failure_and_continues_to_supported_input",
@@ -15971,7 +15971,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1172",
+      "source_location": "L1180",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_filtering_metadata_failure_and_skips_deduplication",
@@ -15983,7 +15983,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L857",
+      "source_location": "L854",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_missing_input_as_a_structured_diagnostic",
@@ -15995,7 +15995,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L719",
+      "source_location": "L716",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_ordered_monotonic_phase_snapshots",
@@ -16007,7 +16007,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L675",
+      "source_location": "L672",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_scanning_through_its_public_interface",
@@ -16019,7 +16019,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1371",
+      "source_location": "L1379",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_respects_recursive_scanning_through_its_public_interface",
@@ -16031,7 +16031,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1414",
+      "source_location": "L1422",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_skips_epub_filter_progress_when_no_epubs_are_selected",
@@ -16043,7 +16043,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1537",
+      "source_location": "L1545",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_uses_declaration_derived_display_name",
@@ -16055,7 +16055,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1110",
+      "source_location": "L1118",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_follows_requested_directory_link_during_recursive_scanning",
@@ -16067,7 +16067,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L953",
+      "source_location": "L950",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_nested_link_before_later_supported_input",
@@ -16079,7 +16079,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L885",
+      "source_location": "L882",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_requested_link_and_continues_to_supported_sibling",
@@ -16091,7 +16091,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1147",
+      "source_location": "L1155",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_follows_requested_directory_link_during_recursive_scanning",
@@ -16103,7 +16103,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L996",
+      "source_location": "L993",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_nested_link_before_later_supported_input",
@@ -16115,7 +16115,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L938",
+      "source_location": "L935",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_broken_requested_link_and_continues_to_supported_sibling",
@@ -16127,11 +16127,11 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1061",
+      "source_location": "L1058",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_keeps_nested_supported_file_link_eligible",
-      "target": "src_document_selection_create_file_link",
+      "target": "src_document_selection_create_file_symlink",
       "confidence_score": 1.0
     },
     {
@@ -16139,11 +16139,11 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1098",
+      "source_location": "L1106",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_keeps_nested_supported_file_link_eligible",
-      "target": "src_document_selection_remove_file_link",
+      "target": "src_document_selection_remove_file_symlink",
       "confidence_score": 1.0
     },
     {
@@ -16151,7 +16151,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1450",
+      "source_location": "L1458",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_deduplicates_matching_readable_epub_declarations",
@@ -16163,7 +16163,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1226",
+      "source_location": "L1234",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_orders_filter_diagnostic_before_progress_advances_and_finish",
@@ -16175,7 +16175,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L723",
+      "source_location": "L720",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_reports_ordered_monotonic_phase_snapshots",
@@ -16187,7 +16187,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/document_selection.rs",
-      "source_location": "L1540",
+      "source_location": "L1548",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_document_selection_select_documents_uses_declaration_derived_display_name",

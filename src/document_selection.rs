@@ -994,6 +994,109 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Verifies recursive inspection diagnoses one broken nested link at encounter position.
+    #[test]
+    fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() {
+        let temp_dir = temp_test_dir("recursive-broken-nested-link");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let inputs = vec![requested_directory, readable_sibling.clone()];
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                }),
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies an all-failed recursive scan still finishes with an explicit zero count.
+    #[test]
+    fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
+        let temp_dir = temp_test_dir("recursive-zero-after-failure");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_directory),
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert!(selected.is_empty());
+        assert!(matches!(
+            observer.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                }),
+            ] if path == &broken_link && !detail.is_empty()
+        ));
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
     /// Verifies requested-root fallback and continuation when opening a directory fails.
     #[test]
     fn select_documents_reports_directory_open_failure_and_continues_to_supported_input() {
@@ -1041,6 +1144,175 @@ mod tests {
             ] if path == &removed_directory && !detail.is_empty()
         ));
 
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies recursive traversal reports a vanished root and continues to a later input.
+    #[test]
+    fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
+        let temp_dir = temp_test_dir("recursive-root-traversal-failure");
+        let removed_directory = temp_dir.join("removed-before-walk");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&removed_directory).expect("requested directory should be creatable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let inputs = vec![removed_directory.clone(), readable_sibling.clone()];
+        let mut observer = RemoveDirectoryOnScanStartObserver::new(removed_directory.clone());
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.recording.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                }),
+            ] if path == &removed_directory && !detail.is_empty()
+        ));
+
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies distinct recursive failures are each reported once in encounter order.
+    #[test]
+    fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
+        let temp_dir = temp_test_dir("ordered-recursive-failures");
+        let first_directory = temp_dir.join("first");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = first_directory.join("broken-link");
+        let removed_directory = temp_dir.join("second-removed-before-walk");
+        let readable_sibling = temp_dir.join("readable.docx");
+        fs::create_dir_all(&first_directory).expect("first directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        fs::create_dir_all(&removed_directory).expect("second directory should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let inputs = vec![
+            first_directory,
+            removed_directory.clone(),
+            readable_sibling.clone(),
+        ];
+        let mut observer = RemoveDirectoryOnScanStartObserver::new(removed_directory.clone());
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: &inputs,
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.recording.timeline.as_slice(),
+            [
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                        path: first_path,
+                        detail: first_detail,
+                    }
+                ),
+                RecordedDocumentSelectionFact::Diagnostic(
+                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                        path: second_path,
+                        detail: second_detail,
+                    }
+                ),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                }),
+                RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                }),
+            ] if first_path == &broken_link
+                && !first_detail.is_empty()
+                && second_path == &removed_directory
+                && !second_detail.is_empty()
+        ));
+
+        remove_directory_link(&broken_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies a broken recursive entry does not suppress a readable sibling candidate.
+    #[test]
+    fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
+        let temp_dir = temp_test_dir("recursive-readable-nested-sibling");
+        let requested_directory = temp_dir.join("requested");
+        let removed_target = temp_dir.join("removed-target");
+        let broken_link = requested_directory.join("broken-link");
+        let readable_sibling = requested_directory.join("readable.docx");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&removed_target).expect("link target should be creatable");
+        create_directory_link(&removed_target, &broken_link);
+        fs::remove_dir(&removed_target).expect("link target should be removable");
+        fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_directory),
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), readable_sibling);
+        assert!(matches!(
+            observer.diagnostics.as_slice(),
+            [DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }]
+                if path == &broken_link && !detail.is_empty()
+        ));
+        assert!(matches!(
+            observer.progress.last(),
+            Some(DocumentSelectionProgress::Scanning {
+                scope: DocumentSelectionScanScope::RecursiveDirectories,
+                discovered: 1,
+                status: DocumentSelectionPhaseStatus::Finished,
+            })
+        ));
+
+        remove_directory_link(&broken_link);
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
@@ -1107,6 +1379,62 @@ mod tests {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
+    /// Verifies recursive scanning still admits a nested link to a supported regular file.
+    #[test]
+    fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
+        let temp_dir = temp_test_dir("recursive-nested-supported-file-link");
+        let requested_directory = temp_dir.join("requested");
+        let target_directory = temp_dir.join("targets");
+        let target = target_directory.join("target.docx");
+        let linked_document = requested_directory.join("linked.docx");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&target_directory).expect("target directory should be creatable");
+        fs::write(&target, []).expect("linked DOCX target should be writable");
+        if !create_file_symlink(&target, &linked_document) {
+            eprintln!("skipping file-symlink eligibility: Windows denied symlink creation");
+            fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+            return;
+        }
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_directory),
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].get_path(), linked_document);
+        assert!(observer.diagnostics.is_empty());
+        assert!(matches!(
+            observer.progress.as_slice(),
+            [
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 1,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                },
+            ]
+        ));
+
+        remove_file_symlink(&linked_document);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
     #[test]
     fn select_documents_follows_requested_directory_link_during_recursive_scanning() {
         let temp_dir = temp_test_dir("requested-directory-link");
@@ -1153,6 +1481,52 @@ mod tests {
         ));
 
         remove_directory_link(&requested_link);
+        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+    }
+
+    /// Verifies recursive scanning does not widen scope through a nested directory link.
+    #[test]
+    fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
+        let temp_dir = temp_test_dir("recursive-nested-directory-link");
+        let requested_directory = temp_dir.join("requested");
+        let target_directory = temp_dir.join("target");
+        let nested_link = requested_directory.join("nested-link");
+        fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
+        fs::create_dir_all(&target_directory).expect("link target should be creatable");
+        fs::write(target_directory.join("outside.docx"), [])
+            .expect("linked-directory DOCX should be writable");
+        create_directory_link(&target_directory, &nested_link);
+        let mut observer = RecordingDocumentSelectionObserver::default();
+
+        let selected = select_documents(
+            DocumentSelectionOptions {
+                inputs: std::slice::from_ref(&requested_directory),
+                recursive: true,
+                output: None,
+                epub_filter: &EpubFilter::default(),
+            },
+            &mut observer,
+        );
+
+        assert!(selected.is_empty());
+        assert!(observer.diagnostics.is_empty());
+        assert_eq!(
+            observer.progress,
+            vec![
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Running,
+                },
+                DocumentSelectionProgress::Scanning {
+                    scope: DocumentSelectionScanScope::RecursiveDirectories,
+                    discovered: 0,
+                    status: DocumentSelectionPhaseStatus::Finished,
+                },
+            ]
+        );
+
+        remove_directory_link(&nested_link);
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
     }
 
