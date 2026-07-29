@@ -5,9 +5,9 @@
     "semantic_hash": "bde28b2e51d023eff004858c026fffc3"
   },
   "src/document_extraction.rs": {
-    "mtime": 1785325828.7964778,
-    "ast_hash": "e610d661f18ff03bd2311beaf4d828c7",
-    "semantic_hash": ""
+    "mtime": 1784769828.1523023,
+    "ast_hash": "1adcb5dbdc87f51c629006116d6390f2",
+    "semantic_hash": "1adcb5dbdc87f51c629006116d6390f2"
   },
   "src/document_selection.rs": {
     "mtime": 1785225929.4020178,
@@ -30,8 +30,8 @@
     "semantic_hash": "cfb64c7a825483ab31463abeae3248ac"
   },
   "src/epub.rs": {
-    "mtime": 1785325795.31887,
-    "ast_hash": "8921d835cc04b9f6000697bb869e2156",
+    "mtime": 1785239164.1053445,
+    "ast_hash": "8897448deda0c589fd48ab1d9a44bc27",
     "semantic_hash": ""
   },
   "src/epub/resource_archive.rs": {
@@ -60,9 +60,9 @@
     "semantic_hash": "7db0b4fe75e2327f16b6a1b2f62e8dd3"
   },
   "src/image_write_pipeline.rs": {
-    "mtime": 1785325796.5311925,
-    "ast_hash": "42eee8dd806e31415f32fb28bb19122d",
-    "semantic_hash": ""
+    "mtime": 1785207823.0603602,
+    "ast_hash": "3a1057fb36f3dfc9a3b85ad88980e5fb",
+    "semantic_hash": "3a1057fb36f3dfc9a3b85ad88980e5fb"
   },
   "src/image_write_pipeline/discovery.rs": {
     "mtime": 1785207421.2787316,
@@ -75,9 +75,9 @@
     "semantic_hash": "98b760915687e5948a7a6b65e847c07f"
   },
   "src/image_write_pipeline/purpose.rs": {
-    "mtime": 1785325707.0963256,
-    "ast_hash": "e5f932d588b1b748d13e3d1a81cd66ea",
-    "semantic_hash": ""
+    "mtime": 1784856899.1282897,
+    "ast_hash": "a3a0fe62c350c15454be23a595d9dae9",
+    "semantic_hash": "a3a0fe62c350c15454be23a595d9dae9"
   },
   "src/main.rs": {
     "mtime": 1785226709.6295583,

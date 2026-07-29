@@ -1,16 +1,16 @@
-# Graph Report - Word-GIF-Extractor  (2026-07-29)
+# Graph Report - Word-GIF-Extractor  (2026-07-28)
 
 ## Corpus Check
-- 39 files · ~50,527 words
+- 40 files · ~49,910 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 925 nodes · 2421 edges · 33 communities
+- 918 nodes · 2385 edges · 33 communities
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 19 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7d547a8d`
+- Built from commit: `00d78e58`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -120,7 +120,7 @@ Nodes (52): DynamicImage, CodecTarget, composite_on_white(), conversion_policy_c
 
 ### Community 7 - "document_extraction.rs"
 Cohesion: 0.09
-Nodes (37): conversion_policy(), DocumentExtraction, DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionOutcome, DocumentExtractionPolicy, DocumentExtractionWarning, docx_uses_normal_images_when_policy_requests_an_epub_cover() (+29 more)
+Nodes (29): DocumentExtraction, DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionOutcome, DocumentExtractionPolicy, DocumentExtractionWarning, docx_uses_normal_images_when_policy_requests_an_epub_cover(), epub_cover_fallback_is_classified_as_normal_images() (+21 more)
 
 ### Community 8 - "Document Selection"
 Cohesion: 0.06
@@ -230,9 +230,9 @@ Nodes (4): Answer, Outcome, Q: How should GitHub issue #22 be decomposed into de
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `ImageFormat` connect `ImageFormat` to `image_write_pipeline.rs`, `extraction_run.rs`, `conversion.rs`, `epub.rs`, `extraction_run_intake.rs`, `emission.rs`?**
-  _High betweenness centrality (0.143) - this node is a cross-community bridge._
+  _High betweenness centrality (0.145) - this node is a cross-community bridge._
 - **Why does `EpubDeclarations` connect `document_selection.rs` to `epub.rs`, `EpubResourceDeclaration`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
+  _High betweenness centrality (0.062) - this node is a cross-community bridge._
 - **Why does `ArchiveImageSource` connect `ImageFormat` to `image_write_pipeline.rs`?**
   _High betweenness centrality (0.030) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `select_documents()` (e.g. with `retained_epub_declarations_are_authoritative_during_extraction()` and `select_one_document()`) actually correct?**
@@ -240,6 +240,6 @@ _Questions this graph is uniquely positioned to answer:_
 - **What connects `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>` to the rest of the system?**
   _34 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `image_write_pipeline.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.06872393661384488 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06781326781326781 - nodes in this community are weakly interconnected._
 - **Should `resource_archive.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.0907103825136612 - nodes in this community are weakly interconnected._

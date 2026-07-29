@@ -723,9 +723,9 @@ mod tests {
             &result.warnings[..],
             [ImageWriteWarning::ArchiveImageAcquisitionFailed {
                 source_name,
-                message,
+                detail,
             }] if source_name == "OEBPS/images/a.png"
-                && message.contains("EPUB resource not found")
+                && detail == "EPUB resource not found: OEBPS/images/a.png"
         ));
         assert_eq!(
             fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
@@ -1110,8 +1110,8 @@ mod tests {
         assert!(!result.has_normal_image_output());
         assert!(matches!(
             &result.warnings[..],
-            [ImageWriteWarning::CoverConversionFailed { message }]
-                if message.contains("Failed to decode image")
+            [ImageWriteWarning::CoverConversionFailed { detail }]
+                if detail == "Failed to decode image"
         ));
         assert!(
             fs::read_dir(&output_dir)
@@ -1232,18 +1232,6 @@ mod tests {
                 && filename_source == "OEBPS/images/cover.jpg"
                 && fallback_source == "OEBPS/images/page.png"
         ));
-        assert_eq!(
-            result
-                .warnings
-                .iter()
-                .map(ImageWriteWarning::message)
-                .collect::<Vec<_>>(),
-            vec![
-                "Could not read archive resource 'OEBPS/images/missing.png': EPUB resource not found: OEBPS/images/missing.png",
-                "Could not read archive resource 'OEBPS/images/cover.jpg': EPUB resource not found: OEBPS/images/cover.jpg",
-                "Magic detection failed for OEBPS/images/page.png; falling back to .png extension",
-            ]
-        );
         assert_eq!(
             fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
             extension_only_page

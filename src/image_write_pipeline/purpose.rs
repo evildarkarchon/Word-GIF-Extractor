@@ -122,7 +122,7 @@ impl ImageWritePurpose for NormalImages {
             action: ConversionAction::PreserveOriginal,
             warning: Some(ImageWriteWarning::ConversionFailed {
                 base_name: base_name.to_string(),
-                message: error.to_string(),
+                detail: error.to_string(),
             }),
         }
     }
@@ -180,7 +180,7 @@ impl ImageWritePurpose for RequiredCover {
         PurposeDecision {
             action: ConversionAction::CompleteWithoutEmission,
             warning: Some(ImageWriteWarning::CoverConversionFailed {
-                message: error.to_string(),
+                detail: error.to_string(),
             }),
         }
     }

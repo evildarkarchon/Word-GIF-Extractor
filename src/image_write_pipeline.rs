@@ -57,7 +57,7 @@ pub(crate) struct ImageWriteCounts {
 pub(crate) enum ImageWriteWarning {
     ArchiveImageAcquisitionFailed {
         source_name: String,
-        message: String,
+        detail: String,
     },
     ExtensionFallback {
         source_name: String,
@@ -78,10 +78,10 @@ pub(crate) enum ImageWriteWarning {
     },
     ConversionFailed {
         base_name: String,
-        message: String,
+        detail: String,
     },
     CoverConversionFailed {
-        message: String,
+        detail: String,
     },
 }
 
@@ -93,51 +93,7 @@ impl ImageWriteWarning {
     ) -> Self {
         Self::ArchiveImageAcquisitionFailed {
             source_name: source_name.into(),
-            message: error.to_string(),
-        }
-    }
-
-    /// Formats this warning using the existing terminal wording.
-    pub(crate) fn message(&self) -> String {
-        match self {
-            ImageWriteWarning::ArchiveImageAcquisitionFailed {
-                source_name,
-                message,
-            } => format!(
-                "Could not read archive resource '{}': {}",
-                source_name, message
-            ),
-            ImageWriteWarning::ExtensionFallback {
-                source_name,
-                format,
-            } => format!(
-                "Magic detection failed for {}; falling back to .{} extension",
-                source_name,
-                format.extension()
-            ),
-            ImageWriteWarning::CoverDefaultToJpeg { mime } => format!(
-                "Cover image MIME '{}' could not be identified; defaulting to .jpg extension.",
-                mime
-            ),
-            ImageWriteWarning::UnsupportedCoverFormat { format } => format!(
-                "Cover image format '{}' not in allowed formats, skipping.",
-                format.extension()
-            ),
-            ImageWriteWarning::ConversionSkipped { base_name, format } => format!(
-                "Skipping conversion for {} ({} format not supported for conversion)",
-                base_name,
-                format.extension()
-            ),
-            ImageWriteWarning::CoverConversionSkipped { format } => format!(
-                "Cover image format '{}' not supported for conversion, skipping cover.",
-                format.extension()
-            ),
-            ImageWriteWarning::ConversionFailed { base_name, message } => {
-                format!("Conversion failed for image in {}: {}", base_name, message)
-            }
-            ImageWriteWarning::CoverConversionFailed { message } => {
-                format!("Cover conversion failed: {}", message)
-            }
+            detail: error.to_string(),
         }
     }
 }
@@ -1033,10 +989,10 @@ mod tests {
             &result.warnings[..],
             [
                 ImageWriteWarning::CoverDefaultToJpeg { mime },
-                ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, message }
+                ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, detail }
             ] if mime == "application/octet-stream"
                 && source_name == "OPS/cover.bin"
-                && message.contains("injected archive resource failure")
+                && detail == "injected archive resource failure"
         ));
         assert!(!temp_dir.exists());
     }
@@ -1108,8 +1064,8 @@ mod tests {
         assert!(!result.has_normal_image_output());
         assert!(matches!(
             &result.warnings[..],
-            [ImageWriteWarning::CoverConversionFailed { message }]
-                if message.contains("Failed to decode image")
+            [ImageWriteWarning::CoverConversionFailed { detail }]
+                if detail == "Failed to decode image"
         ));
         assert!(!temp_dir.exists());
     }
@@ -1378,11 +1334,11 @@ mod tests {
                 },
                 ImageWriteWarning::ArchiveImageAcquisitionFailed {
                     source_name: acquisition_source_name,
-                    message,
+                    detail,
                 }
             ] if extension_source_name == "word/media/broken.png"
                 && acquisition_source_name == "word/media/broken.png"
-                && message.contains("injected archive resource failure")
+                && detail == "injected archive resource failure"
         ));
         assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
         assert!(!temp_dir.join("sample_1.png").exists());
@@ -1758,7 +1714,7 @@ mod tests {
             result.warnings,
             vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
                 source_name: "word/media/safe.png".to_string(),
-                message: "safe source could not be opened".to_string(),
+                detail: "safe source could not be opened".to_string(),
             }]
         );
         assert!(!temp_dir.exists());
@@ -1825,8 +1781,8 @@ mod tests {
         assert_eq!(result.counts.skipped, 1);
         assert!(matches!(
             &result.warnings[..],
-            [ImageWriteWarning::ConversionFailed { base_name, message }]
-                if base_name == "sample" && message.contains("Failed to decode image")
+            [ImageWriteWarning::ConversionFailed { base_name, detail }]
+                if base_name == "sample" && detail == "Failed to decode image"
         ));
         assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
 
