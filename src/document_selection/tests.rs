@@ -1,10 +1,11 @@
 //! Tests for Document selection.
 
 use super::*;
+use crate::test_support::{
+    create_directory_link, create_file_symlink, remove_directory_link, remove_file_symlink,
+    temp_test_dir, write_epub_with_descriptive_declarations,
+};
 use std::fs;
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RecordedDocumentSelectionFact {
@@ -74,124 +75,9 @@ impl DocumentSelectionObserver for RemoveDirectoryOnScanStartObserver {
     }
 }
 
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-document-selection-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
-
-/// Creates a directory link used to exercise the platform filesystem through selection.
-#[cfg(unix)]
-fn create_directory_link(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("test directory symlink should be creatable");
-}
-
-/// Creates a directory link without requiring Windows symbolic-link privileges.
-#[cfg(windows)]
-fn create_directory_link(target: &Path, link: &Path) {
-    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-        return;
-    }
-
-    let output = std::process::Command::new("cmd")
-        .args(["/c", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .expect("Windows junction command should run");
-    assert!(
-        output.status.success(),
-        "test directory link should be creatable: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// Removes a directory link without following it into its target.
-#[cfg(unix)]
-fn remove_directory_link(link: &Path) {
-    fs::remove_file(link).expect("test directory symlink should be removable");
-}
-
-/// Removes a Windows directory symlink or junction without following it.
-#[cfg(windows)]
-fn remove_directory_link(link: &Path) {
-    fs::remove_dir(link).expect("test directory link should be removable");
-}
-
-/// Creates a file symlink used to preserve nested supported-file eligibility.
-#[cfg(unix)]
-fn create_file_symlink(target: &Path, link: &Path) -> bool {
-    std::os::unix::fs::symlink(target, link).expect("test file symlink should be creatable");
-    true
-}
-
-/// Attempts to create a genuine Windows file symlink when the host permits it.
-#[cfg(windows)]
-fn create_file_symlink(target: &Path, link: &Path) -> bool {
-    std::os::windows::fs::symlink_file(target, link).is_ok()
-}
-
-/// Removes a file symlink without removing its target.
-fn remove_file_symlink(link: &Path) {
-    fs::remove_file(link).expect("test file symlink should be removable");
-}
-
-/// Writes a minimal EPUB whose declarations can be read by the production adapter.
-fn write_minimal_epub(path: &Path, author: &str, title: &str) {
-    let file = fs::File::create(path).expect("test EPUB should be creatable");
-    let mut archive = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default();
-
-    archive
-        .start_file("mimetype", options)
-        .expect("mimetype entry should start");
-    archive
-        .write_all(b"application/epub+zip")
-        .expect("mimetype should be writable");
-    archive
-        .start_file("META-INF/container.xml", options)
-        .expect("container entry should start");
-    archive
-        .write_all(
-            br#"<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>"#,
-        )
-        .expect("container should be writable");
-    archive
-        .start_file("OEBPS/content.opf", options)
-        .expect("OPF entry should start");
-    archive
-        .write_all(
-            format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="bookid">test-book</dc:identifier>
-    <dc:title>{title}</dc:title>
-    <dc:creator>{author}</dc:creator>
-  </metadata>
-  <manifest></manifest>
-  <spine></spine>
-</package>"#
-            )
-            .as_bytes(),
-        )
-        .expect("OPF should be writable");
-    archive.finish().expect("test EPUB should finish");
-}
-
 #[test]
 fn select_documents_reports_scanning_through_its_public_interface() {
-    let temp_dir = temp_test_dir("public-scan-progress");
+    let temp_dir = temp_test_dir("document-selection", "public-scan-progress");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(temp_dir.join("book.docx"), []).expect("test DOCX should be writable");
     fs::write(temp_dir.join("notes.txt"), []).expect("ignored file should be writable");
@@ -235,11 +121,11 @@ fn select_documents_reports_scanning_through_its_public_interface() {
 
 #[test]
 fn select_documents_reports_ordered_monotonic_phase_snapshots() {
-    let temp_dir = temp_test_dir("ordered-phase-snapshots");
+    let temp_dir = temp_test_dir("document-selection", "ordered-phase-snapshots");
     let epub_path = temp_dir.join("book.epub");
     let docx_path = temp_dir.join("document.docx");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
-    write_minimal_epub(&epub_path, "Test Author", "Magic Book");
+    write_epub_with_descriptive_declarations(&epub_path, "Test Author", "Magic Book");
     fs::write(docx_path, []).expect("test DOCX should be writable");
     let filter = EpubFilter {
         title: Some("magic".to_string()),
@@ -369,7 +255,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
 
 #[test]
 fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
-    let missing = temp_test_dir("missing-input").join("missing.docx");
+    let missing = temp_test_dir("document-selection", "missing-input").join("missing.docx");
     let mut observer = RecordingDocumentSelectionObserver::default();
 
     let selected = select_documents(
@@ -391,7 +277,7 @@ fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
 
 #[test]
 fn select_documents_reports_broken_requested_link_and_continues_to_supported_sibling() {
-    let temp_dir = temp_test_dir("broken-requested-link");
+    let temp_dir = temp_test_dir("document-selection", "broken-requested-link");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = temp_dir.join("broken-link");
     let unsupported_sibling = temp_dir.join("notes.txt");
@@ -457,7 +343,7 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
 /// Verifies that a nested inspection failure stays ordered inside active scanning.
 #[test]
 fn select_documents_reports_broken_nested_link_before_later_supported_input() {
-    let temp_dir = temp_test_dir("broken-nested-link");
+    let temp_dir = temp_test_dir("document-selection", "broken-nested-link");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -515,7 +401,7 @@ fn select_documents_reports_broken_nested_link_before_later_supported_input() {
 /// Verifies recursive inspection diagnoses one broken nested link at encounter position.
 #[test]
 fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() {
-    let temp_dir = temp_test_dir("recursive-broken-nested-link");
+    let temp_dir = temp_test_dir("document-selection", "recursive-broken-nested-link");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -571,7 +457,7 @@ fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() 
 /// Verifies an all-failed recursive scan still finishes with an explicit zero count.
 #[test]
 fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
-    let temp_dir = temp_test_dir("recursive-zero-after-failure");
+    let temp_dir = temp_test_dir("document-selection", "recursive-zero-after-failure");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -618,7 +504,7 @@ fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
 /// Verifies requested-root fallback and continuation when opening a directory fails.
 #[test]
 fn select_documents_reports_directory_open_failure_and_continues_to_supported_input() {
-    let temp_dir = temp_test_dir("directory-open-failure");
+    let temp_dir = temp_test_dir("document-selection", "directory-open-failure");
     let removed_directory = temp_dir.join("removed-before-open");
     let readable_sibling = temp_dir.join("readable.docx");
     fs::create_dir_all(&removed_directory).expect("requested directory should be creatable");
@@ -668,7 +554,7 @@ fn select_documents_reports_directory_open_failure_and_continues_to_supported_in
 /// Verifies recursive traversal reports a vanished root and continues to a later input.
 #[test]
 fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
-    let temp_dir = temp_test_dir("recursive-root-traversal-failure");
+    let temp_dir = temp_test_dir("document-selection", "recursive-root-traversal-failure");
     let removed_directory = temp_dir.join("removed-before-walk");
     let readable_sibling = temp_dir.join("readable.docx");
     fs::create_dir_all(&removed_directory).expect("requested directory should be creatable");
@@ -718,7 +604,7 @@ fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
 /// Verifies distinct recursive failures are each reported once in encounter order.
 #[test]
 fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
-    let temp_dir = temp_test_dir("ordered-recursive-failures");
+    let temp_dir = temp_test_dir("document-selection", "ordered-recursive-failures");
     let first_directory = temp_dir.join("first");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = first_directory.join("broken-link");
@@ -792,7 +678,7 @@ fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
 /// Verifies a broken recursive entry does not suppress a readable sibling candidate.
 #[test]
 fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
-    let temp_dir = temp_test_dir("recursive-readable-nested-sibling");
+    let temp_dir = temp_test_dir("document-selection", "recursive-readable-nested-sibling");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -837,7 +723,7 @@ fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
 /// Verifies that a supported nested file link remains eligible without recursive scanning.
 #[test]
 fn select_documents_keeps_nested_supported_file_link_eligible() {
-    let temp_dir = temp_test_dir("nested-supported-file-link");
+    let temp_dir = temp_test_dir("document-selection", "nested-supported-file-link");
     let requested_directory = temp_dir.join("requested");
     let target_directory = temp_dir.join("targets");
     let target = target_directory.join("target.docx");
@@ -900,7 +786,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
 /// Verifies recursive scanning still admits a nested link to a supported regular file.
 #[test]
 fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
-    let temp_dir = temp_test_dir("recursive-nested-supported-file-link");
+    let temp_dir = temp_test_dir("document-selection", "recursive-nested-supported-file-link");
     let requested_directory = temp_dir.join("requested");
     let target_directory = temp_dir.join("targets");
     let target = target_directory.join("target.docx");
@@ -955,7 +841,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
 
 #[test]
 fn select_documents_follows_requested_directory_link_during_recursive_scanning() {
-    let temp_dir = temp_test_dir("requested-directory-link");
+    let temp_dir = temp_test_dir("document-selection", "requested-directory-link");
     let target = temp_dir.join("target");
     let requested_link = temp_dir.join("requested-link");
     let linked_document = requested_link.join("linked.docx");
@@ -1005,7 +891,7 @@ fn select_documents_follows_requested_directory_link_during_recursive_scanning()
 /// Verifies recursive scanning does not widen scope through a nested directory link.
 #[test]
 fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
-    let temp_dir = temp_test_dir("recursive-nested-directory-link");
+    let temp_dir = temp_test_dir("document-selection", "recursive-nested-directory-link");
     let requested_directory = temp_dir.join("requested");
     let target_directory = temp_dir.join("target");
     let nested_link = requested_directory.join("nested-link");
@@ -1069,7 +955,7 @@ fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
 
 #[test]
 fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication() {
-    let temp_dir = temp_test_dir("filter-metadata-failure");
+    let temp_dir = temp_test_dir("document-selection", "filter-metadata-failure");
     let epub_path = temp_dir.join("invalid.epub");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(&epub_path, b"not an epub").expect("invalid EPUB should be writable");
@@ -1118,12 +1004,12 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
 
 #[test]
 fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish() {
-    let temp_dir = temp_test_dir("filter-diagnostic-order");
+    let temp_dir = temp_test_dir("document-selection", "filter-diagnostic-order");
     let invalid_epub = temp_dir.join("invalid.epub");
     let valid_epub = temp_dir.join("valid.epub");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(&invalid_epub, b"not an epub").expect("invalid EPUB should be writable");
-    write_minimal_epub(&valid_epub, "Test Author", "Magic Book");
+    write_epub_with_descriptive_declarations(&valid_epub, "Test Author", "Magic Book");
     let inputs = vec![invalid_epub.clone(), valid_epub];
     let filter = EpubFilter {
         title: Some("magic".to_string()),
@@ -1268,7 +1154,7 @@ fn resolves_output_dir_absolute_input() {
 
 #[test]
 fn select_documents_respects_recursive_scanning_through_its_public_interface() {
-    let temp_dir = temp_test_dir("collect-recursive");
+    let temp_dir = temp_test_dir("document-selection", "collect-recursive");
     let nested = temp_dir.join("nested");
     fs::create_dir_all(&nested).expect("nested test directory should be creatable");
     fs::write(temp_dir.join("root.docx"), []).expect("root docx should be writable");
@@ -1311,7 +1197,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
 
 #[test]
 fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
-    let temp_dir = temp_test_dir("skip-empty-filter");
+    let temp_dir = temp_test_dir("document-selection", "skip-empty-filter");
     let docx = temp_dir.join("doc.docx");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(&docx, []).expect("test DOCX should be writable");
@@ -1343,12 +1229,12 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
 
 #[test]
 fn select_documents_deduplicates_matching_readable_epub_declarations() {
-    let temp_dir = temp_test_dir("declaration-dedupe");
+    let temp_dir = temp_test_dir("document-selection", "declaration-dedupe");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     let first = temp_dir.join("first.epub");
     let second = temp_dir.join("second.epub");
-    write_minimal_epub(&first, "Shared Creator", "Shared Title");
-    write_minimal_epub(&second, "Shared Creator", "Shared Title");
+    write_epub_with_descriptive_declarations(&first, "Shared Creator", "Shared Title");
+    write_epub_with_descriptive_declarations(&second, "Shared Creator", "Shared Title");
 
     let mut observer = RecordingDocumentSelectionObserver::default();
     let selected = select_documents(
@@ -1380,7 +1266,7 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
 
 #[test]
 fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read() {
-    let temp_dir = temp_test_dir("dedupe-fallback");
+    let temp_dir = temp_test_dir("document-selection", "dedupe-fallback");
     let first_dir = temp_dir.join("first");
     let second_dir = temp_dir.join("second");
     fs::create_dir_all(&first_dir).expect("first test directory should be creatable");
@@ -1434,10 +1320,10 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
 
 #[test]
 fn select_documents_uses_declaration_derived_display_name() {
-    let temp_dir = temp_test_dir("selected-epub-identity");
+    let temp_dir = temp_test_dir("document-selection", "selected-epub-identity");
     let epub_path = temp_dir.join("sample.epub");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    write_minimal_epub(&epub_path, "Tester", "Magic Test");
+    write_epub_with_descriptive_declarations(&epub_path, "Tester", "Magic Test");
     let mut observer = RecordingDocumentSelectionObserver::default();
     let selected = select_documents(
         DocumentSelectionOptions {

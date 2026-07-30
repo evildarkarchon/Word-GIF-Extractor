@@ -11,6 +11,8 @@ mod extraction_run;
 mod extraction_run_intake;
 mod image_format;
 mod image_write_pipeline;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -490,15 +492,12 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use crate::extraction_run::{ConversionFacts, GifRoutingFacts};
+    use crate::test_support::{temp_test_dir, write_docx};
     use indicatif::{ProgressDrawTarget, TermLike};
     use std::fs;
     use std::io;
-    use std::io::Write as _;
     use std::num::NonZeroUsize;
-    use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use zip::write::SimpleFileOptions;
 
     #[derive(Debug, Default)]
     struct TerminalActivity {
@@ -693,31 +692,6 @@ mod tests {
                 self.warning_writes += activity.writes - writes;
             }
         }
-    }
-
-    /// Writes a DOCX fixture containing the supplied archive entries in order.
-    fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
-        let file = fs::File::create(path).expect("test DOCX should be creatable");
-        let mut zip = zip::ZipWriter::new(file);
-        for (name, data) in entries {
-            zip.start_file(*name, SimpleFileOptions::default())
-                .expect("ZIP entry should start");
-            zip.write_all(data)
-                .expect("ZIP entry payload should be writable");
-        }
-        zip.finish().expect("test DOCX should finish");
-    }
-
-    /// Returns an isolated temporary directory for one observer test.
-    fn observer_temp_test_dir(test_name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after Unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "word-image-extractor-observer-{test_name}-{}-{nanos}",
-            std::process::id()
-        ))
     }
 
     /// Builds one state-valid produced outcome through the production constructor.
@@ -1023,7 +997,7 @@ mod tests {
     /// Verifies a real recursive failure suspends and then normally completes the scan spinner.
     #[test]
     fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
-        let temp_dir = observer_temp_test_dir("recursive-suspension");
+        let temp_dir = temp_test_dir("observer", "recursive-suspension");
         let requested_directory = temp_dir.join("requested");
         fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
         let input = requested_directory.to_string_lossy().into_owned();
@@ -1064,7 +1038,7 @@ mod tests {
     /// compare against the transported value rather than restating any wording.
     #[test]
     fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progress() {
-        let temp_dir = observer_temp_test_dir("warning-presentation");
+        let temp_dir = temp_test_dir("observer", "warning-presentation");
         fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
         let document_path = temp_dir.join("warned.docx");
         let output_dir = temp_dir.join("output");

@@ -1,39 +1,10 @@
 //! Tests for the EPUB resource archive session.
 
 use super::*;
+use crate::test_support::{temp_epub_path, write_zip_archive};
 use std::cell::Cell;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
-
-/// Returns a unique local filesystem path for one resource archive test.
-fn temp_epub_path(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-resource-archive-{test_name}-{}-{nanos}.epub",
-        std::process::id()
-    ))
-}
-
-/// Writes a minimal ZIP payload containing the supplied resource entries.
-fn write_archive(path: &Path, entries: &[(&str, &[u8])]) {
-    let file = fs::File::create(path).expect("test EPUB should be creatable");
-    let mut archive = zip::ZipWriter::new(file);
-    for (name, data) in entries {
-        archive
-            .start_file(*name, SimpleFileOptions::default())
-            .expect("test resource entry should start");
-        archive
-            .write_all(data)
-            .expect("test resource payload should be writable");
-    }
-    archive.finish().expect("test EPUB should finish");
-}
+use std::path::Path;
 
 /// Marks the first central-directory entry encrypted so ZIP parsing still succeeds.
 fn mark_first_entry_encrypted(path: &Path) {
@@ -60,8 +31,8 @@ impl std::error::Error for ConsumerFailure {}
 
 #[test]
 fn exact_manifest_path_wins_before_percent_decoded_alias() {
-    let path = temp_epub_path("exact-before-decoded");
-    write_archive(
+    let path = temp_epub_path("resource-archive", "exact-before-decoded");
+    write_zip_archive(
         &path,
         &[
             ("OPS/image%20one.png", b"exact"),
@@ -98,8 +69,8 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
 
 #[test]
 fn percent_decoded_aliases_share_archive_resource_identity() {
-    let path = temp_epub_path("decoded-alias-identity");
-    write_archive(&path, &[("OPS/image one.png", b"shared")]);
+    let path = temp_epub_path("resource-archive", "decoded-alias-identity");
+    write_zip_archive(&path, &[("OPS/image one.png", b"shared")]);
     EpubResourceArchive::open(
         &path,
         &[
@@ -131,8 +102,8 @@ fn percent_decoded_aliases_share_archive_resource_identity() {
 
 #[test]
 fn unresolved_duplicate_manifest_paths_have_distinct_archive_resource_identities() {
-    let path = temp_epub_path("unresolved-identity");
-    write_archive(&path, &[("OPS/other.png", b"other")]);
+    let path = temp_epub_path("resource-archive", "unresolved-identity");
+    write_zip_archive(&path, &[("OPS/other.png", b"other")]);
     EpubResourceArchive::open(
         &path,
         &[
@@ -153,8 +124,8 @@ fn unresolved_duplicate_manifest_paths_have_distinct_archive_resource_identities
 
 #[test]
 fn resources_are_ordered_by_resolved_path_with_manifest_fallback() {
-    let path = temp_epub_path("deterministic-order");
-    write_archive(&path, &[("OPS/z.png", b"z"), ("OPS/a one.png", b"a")]);
+    let path = temp_epub_path("resource-archive", "deterministic-order");
+    write_zip_archive(&path, &[("OPS/z.png", b"z"), ("OPS/a one.png", b"a")]);
     EpubResourceArchive::open(
         &path,
         &[
@@ -174,8 +145,8 @@ fn resources_are_ordered_by_resolved_path_with_manifest_fallback() {
 
 #[test]
 fn resource_order_uses_manifest_id_ties_and_retains_equal_declaration_order() {
-    let path = temp_epub_path("deterministic-ties");
-    write_archive(&path, &[("OPS/resolved.png", b"resolved")]);
+    let path = temp_epub_path("resource-archive", "deterministic-ties");
+    write_zip_archive(&path, &[("OPS/resolved.png", b"resolved")]);
     EpubResourceArchive::open(
         &path,
         &[
@@ -220,8 +191,8 @@ fn resource_order_uses_manifest_id_ties_and_retains_equal_declaration_order() {
 
 #[test]
 fn invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure() {
-    let path = temp_epub_path("invalid-percent-encoding");
-    write_archive(&path, &[("OPS/other.png", b"other")]);
+    let path = temp_epub_path("resource-archive", "invalid-percent-encoding");
+    write_zip_archive(&path, &[("OPS/other.png", b"other")]);
     EpubResourceArchive::open(
         &path,
         &[EpubResourceDeclaration::new(
@@ -252,8 +223,8 @@ fn invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure() {
 
 #[test]
 fn malformed_percent_escape_is_retained_as_typed_acquisition_failure() {
-    let path = temp_epub_path("malformed-percent-escape");
-    write_archive(&path, &[("OPS/other.png", b"other")]);
+    let path = temp_epub_path("resource-archive", "malformed-percent-escape");
+    write_zip_archive(&path, &[("OPS/other.png", b"other")]);
     EpubResourceArchive::open(
         &path,
         &[EpubResourceDeclaration::new(
@@ -284,8 +255,8 @@ fn malformed_percent_escape_is_retained_as_typed_acquisition_failure() {
 
 #[test]
 fn unopenable_resource_is_nonfatal_and_does_not_invoke_its_consumer() {
-    let path = temp_epub_path("unopenable-entry");
-    write_archive(&path, &[("OPS/image.png", b"payload")]);
+    let path = temp_epub_path("resource-archive", "unopenable-entry");
+    write_zip_archive(&path, &[("OPS/image.png", b"payload")]);
     mark_first_entry_encrypted(&path);
 
     EpubResourceArchive::open(
@@ -315,8 +286,8 @@ fn unopenable_resource_is_nonfatal_and_does_not_invoke_its_consumer() {
 
 #[test]
 fn consumer_failure_propagates_with_its_concrete_error_identity() {
-    let path = temp_epub_path("consumer-failure");
-    write_archive(&path, &[("OPS/image.png", b"payload")]);
+    let path = temp_epub_path("resource-archive", "consumer-failure");
+    write_zip_archive(&path, &[("OPS/image.png", b"payload")]);
 
     let error = EpubResourceArchive::open(
         &path,
@@ -340,8 +311,8 @@ fn consumer_failure_propagates_with_its_concrete_error_identity() {
 
 #[test]
 fn catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session() {
-    let path = temp_epub_path("lazy-repeatable");
-    write_archive(&path, &[("OPS/image.png", b"payload")]);
+    let path = temp_epub_path("resource-archive", "lazy-repeatable");
+    write_zip_archive(&path, &[("OPS/image.png", b"payload")]);
     let consumer_calls = Cell::new(0);
 
     EpubResourceArchive::open(

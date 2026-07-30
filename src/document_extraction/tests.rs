@@ -2,127 +2,16 @@
 
 use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
-use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
-    DocumentSelectionProgress, EpubFilter, select_documents,
-};
+use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+use crate::test_support::{
+    SilentDocumentSelectionObserver, temp_test_dir, write_docx, write_epub_fixture,
+    write_epub_image, write_epub_with_resources,
+};
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
-
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-document-extraction-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
-
-/// Writes a DOCX fixture containing the supplied archive entries in order.
-fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
-    let file = fs::File::create(path).expect("test DOCX should be creatable");
-    let mut zip = zip::ZipWriter::new(file);
-    for (entry_name, data) in entries {
-        zip.start_file(*entry_name, SimpleFileOptions::default())
-            .expect("ZIP entry should start");
-        zip.write_all(data)
-            .expect("ZIP entry payload should be writable");
-    }
-    zip.finish().expect("test DOCX should finish");
-}
-
-/// Writes an EPUB fixture with one declared image and optional cover property.
-fn write_epub(path: &Path, image_href: &str, properties: Option<&str>, data: &[u8]) {
-    let archive_path = format!("OEBPS/{image_href}");
-    write_epub_fixture(
-        path,
-        &[("image", image_href, "image/jpeg", properties)],
-        &[(archive_path.as_str(), data)],
-    );
-}
-
-/// Writes an EPUB fixture whose declaration and available payloads vary independently.
-fn write_epub_with_resources(
-    path: &Path,
-    image_href: &str,
-    properties: Option<&str>,
-    archive_resources: &[(&str, &[u8])],
-) {
-    write_epub_fixture(
-        path,
-        &[("image", image_href, "image/jpeg", properties)],
-        archive_resources,
-    );
-}
-
-/// Writes a real EPUB ZIP whose manifest declarations and payloads vary independently.
-fn write_epub_fixture(
-    path: &Path,
-    manifest_resources: &[(&str, &str, &str, Option<&str>)],
-    archive_resources: &[(&str, &[u8])],
-) {
-    let file = fs::File::create(path).expect("test EPUB should be creatable");
-    let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default();
-    zip.start_file("mimetype", options)
-        .expect("mimetype entry should start");
-    zip.write_all(b"application/epub+zip")
-        .expect("mimetype should be writable");
-    zip.start_file("META-INF/container.xml", options)
-        .expect("container entry should start");
-    zip.write_all(
-        br#"<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
-</container>"#,
-    )
-    .expect("container should be writable");
-    let resource_items = manifest_resources
-        .iter()
-        .map(|(id, href, mime, properties)| {
-            let properties = properties
-                .map(|value| format!(" properties=\"{value}\""))
-                .unwrap_or_default();
-            format!("    <item id=\"{id}\" href=\"{href}\" media-type=\"{mime}\"{properties}/>")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let opf = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="bookid">test-book</dc:identifier><dc:title>Test</dc:title>
-  </metadata>
-  <manifest>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-{resource_items}
-  </manifest>
-  <spine><itemref idref="nav"/></spine>
-</package>"#
-    );
-    zip.start_file("OEBPS/content.opf", options)
-        .expect("OPF entry should start");
-    zip.write_all(opf.as_bytes())
-        .expect("OPF should be writable");
-    zip.start_file("OEBPS/nav.xhtml", options)
-        .expect("nav entry should start");
-    zip.write_all(b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body/></html>")
-        .expect("nav should be writable");
-    for (archive_path, data) in archive_resources {
-        zip.start_file(*archive_path, options)
-            .expect("image entry should start");
-        zip.write_all(data).expect("image should be writable");
-    }
-    zip.finish().expect("test EPUB should finish");
-}
+use std::path::Path;
 
 /// Constructs a production Conversion policy for operation-level fixtures.
 fn conversion_policy(target: ConversionTarget) -> ConversionPolicy {
@@ -141,17 +30,6 @@ fn warning_messages(facts: &DocumentExtractionFacts) -> Vec<&str> {
         .iter()
         .map(DocumentExtractionWarning::get_message)
         .collect()
-}
-
-#[derive(Default)]
-struct SilentDocumentSelectionObserver;
-
-impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
-    /// Ignores progress facts that are outside this extraction-focused test seam.
-    fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
-
-    /// Ignores diagnostics because the fixtures in these tests are readable.
-    fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
 }
 
 /// Obtains one extraction handoff through the production Document selection operation.
@@ -174,7 +52,7 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
 
 #[test]
 fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
-    let temp_dir = temp_test_dir("docx-normal-images");
+    let temp_dir = temp_test_dir("document-extraction", "docx-normal-images");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
@@ -210,7 +88,7 @@ fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
 
 #[test]
 fn failed_extraction_retains_document_extraction_facts() {
-    let temp_dir = temp_test_dir("partial-failure");
+    let temp_dir = temp_test_dir("document-extraction", "partial-failure");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
@@ -261,7 +139,7 @@ fn failed_extraction_retains_document_extraction_facts() {
 
 #[test]
 fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phase_order() {
-    let temp_dir = temp_test_dir("docx-warning-bodies");
+    let temp_dir = temp_test_dir("document-extraction", "docx-warning-bodies");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
@@ -311,7 +189,7 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
 
 #[test]
 fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
-    let temp_dir = temp_test_dir("epub-cover-discovery-warning-bodies");
+    let temp_dir = temp_test_dir("document-extraction", "epub-cover-discovery-warning-bodies");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
 
     let unidentified_path = temp_dir.join("unidentified.epub");
@@ -384,7 +262,10 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
 
 #[test]
 fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
-    let temp_dir = temp_test_dir("epub-cover-conversion-warning-bodies");
+    let temp_dir = temp_test_dir(
+        "document-extraction",
+        "epub-cover-conversion-warning-bodies",
+    );
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
 
     let unsupported_path = temp_dir.join("unsupported.epub");
@@ -460,7 +341,7 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
 
 #[test]
 fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() {
-    let temp_dir = temp_test_dir("epub-cover-retry-warning-bodies");
+    let temp_dir = temp_test_dir("document-extraction", "epub-cover-retry-warning-bodies");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
@@ -510,11 +391,11 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
 
 #[test]
 fn epub_cover_output_is_not_classified_as_normal_images() {
-    let temp_dir = temp_test_dir("epub-cover-purpose");
+    let temp_dir = temp_test_dir("document-extraction", "epub-cover-purpose");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
-    write_epub(
+    write_epub_image(
         &input_path,
         "images/art.jpg",
         Some("cover-image"),
@@ -545,11 +426,11 @@ fn epub_cover_output_is_not_classified_as_normal_images() {
 
 #[test]
 fn epub_cover_fallback_is_classified_as_normal_images() {
-    let temp_dir = temp_test_dir("epub-fallback-purpose");
+    let temp_dir = temp_test_dir("document-extraction", "epub-fallback-purpose");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
-    write_epub(&input_path, "images/interior.jpg", None, b"\xFF\xD8\xFF");
+    write_epub_image(&input_path, "images/interior.jpg", None, b"\xFF\xD8\xFF");
     let extraction = DocumentExtraction::new(
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: true,
@@ -575,11 +456,11 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
 
 #[test]
 fn normal_policy_extracts_epub_images_through_document_extraction() {
-    let temp_dir = temp_test_dir("epub-normal-images");
+    let temp_dir = temp_test_dir("document-extraction", "epub-normal-images");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
-    write_epub(
+    write_epub_image(
         &input_path,
         "images/interior.jpg",
         Some("cover-image"),
@@ -608,7 +489,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
 
 #[test]
 fn retained_epub_declarations_are_authoritative_during_extraction() {
-    let temp_dir = temp_test_dir("retained-epub-declarations");
+    let temp_dir = temp_test_dir("document-extraction", "retained-epub-declarations");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
     let selected_payload = b"\xFF\xD8\xFFselected";
@@ -668,7 +549,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
 
 #[test]
 fn selection_declaration_failure_is_retried_without_revising_selected_identity() {
-    let temp_dir = temp_test_dir("retry-epub-declarations");
+    let temp_dir = temp_test_dir("document-extraction", "retry-epub-declarations");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
@@ -686,7 +567,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_display_name(), "sample.epub");
 
-    write_epub(
+    write_epub_image(
         &input_path,
         "images/recovered.jpg",
         None,

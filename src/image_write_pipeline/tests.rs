@@ -2,10 +2,10 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
+use crate::test_support::temp_test_dir;
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR";
 
@@ -162,17 +162,6 @@ impl Read for AssertOutputBeforeTailReader {
     }
 }
 
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-pipeline-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
-
 /// Writes buffered test fixtures through the scoped production reader seam.
 fn write_sources(
     pipeline: &ImageWritePipeline,
@@ -207,7 +196,7 @@ fn mime_source(
 /// Proves required-cover path exclusion, JPEG fallback, and complete payload reuse.
 #[test]
 fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
-    let temp_dir = temp_test_dir("required-cover-default-jpeg");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-default-jpeg");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Jpg]),
         None,
@@ -251,7 +240,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
 
 #[test]
 fn required_cover_filter_is_final_and_reads_only_bounded_evidence() {
-    let temp_dir = temp_test_dir("required-cover-filter");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-filter");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -289,7 +278,7 @@ fn required_cover_filter_is_final_and_reads_only_bounded_evidence() {
 
 #[test]
 fn required_cover_tail_read_failure_is_retryable_and_preserves_warning_order() {
-    let temp_dir = temp_test_dir("required-cover-tail-failure");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-tail-failure");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Jpg]),
         None,
@@ -328,7 +317,7 @@ fn required_cover_tail_read_failure_is_retryable_and_preserves_warning_order() {
 
 #[test]
 fn required_cover_conversion_skip_is_final_and_writes_nothing() {
-    let temp_dir = temp_test_dir("required-cover-conversion-skip");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-skip");
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
@@ -365,7 +354,7 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
 
 #[test]
 fn required_cover_conversion_failure_is_final_and_writes_nothing() {
-    let temp_dir = temp_test_dir("required-cover-conversion-failure");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-failure");
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
@@ -401,7 +390,7 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
 
 #[test]
 fn required_gif_cover_routes_without_conversion() {
-    let temp_dir = temp_test_dir("required-cover-gif-routing");
+    let temp_dir = temp_test_dir("pipeline", "required-cover-gif-routing");
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
     let pipeline = pipeline_with_conversion(
@@ -439,7 +428,7 @@ fn required_gif_cover_routes_without_conversion() {
 /// Verifies every magic signature through emission using literal expected extensions.
 #[test]
 fn magic_evidence_identifies_and_emits_every_supported_format() {
-    let temp_dir = temp_test_dir("all-magic-formats");
+    let temp_dir = temp_test_dir("pipeline", "all-magic-formats");
     let pipeline =
         ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
 
@@ -474,7 +463,7 @@ fn magic_evidence_identifies_and_emits_every_supported_format() {
 
 #[test]
 fn magic_evidence_outranks_conflicting_extension_and_mime() {
-    let temp_dir = temp_test_dir("magic-precedence");
+    let temp_dir = temp_test_dir("pipeline", "magic-precedence");
     let pipeline =
         ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
 
@@ -500,7 +489,7 @@ fn magic_evidence_outranks_conflicting_extension_and_mime() {
 
 #[test]
 fn accepted_source_reuses_evidence_prefix_and_completes_payload_incrementally() {
-    let temp_dir = temp_test_dir("normal-images");
+    let temp_dir = temp_test_dir("pipeline", "normal-images");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -536,7 +525,7 @@ fn accepted_source_reuses_evidence_prefix_and_completes_payload_incrementally() 
 
 #[test]
 fn unidentified_normal_source_is_silent_and_reads_only_bounded_evidence() {
-    let temp_dir = temp_test_dir("bounded-discovery");
+    let temp_dir = temp_test_dir("pipeline", "bounded-discovery");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -566,7 +555,7 @@ fn unidentified_normal_source_is_silent_and_reads_only_bounded_evidence() {
 
 #[test]
 fn filtered_source_reads_only_format_evidence_through_pipeline_interface() {
-    let temp_dir = temp_test_dir("bounded-format-filter");
+    let temp_dir = temp_test_dir("pipeline", "bounded-format-filter");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -598,7 +587,7 @@ fn filtered_source_reads_only_format_evidence_through_pipeline_interface() {
 
 #[test]
 fn failed_normal_emission_does_not_report_normal_output() {
-    let temp_dir = temp_test_dir("failed-normal-emission-purpose");
+    let temp_dir = temp_test_dir("pipeline", "failed-normal-emission-purpose");
     let blocked_output = temp_dir.join("not-a-directory");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(&blocked_output, b"occupied").expect("blocking file should be creatable");
@@ -625,7 +614,7 @@ fn failed_normal_emission_does_not_report_normal_output() {
 /// Pins extension-fallback warning order when later payload acquisition fails.
 #[test]
 fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
-    let temp_dir = temp_test_dir("tail-read-failure");
+    let temp_dir = temp_test_dir("pipeline", "tail-read-failure");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -676,7 +665,7 @@ fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
 
 #[test]
 fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
-    let temp_dir = temp_test_dir("svg-evidence-window");
+    let temp_dir = temp_test_dir("pipeline", "svg-evidence-window");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Svg]),
         None,
@@ -704,7 +693,7 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
 /// Rejects an SVG marker beginning immediately after the bounded evidence prefix.
 #[test]
 fn bom_prefixed_svg_beyond_evidence_window_is_not_discovered() {
-    let temp_dir = temp_test_dir("svg-beyond-evidence-window");
+    let temp_dir = temp_test_dir("pipeline", "svg-beyond-evidence-window");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Svg]),
         None,
@@ -736,7 +725,7 @@ fn bom_prefixed_svg_beyond_evidence_window_is_not_discovered() {
 
 #[test]
 fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
-    let temp_dir = temp_test_dir("phase-ordered-warnings");
+    let temp_dir = temp_test_dir("pipeline", "phase-ordered-warnings");
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Svg, ImageFormat::Png]),
         ConversionTarget::Png,
@@ -786,7 +775,7 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
 
 #[test]
 fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
-    let temp_dir = temp_test_dir("two-image-lookahead");
+    let temp_dir = temp_test_dir("pipeline", "two-image-lookahead");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -823,7 +812,7 @@ fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
 fn concurrent_image_emissions_preserve_every_payload() {
     const WRITER_COUNT: usize = 32;
 
-    let temp_dir = temp_test_dir("concurrent-emissions");
+    let temp_dir = temp_test_dir("pipeline", "concurrent-emissions");
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITER_COUNT));
     let mut expected_payloads = Vec::new();
     let mut writers = Vec::new();
@@ -887,7 +876,7 @@ fn concurrent_image_emissions_preserve_every_payload() {
 
 #[test]
 fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
-    let temp_dir = temp_test_dir("existing-output");
+    let temp_dir = temp_test_dir("pipeline", "existing-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     fs::write(temp_dir.join("shared.png"), b"existing")
         .expect("existing output should be writable");
@@ -921,7 +910,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
 /// Proves extension evidence outranks MIME and returns the exact fallback warning.
 #[test]
 fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
-    let temp_dir = temp_test_dir("extension-fallback");
+    let temp_dir = temp_test_dir("pipeline", "extension-fallback");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -958,7 +947,7 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
 
 #[test]
 fn unsafe_normal_sources_are_skipped_without_creating_output() {
-    let temp_dir = temp_test_dir("unsafe-source");
+    let temp_dir = temp_test_dir("pipeline", "unsafe-source");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -985,7 +974,7 @@ fn unsafe_normal_sources_are_skipped_without_creating_output() {
 
 #[test]
 fn unsafe_source_is_rejected_before_its_reader_is_touched() {
-    let temp_dir = temp_test_dir("unsafe-source-zero-read");
+    let temp_dir = temp_test_dir("pipeline", "unsafe-source-zero-read");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -1011,7 +1000,7 @@ fn unsafe_source_is_rejected_before_its_reader_is_touched() {
 
 #[test]
 fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
-    let temp_dir = temp_test_dir("unreadable-source-eligibility");
+    let temp_dir = temp_test_dir("pipeline", "unreadable-source-eligibility");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,
@@ -1049,7 +1038,7 @@ fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
 
 #[test]
 fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
-    let temp_dir = temp_test_dir("normal-conversion-skip");
+    let temp_dir = temp_test_dir("pipeline", "normal-conversion-skip");
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
@@ -1088,7 +1077,7 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
 
 #[test]
 fn normal_conversion_failure_writes_original_and_counts_skip() {
-    let temp_dir = temp_test_dir("normal-conversion-failure");
+    let temp_dir = temp_test_dir("pipeline", "normal-conversion-failure");
     let original = b"\x89PNG\r\n\x1A\nnot a valid png".to_vec();
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Png]),
@@ -1118,7 +1107,7 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
 
 #[test]
 fn matching_conversion_target_preserves_original_without_conversion_count() {
-    let temp_dir = temp_test_dir("matching-conversion-target");
+    let temp_dir = temp_test_dir("pipeline", "matching-conversion-target");
     let original = b"accepted through extension fallback".to_vec();
     let pipeline = pipeline_with_conversion(
         HashSet::from([ImageFormat::Png]),
@@ -1151,7 +1140,7 @@ fn matching_conversion_target_preserves_original_without_conversion_count() {
 /// Verifies routed GIF emission retains exact bytes and complete count semantics.
 #[test]
 fn routed_gif_bypasses_conversion() {
-    let temp_dir = temp_test_dir("gif-routing");
+    let temp_dir = temp_test_dir("pipeline", "gif-routing");
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
     let original = b"GIF89a routed payload".to_vec();
@@ -1182,7 +1171,7 @@ fn routed_gif_bypasses_conversion() {
 
 #[test]
 fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
-    let temp_dir = temp_test_dir("mime-source");
+    let temp_dir = temp_test_dir("pipeline", "mime-source");
     let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
         HashSet::from([ImageFormat::Png]),
         None,

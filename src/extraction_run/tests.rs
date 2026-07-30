@@ -7,13 +7,13 @@ use crate::document_selection::{
     DocumentSelectionScanScope,
 };
 use crate::extraction_run_intake;
+use crate::test_support::{
+    create_directory_link, remove_directory_link, temp_test_dir, write_docx, write_epub_document,
+};
 use clap::Parser;
 use image::DynamicImage;
 use std::fs;
-use std::io::{Cursor, Write};
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
+use std::io::Cursor;
 
 /// Records every live fact observed through the production run seam.
 #[derive(Default)]
@@ -73,122 +73,6 @@ fn assert_single_terminal_observation(
     );
 }
 
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-run-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
-
-/// Creates a directory link used to induce a nested discovery inspection failure.
-#[cfg(unix)]
-fn create_directory_link(target: &Path, link: &Path) {
-    std::os::unix::fs::symlink(target, link).expect("test directory symlink should be creatable");
-}
-
-/// Creates a directory link without requiring Windows symbolic-link privileges.
-#[cfg(windows)]
-fn create_directory_link(target: &Path, link: &Path) {
-    if std::os::windows::fs::symlink_dir(target, link).is_ok() {
-        return;
-    }
-
-    let output = std::process::Command::new("cmd")
-        .args(["/c", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .expect("Windows junction command should run");
-    assert!(
-        output.status.success(),
-        "test directory link should be creatable: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// Removes a directory link without following it into its target.
-#[cfg(unix)]
-fn remove_directory_link(link: &Path) {
-    fs::remove_file(link).expect("test directory symlink should be removable");
-}
-
-/// Removes a Windows directory symlink or junction without following it.
-#[cfg(windows)]
-fn remove_directory_link(link: &Path) {
-    fs::remove_dir(link).expect("test directory link should be removable");
-}
-
-/// Writes a DOCX fixture containing the supplied archive entries in order.
-fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
-    let file = fs::File::create(path).expect("test DOCX should be creatable");
-    let mut zip = zip::ZipWriter::new(file);
-    for (name, data) in entries {
-        zip.start_file(*name, SimpleFileOptions::default())
-            .expect("ZIP entry should start");
-        zip.write_all(data)
-            .expect("ZIP entry payload should be writable");
-    }
-    zip.finish().expect("test DOCX should finish");
-}
-
-/// Writes an EPUB fixture with declaration-derived identity and an optional image.
-fn write_epub(path: &Path, creator: &str, title: &str, image: Option<(&str, &[u8], bool)>) {
-    let file = fs::File::create(path).expect("test EPUB should be creatable");
-    let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default();
-    zip.start_file("mimetype", options)
-        .expect("mimetype entry should start");
-    zip.write_all(b"application/epub+zip")
-        .expect("mimetype should be writable");
-    zip.start_file("META-INF/container.xml", options)
-        .expect("container entry should start");
-    zip.write_all(
-        br#"<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
-</container>"#,
-    )
-    .expect("container should be writable");
-    let manifest_item = match image {
-        Some((name, _, true)) => format!(
-            r#"<item id="image" href="images/{name}" media-type="image/jpeg" properties="cover-image"/>"#
-        ),
-        Some((name, _, false)) => {
-            format!(r#"<item id="image" href="images/{name}" media-type="image/jpeg"/>"#)
-        }
-        None => String::new(),
-    };
-    let opf = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:identifier id="bookid">test-book</dc:identifier>
-    <dc:title>{title}</dc:title>
-    <dc:creator>{creator}</dc:creator>
-  </metadata>
-  <manifest>
-    {manifest_item}
-  </manifest>
-  <spine></spine>
-</package>"#
-    );
-    zip.start_file("OEBPS/content.opf", options)
-        .expect("OPF entry should start");
-    zip.write_all(opf.as_bytes())
-        .expect("OPF should be writable");
-    if let Some((name, data, _)) = image {
-        zip.start_file(format!("OEBPS/images/{name}"), options)
-            .expect("image entry should start");
-        zip.write_all(data)
-            .expect("image payload should be writable");
-    }
-    zip.finish().expect("test EPUB should finish");
-}
-
 /// Encodes a valid PNG payload for run-level conversion assertions.
 fn valid_png() -> Vec<u8> {
     let mut cursor = Cursor::new(Vec::new());
@@ -200,7 +84,7 @@ fn valid_png() -> Vec<u8> {
 
 #[test]
 fn no_selected_documents_returns_no_documents_outcome() {
-    let temp_dir = temp_test_dir("no-documents");
+    let temp_dir = temp_test_dir("run", "no-documents");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input = temp_dir.to_string_lossy().into_owned();
     let args = Args::try_parse_from(["test", input.as_str()]).expect("test arguments should parse");
@@ -223,7 +107,7 @@ fn no_selected_documents_returns_no_documents_outcome() {
 
 #[test]
 fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
-    let temp_dir = temp_test_dir("all-failed-requested-inputs");
+    let temp_dir = temp_test_dir("run", "all-failed-requested-inputs");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let first_failed_path = temp_dir.join("first\0input.docx");
     let second_failed_path = temp_dir.join("second\0input.epub");
@@ -279,7 +163,7 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
 /// Verifies in-scan discovery diagnostics retain their order through the run seam.
 #[test]
 fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream() {
-    let temp_dir = temp_test_dir("nested-discovery-failure");
+    let temp_dir = temp_test_dir("run", "nested-discovery-failure");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -346,7 +230,7 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
 /// Verifies recursive discovery diagnostics retain order in the unified run stream.
 #[test]
 fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
-    let temp_dir = temp_test_dir("recursive-nested-discovery-failure");
+    let temp_dir = temp_test_dir("run", "recursive-nested-discovery-failure");
     let requested_directory = temp_dir.join("requested");
     let removed_target = temp_dir.join("removed-target");
     let broken_link = requested_directory.join("broken-link");
@@ -426,7 +310,7 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
 
 #[test]
 fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_stream() {
-    let temp_dir = temp_test_dir("selection-extraction-boundary");
+    let temp_dir = temp_test_dir("run", "selection-extraction-boundary");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let missing_path = temp_dir.join("missing.docx");
     let input_path = temp_dir.join("sample.docx");
@@ -517,7 +401,7 @@ fn produced_outcome_rejects_inconsistent_semantic_totals() {
 
 #[test]
 fn selected_document_without_images_returns_image_no_output() {
-    let temp_dir = temp_test_dir("image-no-output");
+    let temp_dir = temp_test_dir("run", "image-no-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("empty.docx");
     let output_dir = temp_dir.join("output");
@@ -544,11 +428,11 @@ fn selected_document_without_images_returns_image_no_output() {
 
 #[test]
 fn selected_epub_without_a_cover_returns_cover_no_output() {
-    let temp_dir = temp_test_dir("cover-no-output");
+    let temp_dir = temp_test_dir("run", "cover-no-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("empty.epub");
     let output_dir = temp_dir.join("output");
-    write_epub(&input_path, "Test Creator", "No Cover", None);
+    write_epub_document(&input_path, "Test Creator", "No Cover", None);
 
     let request = prepare_request(vec![
         "test".to_string(),
@@ -572,7 +456,7 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 
 #[test]
 fn normal_document_output_returns_produced_images() {
-    let temp_dir = temp_test_dir("normal-output");
+    let temp_dir = temp_test_dir("run", "normal-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
@@ -604,11 +488,11 @@ fn normal_document_output_returns_produced_images() {
 
 #[test]
 fn epub_normal_fallback_is_classified_as_images() {
-    let temp_dir = temp_test_dir("normal-fallback-output");
+    let temp_dir = temp_test_dir("run", "normal-fallback-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("fallback.epub");
     let output_dir = temp_dir.join("output");
-    write_epub(
+    write_epub_document(
         &input_path,
         "Test Creator",
         "Fallback",
@@ -634,7 +518,7 @@ fn epub_normal_fallback_is_classified_as_images() {
 
 #[test]
 fn requested_conversion_retains_valid_zero_totals() {
-    let temp_dir = temp_test_dir("zero-conversion-totals");
+    let temp_dir = temp_test_dir("run", "zero-conversion-totals");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("matching.docx");
     let output_dir = temp_dir.join("output");
@@ -662,7 +546,7 @@ fn requested_conversion_retains_valid_zero_totals() {
 
 #[test]
 fn routed_gif_retains_its_count_and_destination() {
-    let temp_dir = temp_test_dir("gif-routing");
+    let temp_dir = temp_test_dir("run", "gif-routing");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("animation.docx");
     let output_dir = temp_dir.join("output");
@@ -691,7 +575,7 @@ fn routed_gif_retains_its_count_and_destination() {
 
 #[test]
 fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
-    let temp_dir = temp_test_dir("document-fact-aggregation");
+    let temp_dir = temp_test_dir("run", "document-fact-aggregation");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
@@ -737,10 +621,10 @@ fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
 
 #[test]
 fn epub_identity_is_consistent_across_normal_and_cover_runs() {
-    let temp_dir = temp_test_dir("epub-identity-across-policies");
+    let temp_dir = temp_test_dir("run", "epub-identity-across-policies");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("filename.epub");
-    write_epub(
+    write_epub_document(
         &input_path,
         "Test Creator",
         "Declared Title",
@@ -817,7 +701,7 @@ fn epub_identity_is_consistent_across_normal_and_cover_runs() {
 
 #[test]
 fn run_retains_partial_facts_and_continues_after_document_failure() {
-    let temp_dir = temp_test_dir("partial-failure-continuation");
+    let temp_dir = temp_test_dir("run", "partial-failure-continuation");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let failing_path = temp_dir.join("failing.docx");
     let succeeding_path = temp_dir.join("succeeding.docx");
@@ -932,7 +816,7 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
 /// carried value, its path, its multiplicity, and its observation position.
 #[test]
 fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
-    let temp_dir = temp_test_dir("opaque-warning-transport");
+    let temp_dir = temp_test_dir("run", "opaque-warning-transport");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let first_path = temp_dir.join("first.docx");
     let second_path = temp_dir.join("second.docx");

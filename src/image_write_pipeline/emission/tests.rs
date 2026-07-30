@@ -1,23 +1,11 @@
 //! Tests for collision-safe Image file emission.
 
 use super::*;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Returns a unique local filesystem directory for one emission test.
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-emission-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
+use crate::test_support::temp_test_dir;
 
 #[test]
 fn write_failure_removes_the_reserved_partial_file() {
-    let temp_dir = temp_test_dir("partial-cleanup");
+    let temp_dir = temp_test_dir("emission", "partial-cleanup");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let output_path = temp_dir.join("sample.png");
     let file = OpenOptions::new()
@@ -42,7 +30,7 @@ fn write_failure_removes_the_reserved_partial_file() {
 
 #[test]
 fn cleanup_failure_is_reported_with_the_original_write_failure() {
-    let temp_dir = temp_test_dir("cleanup-failure");
+    let temp_dir = temp_test_dir("emission", "cleanup-failure");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let output_path = temp_dir.join("sample.png");
     let file = OpenOptions::new()

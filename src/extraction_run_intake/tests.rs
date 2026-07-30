@@ -1,54 +1,16 @@
 //! Tests for turning parsed user options into one ready Extraction run request.
 
 use super::*;
-use crate::extraction_run::{
-    ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
-    ProducedOutput, run,
-};
+use crate::extraction_run::{ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput, run};
+use crate::test_support::{SilentExtractionRunObserver, temp_test_dir, write_docx};
 use clap::Parser;
 use image::DynamicImage;
 use std::fs;
-use std::io::{Cursor, Write};
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
+use std::io::Cursor;
 
 fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
     let args = Args::try_parse_from(args).expect("test args should parse");
     prepare(args).expect("extraction run intake should succeed")
-}
-
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-intake-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
-
-/// Ignores the live run timeline in intake-focused outcome tests.
-#[derive(Default)]
-struct SilentExtractionRunObserver;
-
-impl ExtractionRunObserver for SilentExtractionRunObserver {
-    /// Ignores live observations because intake tests assert files and semantic outcomes.
-    fn on_observation(&mut self, _observation: ExtractionRunObservation) {}
-}
-
-/// Writes one DOCX fixture containing the supplied archive sources.
-fn write_docx(input_path: &Path, sources: Vec<(&str, Vec<u8>)>) {
-    let file = fs::File::create(input_path).expect("test DOCX should be creatable");
-    let mut zip = zip::ZipWriter::new(file);
-    for (name, data) in sources {
-        zip.start_file(name, SimpleFileOptions::default())
-            .expect("ZIP entry should start");
-        zip.write_all(&data)
-            .expect("ZIP entry payload should be writable");
-    }
-    zip.finish().expect("test DOCX should finish");
 }
 
 /// Prepares and executes one archive-backed DOCX request through the public operation seam.
@@ -57,11 +19,15 @@ fn run_docx(
     sources: Vec<(&str, Vec<u8>)>,
     extra_args: &[&str],
 ) -> (PreparedExtractionRun, PathBuf, PathBuf) {
-    let temp_dir = temp_test_dir(test_name);
+    let temp_dir = temp_test_dir("intake", test_name);
     let input_path = temp_dir.join("input.docx");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    write_docx(&input_path, sources);
+    let entries: Vec<(&str, &[u8])> = sources
+        .iter()
+        .map(|(name, data)| (*name, data.as_slice()))
+        .collect();
+    write_docx(&input_path, &entries);
 
     let input = input_path.to_string_lossy().into_owned();
     let output = output_dir.to_string_lossy().into_owned();
@@ -99,19 +65,13 @@ fn valid_png() -> Vec<u8> {
 
 #[test]
 fn combines_positional_and_named_inputs() {
-    let temp_dir = temp_test_dir("combined-inputs");
+    let temp_dir = temp_test_dir("intake", "combined-inputs");
     let first = temp_dir.join("first.docx");
     let second = temp_dir.join("second.docx");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    write_docx(
-        &first,
-        vec![("word/media/first.png", b"\x89PNG\r\n\x1A\n".to_vec())],
-    );
-    write_docx(
-        &second,
-        vec![("word/media/second.png", b"\x89PNG\r\n\x1A\n".to_vec())],
-    );
+    write_docx(&first, &[("word/media/first.png", b"\x89PNG\r\n\x1A\n")]);
+    write_docx(&second, &[("word/media/second.png", b"\x89PNG\r\n\x1A\n")]);
     let args = Args::try_parse_from([
         "test",
         first.to_string_lossy().as_ref(),
