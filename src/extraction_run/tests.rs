@@ -1,12 +1,11 @@
 //! Tests for the extraction run workflow.
 
 use super::*;
-use crate::Args;
 use crate::document_selection::{
     DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
     DocumentSelectionScanScope,
 };
-use crate::extraction_run_intake;
+use crate::extraction_run_intake::{self, Args};
 use crate::test_support::{
     create_directory_link, remove_directory_link, temp_test_dir, write_docx, write_epub_document,
 };
@@ -28,13 +27,24 @@ impl ExtractionRunObserver for RecordingRunObserver {
     }
 }
 
-/// Prepares one production request and asserts that no pre-run notice applies.
-fn prepare_request(arguments: Vec<String>) -> ExtractionRunRequest {
-    let args = Args::try_parse_from(arguments).expect("test arguments should parse");
+/// Prepares one production request from directly built options.
+///
+/// Extraction run intake owns [`Args`], so a run-level test can name the options it
+/// cares about and leave the rest at their parsed-with-no-flags values. Nothing here
+/// has to know how a flag is spelled.
+fn prepare_request_from(args: Args) -> ExtractionRunRequest {
     let prepared =
         extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
     assert!(prepared.notices.is_empty());
     prepared.request
+}
+
+/// Prepares one production request from argument strings.
+///
+/// The tests still using this predate intake owning the argument structure; they
+/// convert to [`prepare_request_from`] separately, one behaviour at a time.
+fn prepare_request(arguments: Vec<String>) -> ExtractionRunRequest {
+    prepare_request_from(Args::try_parse_from(arguments).expect("test arguments should parse"))
 }
 
 /// Executes one production-built request with a recording observer.
@@ -86,13 +96,13 @@ fn valid_png() -> Vec<u8> {
 fn no_selected_documents_returns_no_documents_outcome() {
     let temp_dir = temp_test_dir("run", "no-documents");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input = temp_dir.to_string_lossy().into_owned();
-    let args = Args::try_parse_from(["test", input.as_str()]).expect("test arguments should parse");
-    let prepared =
-        extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+    let request = prepare_request_from(Args {
+        inputs: vec![temp_dir.clone()],
+        ..Args::default()
+    });
     let mut observer = RecordingRunObserver::default();
 
-    let outcome = run(prepared.request, &mut observer);
+    let outcome = run(request, &mut observer);
 
     assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
     assert_single_terminal_observation(&observer, &outcome);
@@ -111,11 +121,10 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let first_failed_path = temp_dir.join("first\0input.docx");
     let second_failed_path = temp_dir.join("second\0input.epub");
-    let request = prepare_request(vec![
-        "test".to_string(),
-        first_failed_path.to_string_lossy().into_owned(),
-        second_failed_path.to_string_lossy().into_owned(),
-    ]);
+    let request = prepare_request_from(Args {
+        inputs: vec![first_failed_path.clone(), second_failed_path.clone()],
+        ..Args::default()
+    });
     let mut observer = RecordingRunObserver::default();
 
     let outcome = run(request, &mut observer);
@@ -242,14 +251,12 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
     create_directory_link(&removed_target, &broken_link);
     fs::remove_dir(&removed_target).expect("link target should be removable");
     write_docx(&readable_sibling, &[]);
-    let request = prepare_request(vec![
-        "test".to_string(),
-        requested_directory.to_string_lossy().into_owned(),
-        readable_sibling.to_string_lossy().into_owned(),
-        "--recursive".to_string(),
-        "--output".to_string(),
-        output_directory.to_string_lossy().into_owned(),
-    ]);
+    let request = prepare_request_from(Args {
+        inputs: vec![requested_directory, readable_sibling],
+        recursive: true,
+        output: Some(output_directory),
+        ..Args::default()
+    });
     let mut observer = RecordingRunObserver::default();
 
     let outcome = run(request, &mut observer);

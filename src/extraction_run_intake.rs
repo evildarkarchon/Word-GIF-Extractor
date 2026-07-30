@@ -1,15 +1,122 @@
 //! Extraction run intake for turning parsed user options into a ready run.
+//!
+//! Intake owns the command-line argument structure it consumes. That keeps the
+//! module graph acyclic — nothing here reaches back up to the crate root, which in
+//! turn reaches back down for the module tree — and it keeps the fourteen flags
+//! defined in exactly one place. `clap` in the library interface is the accepted
+//! cost of that: the alternative is a fourteen-field parallel structure with a
+//! mapping to keep in sync.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::Args;
-use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionRequest};
+use clap::{Parser, ValueEnum};
+
+use crate::conversion::{
+    ConversionPolicy, ConversionPolicyError, ConversionRequest, ConversionTarget,
+};
 use crate::document_extraction::DocumentExtractionPolicy;
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
+
+/// Conversion target spelling accepted by the CLI adapter.
+///
+/// Crate-visible to match the field that names it: a narrower visibility trips
+/// `private_interfaces`, because [`Args::convert`] is reachable crate-wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ConversionTargetArg {
+    /// JPEG output.
+    Jpg,
+    /// PNG output.
+    Png,
+    /// WebP output.
+    Webp,
+}
+
+impl From<ConversionTargetArg> for ConversionTarget {
+    /// Maps CLI target spelling to the Clap-independent conversion target.
+    fn from(target: ConversionTargetArg) -> Self {
+        match target {
+            ConversionTargetArg::Jpg => ConversionTarget::Jpg,
+            ConversionTargetArg::Png => ConversionTarget::Png,
+            ConversionTargetArg::Webp => ConversionTarget::Webp,
+        }
+    }
+}
+
+/// Parsed user options for one extraction run.
+///
+/// The fields are crate-visible rather than public: outside the crate this is only
+/// ever parsed and handed to [`prepare`], while in-crate tests build it directly so
+/// that run-level tests do not have to spell command-line flags to reach the run.
+///
+/// [`Default`] is derived only under `cfg(test)`, where it matches what `clap`
+/// produces for an invocation with no flags. It exists so a test can name the two
+/// or three options it cares about and leave the rest alone; it is not part of what
+/// the library promises. [`PartialEq`] is test-only for the same reason: it lets one
+/// test hold that default against a real parse without enumerating the fields, so a
+/// fifteenth flag cannot drift the two apart unnoticed.
+#[derive(Parser, Debug)]
+#[cfg_attr(test, derive(Default, PartialEq))]
+#[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
+pub struct Args {
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    pub(crate) inputs: Vec<PathBuf>,
+
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    #[arg(short = 'i', long = "input", num_args = 1..)]
+    pub(crate) named_inputs: Vec<PathBuf>,
+
+    /// Optional output directory (defaults to each input file's directory)
+    #[arg(short, long)]
+    pub(crate) output: Option<PathBuf>,
+
+    /// Recursively search for .docx/.epub files if input is a directory
+    #[arg(short, long)]
+    pub(crate) recursive: bool,
+
+    /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
+    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    pub(crate) formats: Option<Vec<String>>,
+
+    /// Extract only cover image from EPUB files
+    #[arg(short = 'c', long)]
+    pub(crate) cover_only: bool,
+
+    /// Fallback to extracting all images if cover not found (EPUB only, requires --cover-only)
+    #[arg(long, requires = "cover_only")]
+    pub(crate) cover_fallback: bool,
+
+    /// Filter EPUB files by title (case-insensitive substring match)
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+
+    /// Filter EPUB files by author (case-insensitive substring match)
+    #[arg(long)]
+    pub(crate) author: Option<String>,
+
+    /// Convert extracted images to specified format (jpg, png, webp)
+    #[arg(short = 'C', long, conflicts_with = "gif_only")]
+    pub(crate) convert: Option<ConversionTargetArg>,
+
+    /// JPEG/WebP encoding quality override (1-100, default: 85)
+    #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
+    pub(crate) quality: Option<u8>,
+
+    /// Use lossless WebP encoding instead of lossy
+    #[arg(short = 'L', long, requires = "convert", conflicts_with = "quality")]
+    pub(crate) lossless: bool,
+
+    /// Extract only GIF files (skip all other image formats)
+    #[arg(short = 'g', long, conflicts_with = "convert")]
+    pub(crate) gif_only: bool,
+
+    /// Separate output directory for GIF files
+    #[arg(short = 'G', long)]
+    pub(crate) gif_output: Option<PathBuf>,
+}
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
