@@ -8,11 +8,11 @@
 //!
 //! Unit tests and integration tests cannot share a plain module: `cfg(test)` is not
 //! set when the library is compiled for an integration test, so nothing in here is
-//! reachable from `tests/`. The integration side will therefore get a second support
-//! module of its own, and a small deliberate overlap between the two is expected and
-//! accepted. Until that module exists, each file under `tests/` still carries its own
-//! copies — which is why helpers that look duplicated across `src/` and `tests/` are
-//! not a leftover of this consolidation.
+//! reachable from `tests/`. The integration side therefore has a second support module
+//! of its own, `tests/support/mod.rs`, and a small deliberate overlap between the two —
+//! the temporary directory helper, the DOCX builder, the directory-link pair — is
+//! expected and accepted. Helpers that look duplicated across `src/` and `tests/` are
+//! that overlap, not a leftover of this consolidation.
 //!
 //! Two ways of removing that overlap were considered and rejected:
 //!
