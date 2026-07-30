@@ -1,115 +1,20 @@
 //! Word Image Extractor - A CLI tool for extracting images from DOCX and EPUB files.
 //!
-//! This tool treats DOCX and EPUB files as ZIP archives and extracts image files
-//! matching specified formats.
-
-mod conversion;
-mod document_extraction;
-mod document_selection;
-mod epub_declarations;
-mod extraction_run;
-mod extraction_run_intake;
-mod image_format;
-mod image_write_pipeline;
-#[cfg(test)]
-mod test_support;
+//! The extraction itself lives in the `word_image_extractor` library; this binary
+//! parses arguments, drives the library entry points, and renders the run for a
+//! terminal. Every module the binary used to declare is now owned by the library.
 
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::PathBuf;
 
-use crate::conversion::{ConversionPolicyError, ConversionTarget};
-use crate::document_extraction::DocumentExtractionWarning;
-use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
-    DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
+use word_image_extractor::{
+    Args, ConversionPolicyError, DocumentExtractionWarning, DocumentSelectionDiagnostic,
+    DocumentSelectionPhaseStatus, DocumentSelectionProgress, DocumentSelectionScanScope,
+    EpubFilter, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunIntakeError,
+    ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome, PreRunNotice,
+    PreparedExtractionRun, execute_extraction_run, prepare_extraction_run,
 };
-use crate::extraction_run::{
-    ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
-};
-use crate::extraction_run_intake::{ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun};
-
-/// Conversion target spelling accepted by the CLI adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum ConversionTargetArg {
-    /// JPEG output.
-    Jpg,
-    /// PNG output.
-    Png,
-    /// WebP output.
-    Webp,
-}
-
-impl From<ConversionTargetArg> for ConversionTarget {
-    /// Maps CLI target spelling to the Clap-independent conversion target.
-    fn from(target: ConversionTargetArg) -> Self {
-        match target {
-            ConversionTargetArg::Jpg => ConversionTarget::Jpg,
-            ConversionTargetArg::Png => ConversionTarget::Png,
-            ConversionTargetArg::Webp => ConversionTarget::Webp,
-        }
-    }
-}
-
-#[derive(Parser, Debug)]
-#[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
-struct Args {
-    /// Paths to input .docx/.epub files or directories (defaults to current directory)
-    inputs: Vec<PathBuf>,
-
-    /// Paths to input .docx/.epub files or directories (defaults to current directory)
-    #[arg(short = 'i', long = "input", num_args = 1..)]
-    named_inputs: Vec<PathBuf>,
-
-    /// Optional output directory (defaults to each input file's directory)
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Recursively search for .docx/.epub files if input is a directory
-    #[arg(short, long)]
-    recursive: bool,
-
-    /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
-    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
-    formats: Option<Vec<String>>,
-
-    /// Extract only cover image from EPUB files
-    #[arg(short = 'c', long)]
-    cover_only: bool,
-
-    /// Fallback to extracting all images if cover not found (EPUB only, requires --cover-only)
-    #[arg(long, requires = "cover_only")]
-    cover_fallback: bool,
-
-    /// Filter EPUB files by title (case-insensitive substring match)
-    #[arg(long)]
-    title: Option<String>,
-
-    /// Filter EPUB files by author (case-insensitive substring match)
-    #[arg(long)]
-    author: Option<String>,
-
-    /// Convert extracted images to specified format (jpg, png, webp)
-    #[arg(short = 'C', long, conflicts_with = "gif_only")]
-    convert: Option<ConversionTargetArg>,
-
-    /// JPEG/WebP encoding quality override (1-100, default: 85)
-    #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
-    quality: Option<u8>,
-
-    /// Use lossless WebP encoding instead of lossy
-    #[arg(short = 'L', long, requires = "convert", conflicts_with = "quality")]
-    lossless: bool,
-
-    /// Extract only GIF files (skip all other image formats)
-    #[arg(short = 'g', long, conflicts_with = "convert")]
-    gif_only: bool,
-
-    /// Separate output directory for GIF files
-    #[arg(short = 'G', long)]
-    gif_output: Option<PathBuf>,
-}
 
 /// Creates a standard progress bar style for collection phases
 fn create_progress_style() -> ProgressStyle {
@@ -466,7 +371,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let PreparedExtractionRun { request, notices } =
-        extraction_run_intake::prepare(args).map_err(render_intake_error)?;
+        prepare_extraction_run(args).map_err(render_intake_error)?;
 
     for notice in notices {
         match notice {
@@ -483,7 +388,7 @@ fn main() -> Result<()> {
     }
 
     let mut observer = IndicatifRunObserver::new();
-    extraction_run::run(request, &mut observer);
+    execute_extraction_run(request, &mut observer);
 
     Ok(())
 }
@@ -491,13 +396,59 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extraction_run::{ConversionFacts, GifRoutingFacts};
-    use crate::test_support::{temp_test_dir, write_docx};
     use indicatif::{ProgressDrawTarget, TermLike};
     use std::fs;
     use std::io;
+    use std::io::Write;
     use std::num::NonZeroUsize;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use word_image_extractor::{ConversionFacts, GifRoutingFacts};
+    use zip::write::SimpleFileOptions;
+
+    // The library's fixture module is `#[cfg(test)]`, and `cfg(test)` is not set when
+    // the library is compiled as this binary's dependency, so `crate::test_support` is
+    // unreachable from here — the same barrier that stops `tests/` from sharing it, and
+    // the same deliberate overlap the library's support module documents and accepts.
+    // These two are copies of the fixtures with those names; they are the only ones the
+    // binary needs, and they go away with this test module when Extraction run
+    // presentation moves into the library.
+
+    /// Returns an unused temporary directory path for one test.
+    ///
+    /// `area` names the module under test and only makes the path readable when a
+    /// failing test leaves its directory behind; the process id and nanosecond stamp
+    /// are what actually keep concurrent tests from colliding. The directory is not
+    /// created — callers that need it on disk create it themselves.
+    fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "word-image-extractor-{area}-{test_name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    /// Writes a DOCX fixture containing the supplied archive entries in order.
+    ///
+    /// A DOCX fixture is nothing but a ZIP. Entry order is preserved because output
+    /// numbering follows archive order.
+    fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("test archive should be creatable");
+        let mut archive = zip::ZipWriter::new(file);
+        for (name, data) in entries {
+            archive
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("ZIP entry should start");
+            archive
+                .write_all(data)
+                .expect("ZIP entry payload should be writable");
+        }
+        archive.finish().expect("test archive should finish");
+    }
 
     #[derive(Debug, Default)]
     struct TerminalActivity {
@@ -750,16 +701,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_flag_parses_all_formats() {
-        let args = Args::try_parse_from(["test", "--convert", "jpg"]).unwrap();
-        assert_eq!(args.convert, Some(ConversionTargetArg::Jpg));
-        let args = Args::try_parse_from(["test", "--convert", "png"]).unwrap();
-        assert_eq!(args.convert, Some(ConversionTargetArg::Png));
-        let args = Args::try_parse_from(["test", "--convert", "webp"]).unwrap();
-        assert_eq!(args.convert, Some(ConversionTargetArg::Webp));
-    }
-
-    #[test]
     fn terminal_epub_filter_description_preserves_existing_wording() {
         assert_eq!(
             epub_filter_description(&EpubFilter {
@@ -771,42 +712,9 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_short_flag() {
-        let args = Args::try_parse_from(["test", "-C", "jpg"]).unwrap();
-        assert_eq!(args.convert, Some(ConversionTargetArg::Jpg));
-    }
-
-    #[test]
-    fn test_quality_with_convert_jpg() {
-        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "90"]).unwrap();
-        assert_eq!(args.quality, Some(90));
-    }
-
-    #[test]
-    fn test_quality_with_convert_webp() {
-        let args = Args::try_parse_from(["test", "--convert", "webp", "--quality", "90"]).unwrap();
-        assert_eq!(args.quality, Some(90));
-    }
-
-    #[test]
-    fn test_quality_range_validation() {
-        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "0"]).is_err());
-        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--quality", "101"]).is_err());
-        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "1"]).unwrap();
-        assert_eq!(args.quality, Some(1));
-        let args = Args::try_parse_from(["test", "--convert", "jpg", "--quality", "100"]).unwrap();
-        assert_eq!(args.quality, Some(100));
-    }
-
-    #[test]
-    fn test_quality_requires_convert() {
-        assert!(Args::try_parse_from(["test", "--quality", "90"]).is_err());
-    }
-
-    #[test]
     fn test_quality_with_png_error() {
         let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
-        let err_msg = extraction_run_intake::prepare(args)
+        let err_msg = prepare_extraction_run(args)
             .err()
             .map(render_intake_error)
             .expect("PNG quality should fail semantic intake")
@@ -819,51 +727,9 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_and_gif_only_conflict() {
-        assert!(Args::try_parse_from(["test", "--convert", "jpg", "--gif-only"]).is_err());
-    }
-
-    #[test]
-    fn test_gif_only_short_flag() {
-        let args = Args::try_parse_from(["test", "-g"]).unwrap();
-        assert!(args.gif_only);
-    }
-
-    #[test]
-    fn test_gif_output_independent() {
-        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
-        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
-    }
-
-    #[test]
-    fn test_gif_output_short_flag() {
-        let args = Args::try_parse_from(["test", "-G", "/tmp/gifs"]).unwrap();
-        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
-    }
-
-    #[test]
-    fn test_lossless_with_convert_webp() {
-        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
-        assert!(args.lossless);
-    }
-
-    #[test]
-    fn test_lossless_requires_convert() {
-        assert!(Args::try_parse_from(["test", "--lossless"]).is_err());
-    }
-
-    #[test]
-    fn test_lossless_conflicts_with_quality() {
-        assert!(
-            Args::try_parse_from(["test", "--convert", "webp", "--lossless", "--quality", "90"])
-                .is_err()
-        );
-    }
-
-    #[test]
     fn test_lossless_with_jpg_error() {
         let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
-        let err_msg = extraction_run_intake::prepare(args)
+        let err_msg = prepare_extraction_run(args)
             .err()
             .map(render_intake_error)
             .expect("JPEG lossless should fail semantic intake")
@@ -878,7 +744,7 @@ mod tests {
     #[test]
     fn test_lossless_with_png_error() {
         let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
-        let err_msg = extraction_run_intake::prepare(args)
+        let err_msg = prepare_extraction_run(args)
             .err()
             .map(render_intake_error)
             .expect("PNG lossless should fail semantic intake")
@@ -888,53 +754,6 @@ mod tests {
             "Error was: {}",
             err_msg
         );
-    }
-
-    #[test]
-    fn test_lossless_short_flag() {
-        let args = Args::try_parse_from(["test", "-L", "--convert", "webp"]).unwrap();
-        assert!(args.lossless);
-    }
-
-    #[test]
-    fn test_existing_flags_unchanged() {
-        let args = Args::try_parse_from([
-            "test",
-            "-o",
-            "/tmp",
-            "-r",
-            "-f",
-            "png,jpg",
-            "-c",
-            "--cover-fallback",
-        ])
-        .unwrap();
-        assert_eq!(args.output, Some(PathBuf::from("/tmp")));
-        assert!(args.recursive);
-        assert!(args.cover_only);
-        assert!(args.cover_fallback);
-    }
-
-    #[test]
-    fn test_gif_only_and_gif_output_both_set() {
-        let args =
-            Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();
-        assert!(args.gif_only);
-        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
-    }
-
-    #[test]
-    fn test_gif_output_without_gif_only() {
-        let args = Args::try_parse_from(["test", "--gif-output", "/tmp/gifs"]).unwrap();
-        assert!(!args.gif_only);
-        assert_eq!(args.gif_output, Some(PathBuf::from("/tmp/gifs")));
-    }
-
-    #[test]
-    fn test_gif_only_without_gif_output() {
-        let args = Args::try_parse_from(["test", "--gif-only"]).unwrap();
-        assert!(args.gif_only);
-        assert!(args.gif_output.is_none());
     }
 
     #[test]
@@ -1003,8 +822,7 @@ mod tests {
         let input = requested_directory.to_string_lossy().into_owned();
         let args = Args::try_parse_from(["test", input.as_str(), "--recursive"])
             .expect("recursive arguments should parse");
-        let prepared =
-            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
         let terminal_activity = Arc::new(Mutex::new(TerminalActivity::default()));
         let mut observer = FilesystemIndicatifObserver {
             inner: IndicatifRunObserver::new(),
@@ -1015,7 +833,7 @@ mod tests {
             diagnostic_writes: 0,
         };
 
-        let outcome = extraction_run::run(prepared.request, &mut observer);
+        let outcome = execute_extraction_run(prepared.request, &mut observer);
 
         assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
         assert_eq!(observer.discovery_diagnostics, 1);
@@ -1053,8 +871,7 @@ mod tests {
             output_dir.to_string_lossy().as_ref(),
         ])
         .expect("warning fixture arguments should parse");
-        let prepared =
-            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
         let mut observer = WarningPresentationObserver {
             inner: IndicatifRunObserver::new(),
             terminal_activity: Arc::new(Mutex::new(TerminalActivity::default())),
@@ -1063,7 +880,7 @@ mod tests {
             warning_writes: 0,
         };
 
-        extraction_run::run(prepared.request, &mut observer);
+        execute_extraction_run(prepared.request, &mut observer);
 
         assert_eq!(observer.warnings.len(), 1);
         assert!(
@@ -1217,12 +1034,5 @@ mod tests {
         for (outcome, expected_message) in cases {
             assert_terminal_observation_finishes_extraction(outcome, &expected_message);
         }
-    }
-
-    #[test]
-    fn test_convert_and_lossless_args_threaded() {
-        let args = Args::try_parse_from(["test", "--convert", "webp", "--lossless"]).unwrap();
-        assert_eq!(args.convert, Some(ConversionTargetArg::Webp));
-        assert!(args.lossless);
     }
 }

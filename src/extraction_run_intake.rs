@@ -13,7 +13,7 @@ use crate::image_format::ImageFormat;
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
-pub(crate) enum ExtractionRunIntakeError {
+pub enum ExtractionRunIntakeError {
     /// The fallback input directory could not be resolved.
     CurrentDirectory(std::io::Error),
     /// The requested conversion facts did not form a valid Conversion policy.
@@ -42,7 +42,7 @@ impl std::error::Error for ExtractionRunIntakeError {
 
 /// Structured fact that the terminal adapter renders before an Extraction run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PreRunNotice {
+pub enum PreRunNotice {
     /// Intake selected the current directory because no input was requested.
     DefaultedInput { path: PathBuf },
     /// Intake ignored one unrecognized image-format token.
@@ -50,11 +50,11 @@ pub(crate) enum PreRunNotice {
 }
 
 /// Intake result containing one executable request and its ordered pre-run notices.
-pub(crate) struct PreparedExtractionRun {
+pub struct PreparedExtractionRun {
     /// Opaque request consumed by the Extraction run exactly once.
-    pub(crate) request: ExtractionRunRequest,
+    pub request: ExtractionRunRequest,
     /// Ordered pre-run facts for adapter rendering.
-    pub(crate) notices: Vec<PreRunNotice>,
+    pub notices: Vec<PreRunNotice>,
 }
 
 /// Prepares an extraction run from parsed CLI arguments.
@@ -62,7 +62,7 @@ pub(crate) struct PreparedExtractionRun {
 /// This concentrates input fallback, format selection, GIF-only behavior,
 /// conversion defaults, EPUB filters, and production-valid request construction
 /// behind one intake interface.
-pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
+pub fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
     let Args {
         inputs,
         named_inputs,

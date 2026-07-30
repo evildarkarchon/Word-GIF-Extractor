@@ -144,7 +144,7 @@ impl DocumentExtractionFacts {
 
 /// Opaque non-fatal warning exposed by Document extraction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DocumentExtractionWarning {
+pub struct DocumentExtractionWarning {
     message: String,
 }
 
@@ -189,7 +189,7 @@ impl DocumentExtractionWarning {
     }
 
     /// Returns the stable user-visible wording for this warning fact.
-    pub(crate) fn get_message(&self) -> &str {
+    pub fn get_message(&self) -> &str {
         &self.message
     }
 }

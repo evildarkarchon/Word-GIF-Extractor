@@ -21,7 +21,7 @@ use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 /// Construction derives presentation-relevant intent from the same policies
 /// used for extraction, so conversion and GIF-routing facts cannot drift from
 /// the configured workflow. An Extraction run consumes this request by value.
-pub(crate) struct ExtractionRunRequest {
+pub struct ExtractionRunRequest {
     inputs: Vec<PathBuf>,
     recursive: bool,
     output: Option<PathBuf>,
@@ -74,7 +74,7 @@ impl ExtractionRunRequest {
 
 /// Semantic classification of output produced or sought by an Extraction run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ExtractionOutputKind {
+pub enum ExtractionOutputKind {
     /// Normal document images, including EPUB normal-image fallback output.
     Images,
     /// Required EPUB covers when no normal-image output was emitted.
@@ -83,14 +83,14 @@ pub(crate) enum ExtractionOutputKind {
 
 /// Conversion totals retained only when conversion was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ConversionFacts {
+pub struct ConversionFacts {
     converted_images: usize,
     skipped_conversions: usize,
 }
 
 impl ConversionFacts {
     /// Creates applicable conversion facts, including valid zero totals.
-    pub(crate) fn new(converted_images: usize, skipped_conversions: usize) -> Self {
+    pub fn new(converted_images: usize, skipped_conversions: usize) -> Self {
         Self {
             converted_images,
             skipped_conversions,
@@ -98,26 +98,26 @@ impl ConversionFacts {
     }
 
     /// Returns the number of images converted before emission.
-    pub(crate) fn converted_images(&self) -> usize {
+    pub fn converted_images(&self) -> usize {
         self.converted_images
     }
 
     /// Returns the number of requested conversions that preserved source bytes.
-    pub(crate) fn skipped_conversions(&self) -> usize {
+    pub fn skipped_conversions(&self) -> usize {
         self.skipped_conversions
     }
 }
 
 /// Routed-GIF facts retained together with their required destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GifRoutingFacts {
+pub struct GifRoutingFacts {
     routed_gifs: NonZeroUsize,
     destination: PathBuf,
 }
 
 impl GifRoutingFacts {
     /// Creates applicable GIF-routing facts with a positive routed count.
-    pub(crate) fn new(routed_gifs: NonZeroUsize, destination: PathBuf) -> Self {
+    pub fn new(routed_gifs: NonZeroUsize, destination: PathBuf) -> Self {
         Self {
             routed_gifs,
             destination,
@@ -125,19 +125,19 @@ impl GifRoutingFacts {
     }
 
     /// Returns the positive number of GIFs routed by the run.
-    pub(crate) fn routed_gifs(&self) -> usize {
+    pub fn routed_gifs(&self) -> usize {
         self.routed_gifs.get()
     }
 
     /// Returns the destination that received the routed GIFs.
-    pub(crate) fn destination(&self) -> &Path {
+    pub fn destination(&self) -> &Path {
         &self.destination
     }
 }
 
 /// State-valid facts for an Extraction run that emitted output.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProducedOutput {
+pub struct ProducedOutput {
     output_kind: ExtractionOutputKind,
     emitted_images: NonZeroUsize,
     documents_with_output: NonZeroUsize,
@@ -147,34 +147,34 @@ pub(crate) struct ProducedOutput {
 
 impl ProducedOutput {
     /// Returns whether the emitted files are normal images or required covers.
-    pub(crate) fn output_kind(&self) -> ExtractionOutputKind {
+    pub fn output_kind(&self) -> ExtractionOutputKind {
         self.output_kind
     }
 
     /// Returns the positive number of emitted image files.
-    pub(crate) fn emitted_images(&self) -> usize {
+    pub fn emitted_images(&self) -> usize {
         self.emitted_images.get()
     }
 
     /// Returns the positive number of documents that emitted output.
-    pub(crate) fn documents_with_output(&self) -> usize {
+    pub fn documents_with_output(&self) -> usize {
         self.documents_with_output.get()
     }
 
     /// Returns conversion facts exactly when conversion was requested.
-    pub(crate) fn conversion(&self) -> Option<&ConversionFacts> {
+    pub fn conversion(&self) -> Option<&ConversionFacts> {
         self.conversion.as_ref()
     }
 
     /// Returns routing facts exactly when at least one GIF was routed.
-    pub(crate) fn gif_routing(&self) -> Option<&GifRoutingFacts> {
+    pub fn gif_routing(&self) -> Option<&GifRoutingFacts> {
         self.gif_routing.as_ref()
     }
 }
 
 /// Closed terminal result of one Extraction run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExtractionRunOutcome {
+pub enum ExtractionRunOutcome {
     /// Document selection found no eligible documents.
     NoDocuments,
     /// Documents were selected, but no image file was emitted.
@@ -189,7 +189,7 @@ impl ExtractionRunOutcome {
     /// Positive count types prevent terminal adapters and tests from creating a
     /// produced state with zero output. The remaining checks ensure documents
     /// and classified output facts cannot exceed the emitted-image total.
-    pub(crate) fn try_produced(
+    pub fn try_produced(
         output_kind: ExtractionOutputKind,
         emitted_images: NonZeroUsize,
         documents_with_output: NonZeroUsize,
@@ -248,7 +248,7 @@ struct RunAggregation {
 /// per-document extraction lifecycle facts and the final semantic outcome. They
 /// exclude terminal wording and user-interface commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExtractionRunObservation {
+pub enum ExtractionRunObservation {
     /// One immutable Document selection phase snapshot.
     DocumentSelectionProgress(DocumentSelectionProgress),
     /// One structured, non-fatal Document selection diagnostic.
@@ -278,7 +278,7 @@ pub(crate) enum ExtractionRunObservation {
 /// The observer does not inherit the lower Document selection interface; the
 /// run privately translates those callbacks into this cohesive seam and ends
 /// every stream with exactly one terminal outcome.
-pub(crate) trait ExtractionRunObserver {
+pub trait ExtractionRunObserver {
     /// Handles one structured observation emitted by the Extraction run.
     fn on_observation(&mut self, observation: ExtractionRunObservation);
 }
@@ -322,7 +322,7 @@ where
 /// document-local failures are emitted through the observer and do not make the
 /// run fallible or stop later documents. The final observation carries the same
 /// outcome returned by this operation, and nothing is observed afterward.
-pub(crate) fn run(
+pub fn run(
     request: ExtractionRunRequest,
     observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {
