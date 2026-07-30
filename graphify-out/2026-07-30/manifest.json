@@ -1,68 +1,68 @@
 {
   "src/conversion.rs": {
-    "mtime": 1783667718.5172195,
-    "ast_hash": "bde28b2e51d023eff004858c026fffc3",
-    "semantic_hash": "bde28b2e51d023eff004858c026fffc3"
+    "mtime": 1785397184.5946074,
+    "ast_hash": "cfcf2b13328f0af986298be8477be375",
+    "semantic_hash": "cfcf2b13328f0af986298be8477be375"
   },
   "src/document_extraction.rs": {
-    "mtime": 1785325828.7964778,
-    "ast_hash": "e610d661f18ff03bd2311beaf4d828c7",
-    "semantic_hash": ""
+    "mtime": 1785397184.6216035,
+    "ast_hash": "5ba42a288fdd2896503dc066b72034a7",
+    "semantic_hash": "5ba42a288fdd2896503dc066b72034a7"
   },
   "src/document_selection.rs": {
-    "mtime": 1785225929.4020178,
-    "ast_hash": "50ed35404a4957d48b6f99190a9316a8",
-    "semantic_hash": ""
+    "mtime": 1785398050.8591294,
+    "ast_hash": "c30e4ef84ca008fd73804060e9f0db8b",
+    "semantic_hash": "c30e4ef84ca008fd73804060e9f0db8b"
   },
   "src/document_selection/discovery.rs": {
     "mtime": 1785226379.9733477,
     "ast_hash": "a87bc24c8199d75f20cfd9a6404e84ee",
-    "semantic_hash": ""
+    "semantic_hash": "a87bc24c8199d75f20cfd9a6404e84ee"
   },
   "src/document_selection/progress.rs": {
     "mtime": 1785224146.0936387,
     "ast_hash": "c1f59eb92576298c183bbf9a9590d177",
-    "semantic_hash": ""
+    "semantic_hash": "c1f59eb92576298c183bbf9a9590d177"
   },
   "src/docx.rs": {
     "mtime": 1785396741.7370381,
     "ast_hash": "0f8cbbf24f057f9b9cdb5a461fb04d67",
-    "semantic_hash": ""
+    "semantic_hash": "0f8cbbf24f057f9b9cdb5a461fb04d67"
   },
   "src/epub.rs": {
-    "mtime": 1785325795.31887,
-    "ast_hash": "8921d835cc04b9f6000697bb869e2156",
-    "semantic_hash": ""
+    "mtime": 1785398407.3597116,
+    "ast_hash": "7910ecf0bec48360fb02e420ea1c08c6",
+    "semantic_hash": "7910ecf0bec48360fb02e420ea1c08c6"
   },
   "src/epub/resource_archive.rs": {
     "mtime": 1785396743.2426145,
     "ast_hash": "bcd7558512958b51ff4664e68ae6bf8e",
-    "semantic_hash": ""
+    "semantic_hash": "bcd7558512958b51ff4664e68ae6bf8e"
   },
   "src/epub_declarations.rs": {
     "mtime": 1785396389.6022396,
     "ast_hash": "703f5b9ecd57d7d4c2295f1031a214e4",
-    "semantic_hash": ""
+    "semantic_hash": "703f5b9ecd57d7d4c2295f1031a214e4"
   },
   "src/extraction_run.rs": {
-    "mtime": 1785395594.949857,
-    "ast_hash": "92108cf08a503faa54a7d292edc053ca",
-    "semantic_hash": ""
+    "mtime": 1785397184.6631074,
+    "ast_hash": "303ed846e9911a80c55c6f2136f4a278",
+    "semantic_hash": "303ed846e9911a80c55c6f2136f4a278"
   },
   "src/extraction_run_intake.rs": {
     "mtime": 1785396389.60324,
     "ast_hash": "44e29cd484ea5745169db3f6cb414d28",
-    "semantic_hash": ""
+    "semantic_hash": "44e29cd484ea5745169db3f6cb414d28"
   },
   "src/image_format.rs": {
     "mtime": 1785396389.6007397,
     "ast_hash": "fc318c775a74881f09c9526d63272f41",
-    "semantic_hash": ""
+    "semantic_hash": "fc318c775a74881f09c9526d63272f41"
   },
   "src/image_write_pipeline.rs": {
-    "mtime": 1785325796.5311925,
-    "ast_hash": "42eee8dd806e31415f32fb28bb19122d",
-    "semantic_hash": ""
+    "mtime": 1785398011.5112329,
+    "ast_hash": "386a3c5eee783ba831112d1b2b082dc2",
+    "semantic_hash": "386a3c5eee783ba831112d1b2b082dc2"
   },
   "src/image_write_pipeline/discovery.rs": {
     "mtime": 1785207421.2787316,
@@ -72,17 +72,17 @@
   "src/image_write_pipeline/emission.rs": {
     "mtime": 1785396389.6012397,
     "ast_hash": "3efd4b09fcea0e8f8cc328ce0e5e5340",
-    "semantic_hash": ""
+    "semantic_hash": "3efd4b09fcea0e8f8cc328ce0e5e5340"
   },
   "src/image_write_pipeline/purpose.rs": {
     "mtime": 1785325707.0963256,
     "ast_hash": "e5f932d588b1b748d13e3d1a81cd66ea",
-    "semantic_hash": ""
+    "semantic_hash": "e5f932d588b1b748d13e3d1a81cd66ea"
   },
   "src/main.rs": {
     "mtime": 1785395520.1514542,
     "ast_hash": "ea30c63643dbe276f2972609e7969fe5",
-    "semantic_hash": ""
+    "semantic_hash": "ea30c63643dbe276f2972609e7969fe5"
   },
   "tests/beside_file_output.rs": {
     "mtime": 1780020174.6888175,
@@ -97,7 +97,7 @@
   "tests/document_selection_diagnostics_cli.rs": {
     "mtime": 1785225846.6611729,
     "ast_hash": "553bb0d5949d0d4b332731acef86e2f2",
-    "semantic_hash": ""
+    "semantic_hash": "553bb0d5949d0d4b332731acef86e2f2"
   },
   "tests/mislabeled_docx.rs": {
     "mtime": 1777198770.14637,
@@ -109,65 +109,20 @@
     "ast_hash": "e5699d4c213bb80affd095dea0275690",
     "semantic_hash": "e5699d4c213bb80affd095dea0275690"
   },
-  ".codex/skills/graphify/SKILL.md": {
-    "mtime": 1785217016.817519,
-    "ast_hash": "9127de0dec724028abc460ddb4db1bb3",
-    "semantic_hash": "9127de0dec724028abc460ddb4db1bb3"
-  },
-  ".codex/skills/graphify/references/add-watch.md": {
-    "mtime": 1785205259.3752203,
-    "ast_hash": "d59d027fe449f06aa03905a01184e779",
-    "semantic_hash": "d59d027fe449f06aa03905a01184e779"
-  },
-  ".codex/skills/graphify/references/exports.md": {
-    "mtime": 1785205259.37572,
-    "ast_hash": "9da2a2152e60a22f07f05fed5158f287",
-    "semantic_hash": "9da2a2152e60a22f07f05fed5158f287"
-  },
-  ".codex/skills/graphify/references/extraction-spec.md": {
-    "mtime": 1785205259.3767188,
-    "ast_hash": "bf895ec4d4e40f5f66f7d31c2a9bd4a7",
-    "semantic_hash": "bf895ec4d4e40f5f66f7d31c2a9bd4a7"
-  },
-  ".codex/skills/graphify/references/github-and-merge.md": {
-    "mtime": 1785205259.3772187,
-    "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
-    "semantic_hash": "cde13df085e4c492aeb7ba298a996d0d"
-  },
-  ".codex/skills/graphify/references/hooks.md": {
-    "mtime": 1785205259.3782187,
-    "ast_hash": "3f545db6ce646650bb9de588f5512a27",
-    "semantic_hash": "3f545db6ce646650bb9de588f5512a27"
-  },
-  ".codex/skills/graphify/references/query.md": {
-    "mtime": 1785205259.379718,
-    "ast_hash": "3c46f8ad006874260614ed8657d02307",
-    "semantic_hash": "3c46f8ad006874260614ed8657d02307"
-  },
-  ".codex/skills/graphify/references/transcribe.md": {
-    "mtime": 1785205259.38422,
-    "ast_hash": "67b6a5fa6c0974e18f60db9f8932fbd8",
-    "semantic_hash": "67b6a5fa6c0974e18f60db9f8932fbd8"
-  },
-  ".codex/skills/graphify/references/update.md": {
-    "mtime": 1785205259.3867195,
-    "ast_hash": "9378bd03d56baaf78bd738ab3848f142",
-    "semantic_hash": "9378bd03d56baaf78bd738ab3848f142"
-  },
   "AGENTS.md": {
     "mtime": 1785217016.8185198,
     "ast_hash": "7e60f33e2755f1f0db988b6f8a088405",
     "semantic_hash": "7e60f33e2755f1f0db988b6f8a088405"
   },
   "CLAUDE.md": {
-    "mtime": 1785389947.1687596,
-    "ast_hash": "9c8be91e0cb9571d1e871848e5b3a4f7",
-    "semantic_hash": ""
+    "mtime": 1785397620.9563682,
+    "ast_hash": "37a49ed715e840e242bef20ad617918b",
+    "semantic_hash": "37a49ed715e840e242bef20ad617918b"
   },
   "CONTEXT.md": {
     "mtime": 1785228979.9785843,
     "ast_hash": "36ad421f4da90978478c29776de3bfb4",
-    "semantic_hash": ""
+    "semantic_hash": "36ad421f4da90978478c29776de3bfb4"
   },
   "README.md": {
     "mtime": 1783667425.8821182,
@@ -192,101 +147,96 @@
   "graphify-out/memory/query_20260728_105637_how_should_github_issue__22_be_decomposed_into_dep.md": {
     "mtime": 1785236197.7702205,
     "ast_hash": "dd1e007e6e991d287644b8c4b1b65ddd",
-    "semantic_hash": ""
-  },
-  ".claude/settings.json": {
-    "mtime": 1785389947.1702569,
-    "ast_hash": "6d3d4084c31fea2a7d7add0303501fa5",
-    "semantic_hash": ""
+    "semantic_hash": "dd1e007e6e991d287644b8c4b1b65ddd"
   },
   ".claude/CLAUDE.md": {
     "mtime": 1785389947.161755,
     "ast_hash": "c232166e6492ba1ed955030b16979b05",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/SKILL.md": {
-    "mtime": 1785389947.1607583,
-    "ast_hash": "dfb0a6554c4af62df6effc61c6c7d245",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/add-watch.md": {
-    "mtime": 1785381984.9890084,
-    "ast_hash": "d59d027fe449f06aa03905a01184e779",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/exports.md": {
-    "mtime": 1785381984.9895077,
-    "ast_hash": "9da2a2152e60a22f07f05fed5158f287",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/extraction-spec.md": {
-    "mtime": 1785381984.9895077,
-    "ast_hash": "42fef56a01698118f7fd722acdadea34",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/github-and-merge.md": {
-    "mtime": 1785381984.9905086,
-    "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/hooks.md": {
-    "mtime": 1785381984.9905086,
-    "ast_hash": "3f545db6ce646650bb9de588f5512a27",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/query.md": {
-    "mtime": 1785381984.9910069,
-    "ast_hash": "3c46f8ad006874260614ed8657d02307",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/transcribe.md": {
-    "mtime": 1785381984.991508,
-    "ast_hash": "67b6a5fa6c0974e18f60db9f8932fbd8",
-    "semantic_hash": ""
-  },
-  ".claude/skills/graphify/references/update.md": {
-    "mtime": 1785381984.9920063,
-    "ast_hash": "9378bd03d56baaf78bd738ab3848f142",
-    "semantic_hash": ""
+    "semantic_hash": "c232166e6492ba1ed955030b16979b05"
   },
   "graphify-out/memory/query_20260729_115641_does_the_refreshed_graph_reflect_document_extracti.md": {
     "mtime": 1785326201.0557866,
     "ast_hash": "014d0a5e71b6cbc9cae3c65e65273e8b",
-    "semantic_hash": ""
+    "semantic_hash": "014d0a5e71b6cbc9cae3c65e65273e8b"
   },
   "tests/document_extraction_warning_cli.rs": {
     "mtime": 1785395567.1956563,
     "ast_hash": "bfebb3bc487ab8dca991f493bf7998e9",
-    "semantic_hash": ""
+    "semantic_hash": "bfebb3bc487ab8dca991f493bf7998e9"
   },
   "src/docx/tests.rs": {
     "mtime": 1785396323.2202847,
     "ast_hash": "c7954a4701d182a440a29ac4f103b713",
-    "semantic_hash": ""
+    "semantic_hash": "c7954a4701d182a440a29ac4f103b713"
   },
   "src/epub/resource_archive/tests.rs": {
     "mtime": 1785396411.2446098,
     "ast_hash": "2aab58acc0cc582430150ece1c6ff9b1",
-    "semantic_hash": ""
+    "semantic_hash": "2aab58acc0cc582430150ece1c6ff9b1"
   },
   "src/epub_declarations/tests.rs": {
     "mtime": 1785396389.6022396,
     "ast_hash": "fc6690685dac0a871cdeea6f73914aba",
-    "semantic_hash": ""
+    "semantic_hash": "fc6690685dac0a871cdeea6f73914aba"
   },
   "src/extraction_run_intake/tests.rs": {
     "mtime": 1785396735.6917603,
     "ast_hash": "9da8cfa60e08d14b6ec60c7ea6034c14",
-    "semantic_hash": ""
+    "semantic_hash": "9da8cfa60e08d14b6ec60c7ea6034c14"
   },
   "src/image_format/tests.rs": {
     "mtime": 1785396734.7506106,
     "ast_hash": "86e26a21f232bf7ebc0b6c2ea50f5e80",
-    "semantic_hash": ""
+    "semantic_hash": "86e26a21f232bf7ebc0b6c2ea50f5e80"
   },
   "src/image_write_pipeline/emission/tests.rs": {
     "mtime": 1785396389.6012397,
     "ast_hash": "48f0034ae9c8783bad95507e770f13f6",
-    "semantic_hash": ""
+    "semantic_hash": "48f0034ae9c8783bad95507e770f13f6"
+  },
+  "src/conversion/tests.rs": {
+    "mtime": 1785397262.3040874,
+    "ast_hash": "77c406731c608b95845bdc98264af139",
+    "semantic_hash": "77c406731c608b95845bdc98264af139"
+  },
+  "src/document_extraction/tests.rs": {
+    "mtime": 1785397262.3080876,
+    "ast_hash": "b8c371240a668ee676c168251ec46d6f",
+    "semantic_hash": "b8c371240a668ee676c168251ec46d6f"
+  },
+  "src/extraction_run/tests.rs": {
+    "mtime": 1785397262.3400872,
+    "ast_hash": "a7361073525eda3dab68b1b98eb35709",
+    "semantic_hash": "a7361073525eda3dab68b1b98eb35709"
+  },
+  "docs/agents/domain.md": {
+    "mtime": 1785397651.8335602,
+    "ast_hash": "fffee1f16dd5a4d117ae65aece30ce9b",
+    "semantic_hash": "fffee1f16dd5a4d117ae65aece30ce9b"
+  },
+  "docs/agents/issue-tracker.md": {
+    "mtime": 1785397638.2651117,
+    "ast_hash": "6b63bcce23286bc2b617585378aa2d3b",
+    "semantic_hash": "6b63bcce23286bc2b617585378aa2d3b"
+  },
+  "docs/agents/triage-labels.md": {
+    "mtime": 1785397643.370459,
+    "ast_hash": "19b04a576f89fb8178efc08b98a51182",
+    "semantic_hash": "19b04a576f89fb8178efc08b98a51182"
+  },
+  "src/document_selection/tests.rs": {
+    "mtime": 1785398404.6122751,
+    "ast_hash": "4a634b5d2c64963e662f670e2e62319d",
+    "semantic_hash": "4a634b5d2c64963e662f670e2e62319d"
+  },
+  "src/epub/tests.rs": {
+    "mtime": 1785398079.0786405,
+    "ast_hash": "0d6053d4364bd79e72ab48984d8312cd",
+    "semantic_hash": "0d6053d4364bd79e72ab48984d8312cd"
+  },
+  "src/image_write_pipeline/tests.rs": {
+    "mtime": 1785398079.10114,
+    "ast_hash": "87b78794e5cc91f4863b60925d22410e",
+    "semantic_hash": "87b78794e5cc91f4863b60925d22410e"
   }
 }
