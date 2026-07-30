@@ -20,6 +20,10 @@ _Avoid_: Run report, extraction summary, final counters
 One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It excludes terminal wording and user-interface commands.
 _Avoid_: Run event, progress callback, UI command
 
+**Extraction run presentation**:
+The project responsibility for turning Extraction run observations into terminal output, including progress display, diagnostic and warning rendering, terminal wording, and the terminal summary. It owns all user-facing wording and excludes outcome classification and observation ordering.
+_Avoid_: Terminal adapter, observer, renderer, UI
+
 **Document extraction**:
 The per-document responsibility within an Extraction run for turning one selected document into an extraction outcome, including document-kind handling, cover behavior, warnings, and output classification. It excludes Document selection, cross-document sequencing, and run-level presentation.
 _Avoid_: Per-document execution, document processor
