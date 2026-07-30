@@ -18,6 +18,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 
 use crate::conversion::{ConversionPolicyError, ConversionTarget};
+use crate::document_extraction::DocumentExtractionWarning;
 use crate::document_selection::{
     DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
     DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
@@ -362,9 +363,11 @@ impl ExtractionRunObserver for IndicatifRunObserver {
                     eprintln!("Error processing {}: {}", path.display(), message);
                 });
             }
-            ExtractionRunObservation::DocumentWarning { message, .. } => {
+            ExtractionRunObservation::DocumentWarning { warning, .. } => {
+                // The document path stays run context only; presentation adds the
+                // prefix and nothing else to the Document extraction-owned body.
                 Self::suspend_progress_bar(self.extraction_pb.as_ref(), || {
-                    eprintln!("Warning: {}", message);
+                    eprintln!("{}", document_warning_line(&warning));
                 });
             }
             ExtractionRunObservation::DocumentFinished { .. } => {
@@ -381,6 +384,14 @@ impl ExtractionRunObserver for IndicatifRunObserver {
             }
         }
     }
+}
+
+/// Builds the terminal line shown for one opaque Document extraction warning.
+///
+/// Presentation is limited to the `Warning:` prefix; the stable body is read
+/// from the warning value and the originating document path is not added.
+fn document_warning_line(warning: &DocumentExtractionWarning) -> String {
+    format!("Warning: {}", warning.get_message())
 }
 
 /// Builds the final extraction summary shown in the terminal.
@@ -482,9 +493,12 @@ mod tests {
     use indicatif::{ProgressDrawTarget, TermLike};
     use std::fs;
     use std::io;
+    use std::io::Write as _;
     use std::num::NonZeroUsize;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
 
     #[derive(Debug, Default)]
     struct TerminalActivity {
@@ -618,6 +632,80 @@ mod tests {
                 self.diagnostic_writes += activity.writes - writes;
             }
         }
+    }
+
+    /// Delegating observer that measures suspension around each warning presentation.
+    ///
+    /// It captures the opaque warning values the run transported so presentation
+    /// can be asserted without the terminal test owning any stable wording.
+    struct WarningPresentationObserver {
+        inner: IndicatifRunObserver,
+        terminal_activity: Arc<Mutex<TerminalActivity>>,
+        warnings: Vec<DocumentExtractionWarning>,
+        warning_clear_lines: usize,
+        warning_writes: usize,
+    }
+
+    impl ExtractionRunObserver for WarningPresentationObserver {
+        /// Delegates observations while recording warning values and suspension effects.
+        fn on_observation(&mut self, observation: ExtractionRunObservation) {
+            let starts_extraction = matches!(
+                &observation,
+                ExtractionRunObservation::ExtractionStarted { .. }
+            );
+            let warning = match &observation {
+                ExtractionRunObservation::DocumentWarning { warning, .. } => Some(warning.clone()),
+                _ => None,
+            };
+            // Snapshot before delegation so only the warning's suspend operation
+            // contributes to the clear/redraw deltas measured below.
+            let before = warning.as_ref().map(|_| {
+                let activity = self
+                    .terminal_activity
+                    .lock()
+                    .expect("terminal activity should be available");
+                (activity.clear_lines, activity.writes)
+            });
+
+            self.inner.on_observation(observation);
+
+            if starts_extraction {
+                // Delegation creates the production progress bar. Attach a drawing
+                // terminal and draw once so a later warning must suspend a live bar.
+                let progress = self
+                    .inner
+                    .extraction_pb
+                    .as_ref()
+                    .expect("extraction start should create progress");
+                progress.set_draw_target(ProgressDrawTarget::term_like(Box::new(RecordingTerm {
+                    activity: Arc::clone(&self.terminal_activity),
+                })));
+                progress.tick();
+            }
+
+            if let (Some(warning), Some((clear_lines, writes))) = (warning, before) {
+                let activity = self
+                    .terminal_activity
+                    .lock()
+                    .expect("terminal activity should be available");
+                self.warnings.push(warning);
+                self.warning_clear_lines += activity.clear_lines - clear_lines;
+                self.warning_writes += activity.writes - writes;
+            }
+        }
+    }
+
+    /// Writes a DOCX fixture containing the supplied archive entries in order.
+    fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).expect("test DOCX should be creatable");
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, data) in entries {
+            zip.start_file(*name, SimpleFileOptions::default())
+                .expect("ZIP entry should start");
+            zip.write_all(data)
+                .expect("ZIP entry payload should be writable");
+        }
+        zip.finish().expect("test DOCX should finish");
     }
 
     /// Returns an isolated temporary directory for one observer test.
@@ -966,6 +1054,66 @@ mod tests {
             "suspension should redraw the active spinner after rendering the warning"
         );
         assert!(observer.inner.scan_pb.is_none());
+
+        fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    }
+
+    /// Verifies warning presentation adds one prefix and suspends the extraction bar.
+    ///
+    /// The stable body stays owned by Document extraction, so the assertions
+    /// compare against the transported value rather than restating any wording.
+    #[test]
+    fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progress() {
+        let temp_dir = observer_temp_test_dir("warning-presentation");
+        fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+        let document_path = temp_dir.join("warned.docx");
+        let output_dir = temp_dir.join("output");
+        write_docx(
+            &document_path,
+            &[("word/media/only.png", b"not actually a png")],
+        );
+        let args = Args::try_parse_from([
+            "test",
+            document_path.to_string_lossy().as_ref(),
+            "--output",
+            output_dir.to_string_lossy().as_ref(),
+        ])
+        .expect("warning fixture arguments should parse");
+        let prepared =
+            extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+        let mut observer = WarningPresentationObserver {
+            inner: IndicatifRunObserver::new(),
+            terminal_activity: Arc::new(Mutex::new(TerminalActivity::default())),
+            warnings: Vec::new(),
+            warning_clear_lines: 0,
+            warning_writes: 0,
+        };
+
+        extraction_run::run(prepared.request, &mut observer);
+
+        assert_eq!(observer.warnings.len(), 1);
+        assert!(
+            observer.warning_clear_lines > 0,
+            "suspension should clear the active extraction bar before rendering the warning"
+        );
+        assert!(
+            observer.warning_writes > 0,
+            "suspension should redraw the active extraction bar after rendering the warning"
+        );
+
+        // Stripping exactly one prefix must leave the transported body untouched,
+        // which rules out both a missing prefix and a doubled one without this
+        // test knowing what the body says.
+        let warning = &observer.warnings[0];
+        let rendered = document_warning_line(warning);
+        assert_eq!(
+            rendered.strip_prefix("Warning: "),
+            Some(warning.get_message())
+        );
+        assert!(
+            !rendered.contains(&document_path.display().to_string()),
+            "the document path is run context only and must not reach presentation"
+        );
 
         fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
     }

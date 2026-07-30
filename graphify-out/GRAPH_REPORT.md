@@ -1,39 +1,39 @@
-# Graph Report - Word-GIF-Extractor  (2026-07-29)
+# Graph Report - Word-GIF-Extractor  (2026-07-30)
 
 ## Corpus Check
-- 39 files · ~50,527 words
+- 61 files · ~63,052 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 925 nodes · 2421 edges · 33 communities
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 19 edges (avg confidence: 0.86)
+- 1035 nodes · 2420 edges · 53 communities (49 shown, 4 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 37 edges (avg confidence: 0.83)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7d547a8d`
+- Built from commit: `6f2c3d9e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - image_write_pipeline.rs
-- resource_archive.rs
+- epub.rs
 - document_selection.rs
 - extraction_run.rs
 - ImageFormat
 - main.rs
-- conversion.rs
-- document_extraction.rs
+- conversion/tests.rs
+- .new
 - Document Selection
 - DocumentSelectionDiagnostic
-- epub.rs
-- extraction_run_intake.rs
-- emission.rs
-- .classify
+- EpubDeclarations
+- extraction_run_intake/tests.rs
+- complete_reserved_file
+- document_extraction_warning_cli.rs
 - EpubResourceDeclaration
 - conversion_policy_cli.rs
 - Incremental Update Flow
 - Full Graphify Pipeline
-- docx.rs
+- resource_archive.rs
 - document_selection_diagnostics_cli.rs
 - Semantic Update Path
 - Constrained Query Expansion
@@ -44,10 +44,29 @@
 - Graph Query Flow
 - Graph Build and Analysis
 - pre_run_notices_cli.rs
-- produced_outcome
+- .new
 - RecordingTerm
 - IndicatifRunObserver
 - Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?
+- What You Must Do When Invoked
+- resource_archive/tests.rs
+- EpubFilter
+- FilesystemIndicatifObserver
+- graphify reference: extra exports and benchmark
+- .classify
+- graphify reference: query, path, explain
+- Args
+- Q: Does the refreshed graph reflect Document extraction as the warning-wording owner?
+- graphify reference: add a URL and watch a folder
+- graphify reference: commit hook and native CLAUDE.md integration
+- graphify reference: incremental update and cluster-only
+- graphify reference: GitHub clone and cross-repo merge
+- graphify reference: transcribe video and audio
+- CLAUDE.md
+- extraction-spec.md
+- epub_declarations/tests.rs
+- extraction_run/tests.rs
+- document_extraction/tests.rs
 
 ## God Nodes (most connected - your core abstractions)
 1. `ImageFormat` - 38 edges
@@ -74,12 +93,8 @@
   docs/adr/0002-retain-epub-declarations-for-the-extraction-run.md → CONTEXT.md
 
 ## Import Cycles
-- 2-file cycle: `src/extraction_run.rs -> src/extraction_run_intake.rs -> src/extraction_run.rs`
 - 2-file cycle: `src/extraction_run_intake.rs -> src/main.rs -> src/extraction_run_intake.rs`
-- 2-file cycle: `src/extraction_run.rs -> src/main.rs -> src/extraction_run.rs`
 - 2-file cycle: `src/document_selection.rs -> src/document_selection/progress.rs -> src/document_selection.rs`
-- 3-file cycle: `src/extraction_run.rs -> src/main.rs -> src/extraction_run_intake.rs -> src/extraction_run.rs`
-- 3-file cycle: `src/extraction_run.rs -> src/extraction_run_intake.rs -> src/main.rs -> src/extraction_run.rs`
 
 ## Hyperedges (group relationships)
 - **Graphify Extraction and Build Flow** — _codex_skills_graphify_skill_parallel_structural_and_semantic_extraction, _codex_skills_graphify_references_extraction_spec_extraction_subagent_contract, _codex_skills_graphify_skill_graph_build_and_analysis, _codex_skills_graphify_skill_graph_health_gate [EXTRACTED 1.00]
@@ -88,23 +103,23 @@
 - **Extraction Run Flow** — context_extraction_run_intake, context_extraction_run_request, context_extraction_run, context_document_selection, context_document_extraction, context_extraction_run_outcome, context_extraction_run_observation [EXTRACTED 1.00]
 - **Image Write Flow** — context_image_write_policy, context_image_write_pipeline, context_archive_image_discovery, context_image_file_emission, context_image_format, context_conversion_policy, context_image_write_purpose [EXTRACTED 1.00]
 
-## Communities (33 total, 0 thin omitted)
+## Communities (53 total, 4 thin omitted)
 
 ### Community 0 - "image_write_pipeline.rs"
 Cohesion: 0.07
 Nodes (77): Cursor, accepted_source_reuses_evidence_prefix_and_completes_payload_incrementally(), AcceptedImage, ArchiveImageVisitor, ArchiveImageVisitor<'policy, 'request>, AssertOutputBeforeTailReader, bom_prefixed_svg_at_end_of_evidence_window_is_discovered(), bom_prefixed_svg_beyond_evidence_window_is_not_discovered() (+69 more)
 
-### Community 1 - "resource_archive.rs"
-Cohesion: 0.09
-Nodes (48): PhantomData, archive_path(), ArchiveResourceIdentity, catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session(), CatalogSeed, consumer_failure_propagates_with_its_concrete_error_identity(), ConsumerFailure, EpubResource (+40 more)
+### Community 1 - "epub.rs"
+Cohesion: 0.15
+Nodes (46): acquisition_failure_sources(), archive_open_failure_after_selection_is_a_fatal_extraction_error(), archive_parse_failure_after_selection_is_a_fatal_extraction_error(), corrupt_stored_payload(), cover_emission_failure_aborts_the_document(), cover_retries_precede_partial_normal_fallback_facts(), cover_retry_warnings_precede_normal_fallback_warning(), encoded_test_png() (+38 more)
 
 ### Community 2 - "document_selection.rs"
-Cohesion: 0.09
-Nodes (66): create_directory_link(), create_file_symlink(), declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read(), deduplicate_epubs_by_declarations(), DocumentCandidate, DocumentSelectionOptions, epub_dedupe_key(), EpubFilter (+58 more)
+Cohesion: 0.15
+Nodes (39): create_directory_link(), create_file_symlink(), declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read(), format_epub_base_name(), is_epub(), remove_directory_link(), remove_file_symlink(), sanitize_filename() (+31 more)
 
 ### Community 3 - "extraction_run.rs"
-Cohesion: 0.09
-Nodes (50): NonZeroUsize, Observer, all_failed_requested_inputs_reach_one_no_documents_terminal_observation(), assert_single_terminal_observation(), ConversionAggregation, ConversionFacts, create_directory_link(), DocumentSelectionObservationAdapter (+42 more)
+Cohesion: 0.05
+Nodes (38): NonZeroUsize, Observer, DocumentExtraction, DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionOutcome, DocumentExtractionPolicy, DocumentExtractionWarning (+30 more)
 
 ### Community 4 - "ImageFormat"
 Cohesion: 0.06
@@ -112,15 +127,15 @@ Nodes (37): Action, EpubImagePlan<'session>, Self, ImageFormat, HashSet, Option,
 
 ### Community 5 - "main.rs"
 Cohesion: 0.07
-Nodes (3): observer_temp_test_dir(), recursive_discovery_diagnostic_suspends_active_scan_spinner(), PathBuf
+Nodes (7): document_warning_line(), document_warning_presentation_adds_one_prefix_and_suspends_extraction_progress(), observer_temp_test_dir(), recursive_discovery_diagnostic_suspends_active_scan_spinner(), Path, PathBuf, write_docx()
 
-### Community 6 - "conversion.rs"
-Cohesion: 0.09
-Nodes (52): DynamicImage, CodecTarget, composite_on_white(), conversion_policy_converts_supported_source(), ConversionMode, ConversionOutcome, ConversionPolicy, ConversionPolicyError (+44 more)
+### Community 6 - "conversion/tests.rs"
+Cohesion: 0.07
+Nodes (55): DynamicImage, CodecTarget, composite_on_white(), ConversionMode, ConversionOutcome, ConversionPolicy, ConversionPolicyError, ConversionRequest (+47 more)
 
-### Community 7 - "document_extraction.rs"
-Cohesion: 0.09
-Nodes (37): conversion_policy(), DocumentExtraction, DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionOutcome, DocumentExtractionPolicy, DocumentExtractionWarning, docx_uses_normal_images_when_policy_requests_an_epub_cover() (+29 more)
+### Community 7 - ".new"
+Cohesion: 0.24
+Nodes (11): fallback_base_name(), fallback_display_name(), filename_dedupe_key(), resolve_output_dir(), resolves_output_dir_absolute_input(), resolves_output_dir_bare_filename_defaults_to_dot(), resolves_output_dir_beside_file_in_subdir(), resolves_output_dir_uses_global_when_set() (+3 more)
 
 ### Community 8 - "Document Selection"
 Cohesion: 0.06
@@ -130,25 +145,25 @@ Nodes (44): Document Archive Extraction Flow, Graphify Workflow, Word Image Extr
 Cohesion: 0.08
 Nodes (24): R, SilentDocumentSelectionObserver, DocumentSelectionDiagnostic, DocumentSelectionLifecycle, DocumentSelectionLifecycle<'observer>, DocumentSelectionObserver, DocumentSelectionPhaseStatus, DocumentSelectionProgress (+16 more)
 
-### Community 10 - "epub.rs"
+### Community 10 - "EpubDeclarations"
+Cohesion: 0.20
+Nodes (13): discover_documents(), Vec, DocumentCandidate, DocumentSelectionOptions, Option, PathBuf, Self, String (+5 more)
+
+### Community 11 - "extraction_run_intake/tests.rs"
+Cohesion: 0.09
+Nodes (36): ExtractionRunIntakeError, prepare(), PreparedExtractionRun, PreRunNotice, Display, Error, Formatter, HashSet (+28 more)
+
+### Community 12 - "complete_reserved_file"
 Cohesion: 0.16
-Nodes (44): acquisition_failure_sources(), archive_open_failure_after_selection_is_a_fatal_extraction_error(), archive_parse_failure_after_selection_is_a_fatal_extraction_error(), corrupt_stored_payload(), cover_emission_failure_aborts_the_document(), cover_retries_precede_partial_normal_fallback_facts(), cover_retry_warnings_precede_normal_fallback_warning(), encoded_test_png() (+36 more)
+Nodes (18): candidate_path(), complete_reserved_file(), FileCompletionError, FileCompletionStage, ImageFileEmission<'name>, Error, File, FnOnce (+10 more)
 
-### Community 11 - "extraction_run_intake.rs"
-Cohesion: 0.11
-Nodes (35): builds_default_conversion_policy(), builds_validated_epub_cover_extraction_policy(), combines_positional_and_named_inputs(), defaults_to_current_directory_when_inputs_are_empty(), execute(), ExtractionRunIntakeError, falls_back_to_all_formats_when_no_valid_formats_are_supplied(), gif_only_overrides_format_selection() (+27 more)
-
-### Community 12 - "emission.rs"
-Cohesion: 0.21
-Nodes (17): candidate_path(), cleanup_failure_is_reported_with_the_original_write_failure(), complete_reserved_file(), FileCompletionError, FileCompletionStage, ImageFileEmission<'name>, Error, File (+9 more)
-
-### Community 13 - ".classify"
-Cohesion: 0.23
-Nodes (10): discover_documents(), RequestedInput, RequestedInputFailure, Error, Option, Path, PathBuf, Result (+2 more)
+### Community 13 - "document_extraction_warning_cli.rs"
+Cohesion: 0.53
+Nodes (5): renders_document_extraction_warning_with_one_prefix_and_no_document_path(), Path, PathBuf, temp_test_dir(), write_warning_docx()
 
 ### Community 14 - "EpubResourceDeclaration"
 Cohesion: 0.13
-Nodes (18): DocError, acquires_complete_payload_free_epub_declarations(), EpubDeclarationError, EpubResourceDeclaration, Display, Error, Formatter, Into (+10 more)
+Nodes (12): DocError, EpubDeclarationError, EpubResourceDeclaration, Display, Error, Formatter, Into, Path (+4 more)
 
 ### Community 15 - "conversion_policy_cli.rs"
 Cohesion: 0.32
@@ -162,9 +177,9 @@ Nodes (10): Supported URL Types, URL Ingestion, Verbatim Source Identity, Change
 Cohesion: 0.20
 Nodes (10): Graph Database Exports, MCP Graph Server, Optional Graph Exports, Token Reduction Benchmark, Cross-Repository Graph Merge, GitHub Clone Flow, Monorepo Isolated Extraction, Repository Origin Attribute (+2 more)
 
-### Community 18 - "docx.rs"
-Cohesion: 0.44
-Nodes (8): preserves_zip_order_for_numbered_outputs(), process_file(), returns_extension_fallback_warning_fact(), ImageWriteOutcome, Path, PathBuf, temp_test_dir(), write_extension_fallback_docx()
+### Community 18 - "resource_archive.rs"
+Cohesion: 0.07
+Nodes (40): PhantomData, process_file(), ImageWriteOutcome, Path, preserves_zip_order_for_numbered_outputs(), returns_extension_fallback_warning_fact(), Path, PathBuf (+32 more)
 
 ### Community 19 - "document_selection_diagnostics_cli.rs"
 Cohesion: 0.47
@@ -206,13 +221,13 @@ Nodes (5): Cluster-Only Refresh, Community-Labeled Graph Outputs, Graph Build an
 Cohesion: 0.83
 Nodes (3): renders_ordered_pre_run_notices_on_existing_streams(), PathBuf, temp_test_dir()
 
-### Community 29 - "produced_outcome"
-Cohesion: 0.16
-Nodes (17): assert_terminal_observation_finishes_extraction(), combined_conversion_and_gif_summary_uses_semantic_outcome(), conversion_summary_reports_preserved_matching_source_as_unconverted(), ConversionTarget, ConversionTargetArg, default_output_summary_preserves_existing_wording(), epub_cover_fallback_summary_reports_normal_images(), epub_filter_description() (+9 more)
+### Community 29 - ".new"
+Cohesion: 0.22
+Nodes (12): assert_terminal_observation_finishes_extraction(), combined_conversion_and_gif_summary_uses_semantic_outcome(), conversion_summary_reports_preserved_matching_source_as_unconverted(), default_output_summary_preserves_existing_wording(), epub_cover_fallback_summary_reports_normal_images(), final_summary_message(), gif_routing_summary_preserves_existing_wording(), main() (+4 more)
 
 ### Community 30 - "RecordingTerm"
-Cohesion: 0.20
-Nodes (7): Arc, Mutex, FilesystemIndicatifObserver, RecordingTerm, Result, TerminalActivity, TermLike
+Cohesion: 0.27
+Nodes (3): RecordingTerm, Result, TermLike
 
 ### Community 31 - "IndicatifRunObserver"
 Cohesion: 0.30
@@ -222,24 +237,85 @@ Nodes (7): F, ProgressBar, ProgressStyle, create_progress_style(), create_spinne
 Cohesion: 0.40
 Nodes (4): Answer, Outcome, Q: How should GitHub issue #22 be decomposed into dependency-aware vertical tracer-bullet tickets?, Source Nodes
 
+### Community 33 - "What You Must Do When Invoked"
+Cohesion: 0.08
+Nodes (24): For /graphify add and --watch, For /graphify query, For the commit hook and native CLAUDE.md integration, For --update and --cluster-only, /graphify, Honesty Rules, Interpreter guard for subcommands, Part A - Structural extraction for code files (+16 more)
+
+### Community 34 - "resource_archive/tests.rs"
+Cohesion: 0.19
+Nodes (20): catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session(), consumer_failure_propagates_with_its_concrete_error_identity(), ConsumerFailure, exact_manifest_path_wins_before_percent_decoded_alias(), invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure(), malformed_percent_escape_is_retained_as_typed_acquisition_failure(), mark_first_entry_encrypted(), percent_decoded_aliases_share_archive_resource_identity() (+12 more)
+
+### Community 35 - "EpubFilter"
+Cohesion: 0.43
+Nodes (6): deduplicate_epubs_by_declarations(), epub_dedupe_key(), EpubFilter, filter_epub_files(), matches_filter(), Vec
+
+### Community 36 - "FilesystemIndicatifObserver"
+Cohesion: 0.53
+Nodes (6): Arc, Mutex, ExtractionRunObserver, FilesystemIndicatifObserver, TerminalActivity, WarningPresentationObserver
+
+### Community 37 - "graphify reference: extra exports and benchmark"
+Cohesion: 0.22
+Nodes (8): graphify reference: extra exports and benchmark, Step 6b - Wiki (only if --wiki flag), Step 7 - Neo4j export (only if --neo4j or --neo4j-push flag), Step 7a - FalkorDB export (only if --falkordb or --falkordb-push flag), Step 7b - SVG export (only if --svg flag), Step 7c - GraphML export (only if --graphml flag), Step 7d - MCP server (only if --mcp flag), Step 8 - Token reduction benchmark (only if total_words > 5000)
+
+### Community 38 - ".classify"
+Cohesion: 0.24
+Nodes (8): RequestedInput, RequestedInputFailure, Error, Option, Path, PathBuf, Result, Self
+
+### Community 39 - "graphify reference: query, path, explain"
+Cohesion: 0.33
+Nodes (5): For /graphify explain, For /graphify path, graphify reference: query, path, explain, Step 0 — Constrained query expansion (REQUIRED before traversal), Step 1 — Traversal
+
+### Community 40 - "Args"
+Cohesion: 0.29
+Nodes (7): Args, ConversionTarget, ConversionTargetArg, epub_filter_description(), From, String, Vec
+
+### Community 41 - "Q: Does the refreshed graph reflect Document extraction as the warning-wording owner?"
+Cohesion: 0.40
+Nodes (4): Answer, Outcome, Q: Does the refreshed graph reflect Document extraction as the warning-wording owner?, Source Nodes
+
+### Community 42 - "graphify reference: add a URL and watch a folder"
+Cohesion: 0.50
+Nodes (3): For /graphify add, For --watch, graphify reference: add a URL and watch a folder
+
+### Community 43 - "graphify reference: commit hook and native CLAUDE.md integration"
+Cohesion: 0.50
+Nodes (3): For git commit hook, For native CLAUDE.md integration, graphify reference: commit hook and native CLAUDE.md integration
+
+### Community 44 - "graphify reference: incremental update and cluster-only"
+Cohesion: 0.50
+Nodes (3): For --cluster-only, For --update (incremental re-extraction), graphify reference: incremental update and cluster-only
+
+### Community 49 - "epub_declarations/tests.rs"
+Cohesion: 0.47
+Nodes (8): acquires_complete_payload_free_epub_declarations(), Path, PathBuf, sparse_epub_declarations_are_a_successful_acquisition(), temp_test_dir(), write_epub(), write_epub_with_cover(), write_sparse_epub()
+
+### Community 50 - "extraction_run/tests.rs"
+Cohesion: 0.20
+Nodes (31): all_failed_requested_inputs_reach_one_no_documents_terminal_observation(), assert_single_terminal_observation(), create_directory_link(), epub_identity_is_consistent_across_normal_and_cover_runs(), epub_normal_fallback_is_classified_as_images(), execute(), nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream(), no_selected_documents_returns_no_documents_outcome() (+23 more)
+
+### Community 52 - "document_extraction/tests.rs"
+Cohesion: 0.25
+Nodes (22): conversion_policy(), docx_uses_normal_images_when_policy_requests_an_epub_cover(), docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phase_order(), epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail(), epub_cover_fallback_is_classified_as_normal_images(), epub_cover_output_is_not_classified_as_normal_images(), epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback(), epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() (+14 more)
+
 ## Knowledge Gaps
-- **34 isolated node(s):** `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>`, `RequiredCoverWriteRequest<'a>`, `Answer` (+29 more)
+- **79 isolated node(s):** `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>`, `RequiredCoverWriteRequest<'a>`, `graphify` (+74 more)
   These have ≤1 connection - possible missing edges or undocumented components.
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ImageFormat` connect `ImageFormat` to `image_write_pipeline.rs`, `extraction_run.rs`, `conversion.rs`, `epub.rs`, `extraction_run_intake.rs`, `emission.rs`?**
-  _High betweenness centrality (0.143) - this node is a cross-community bridge._
-- **Why does `EpubDeclarations` connect `document_selection.rs` to `epub.rs`, `EpubResourceDeclaration`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
-- **Why does `ArchiveImageSource` connect `ImageFormat` to `image_write_pipeline.rs`?**
-  _High betweenness centrality (0.030) - this node is a cross-community bridge._
+- **Why does `ImageFormat` connect `ImageFormat` to `image_write_pipeline.rs`, `epub.rs`, `extraction_run.rs`, `conversion/tests.rs`, `extraction_run_intake/tests.rs`, `complete_reserved_file`?**
+  _High betweenness centrality (0.097) - this node is a cross-community bridge._
+- **Why does `EpubDeclarations` connect `EpubDeclarations` to `epub.rs`, `document_selection.rs`, `EpubFilter`, `EpubResourceDeclaration`?**
+  _High betweenness centrality (0.046) - this node is a cross-community bridge._
+- **Why does `ConversionPolicy` connect `conversion/tests.rs` to `image_write_pipeline.rs`, `extraction_run.rs`, `document_extraction/tests.rs`?**
+  _High betweenness centrality (0.035) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `select_documents()` (e.g. with `retained_epub_declarations_are_authoritative_during_extraction()` and `select_one_document()`) actually correct?**
   _`select_documents()` has 4 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `SessionBrand<'session>`, `DocumentSelectionObservationAdapter<'observer, Observer>`, `ImageWriteRequest<'a>` to the rest of the system?**
-  _34 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _79 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `image_write_pipeline.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.06872393661384488 - nodes in this community are weakly interconnected._
-- **Should `resource_archive.rs` be split into smaller, more focused modules?**
-  _Cohesion score 0.0907103825136612 - nodes in this community are weakly interconnected._
+- **Should `epub.rs` be split into smaller, more focused modules?**
+  _Cohesion score 0.14801110083256244 - nodes in this community are weakly interconnected._
