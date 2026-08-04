@@ -20,6 +20,7 @@ use crate::document_extraction::DocumentExtractionPolicy;
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::ImageWritePolicy;
 
 /// Conversion target spelling accepted by the CLI adapter.
 ///
@@ -216,15 +217,18 @@ pub fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeE
         DocumentExtractionPolicy::NormalImages
     };
 
+    // Intake selects all three Image write policy ingredients, so it assembles the
+    // policy here and hands the finished value over. The request wraps it in the
+    // Image write pipeline itself, which keeps pipeline types out of intake.
+    let image_write_policy = ImageWritePolicy::new(allowed_formats, conversion, gif_output);
+
     let request = ExtractionRunRequest::new(
         all_inputs,
         recursive,
         output,
         EpubFilter { title, author },
         document_extraction_policy,
-        allowed_formats,
-        conversion,
-        gif_output,
+        image_write_policy,
     );
     let mut notices = Vec::new();
     if let Some(path) = defaulted_input {

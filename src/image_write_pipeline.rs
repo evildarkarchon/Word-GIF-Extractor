@@ -41,6 +41,16 @@ impl ImageWritePolicy {
             gif_output,
         }
     }
+
+    /// Returns whether the policy carries a Conversion policy.
+    pub(crate) fn is_conversion_configured(&self) -> bool {
+        self.conversion.is_some()
+    }
+
+    /// Returns the GIF destination when the policy routes GIFs separately.
+    pub(crate) fn gif_destination(&self) -> Option<&Path> {
+        self.gif_output.as_deref()
+    }
 }
 
 /// Observable Image write pipeline counts for one invocation.

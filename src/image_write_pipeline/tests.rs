@@ -1105,6 +1105,45 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
+/// Pins the invariant that an unconfigured Image write policy produces no
+/// conversion or GIF-routing counts.
+///
+/// A GIF is included deliberately: with no GIF destination it must land in the
+/// normal output directory and leave `gifs_routed` at zero, which is the half of
+/// the invariant a PNG-only fixture cannot observe.
+#[test]
+fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
+    let temp_dir = temp_test_dir("pipeline", "unconfigured-policy-counts");
+    let png = MINIMAL_PNG.to_vec();
+    let gif = b"GIF89a unrouted payload".to_vec();
+    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+        HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
+        None,
+        None,
+    ));
+
+    let result = write_sources(
+        &pipeline,
+        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        vec![
+            named_source(png.clone(), "media/image1.png"),
+            named_source(gif.clone(), "media/image2.gif"),
+        ],
+    )
+    .expect("accepted sources should be written without conversion or routing");
+
+    assert_eq!(result.counts.extracted, 2);
+    assert_eq!(result.counts.converted, 0);
+    assert_eq!(result.counts.skipped, 0);
+    assert_eq!(result.counts.gifs_routed, 0);
+    assert!(result.has_normal_image_output());
+    assert!(result.warnings.is_empty());
+    assert_eq!(fs::read(temp_dir.join("sample_1.png")).unwrap(), png);
+    assert_eq!(fs::read(temp_dir.join("sample_2.gif")).unwrap(), gif);
+
+    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}
+
 #[test]
 fn matching_conversion_target_preserves_original_without_conversion_count() {
     let temp_dir = temp_test_dir("pipeline", "matching-conversion-target");

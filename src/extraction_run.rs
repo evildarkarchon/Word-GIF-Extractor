@@ -1,10 +1,8 @@
 //! Extraction run workflow for document selection, sequencing, and aggregation.
 
-use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use crate::conversion::ConversionPolicy;
 use crate::document_extraction::{
     DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
     DocumentExtractionPolicy, DocumentExtractionWarning,
@@ -13,14 +11,15 @@ use crate::document_selection::{
     self, DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionOptions,
     DocumentSelectionProgress, EpubFilter,
 };
-use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 
 /// Opaque, ready-to-execute handoff produced by Extraction run intake.
 ///
-/// Construction derives presentation-relevant intent from the same policies
-/// used for extraction, so conversion and GIF-routing facts cannot drift from
-/// the configured workflow. An Extraction run consumes this request by value.
+/// Construction takes the two assembled policies that govern the run — the
+/// Document extraction policy and the Image write policy — and derives
+/// presentation-relevant intent from the latter, so conversion and GIF-routing
+/// facts cannot drift from the configured workflow. An Extraction run consumes
+/// this request by value.
 pub struct ExtractionRunRequest {
     inputs: Vec<PathBuf>,
     recursive: bool,
@@ -34,28 +33,20 @@ pub struct ExtractionRunRequest {
 impl ExtractionRunRequest {
     /// Builds one valid request from normalized inputs and workflow policies.
     ///
-    /// Conversion intent and the GIF destination are retained alongside the
-    /// configured Image write pipeline for outcome classification.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "named normalized facts avoid exposing a parallel request-parts model"
-    )]
+    /// Conversion intent and the GIF destination are read off the assembled
+    /// Image write policy and retained alongside the pipeline the request wraps
+    /// it in, for outcome classification.
     pub(crate) fn new(
         inputs: Vec<PathBuf>,
         recursive: bool,
         output: Option<PathBuf>,
         epub_filter: EpubFilter,
         document_extraction_policy: DocumentExtractionPolicy,
-        allowed_formats: HashSet<ImageFormat>,
-        conversion: Option<ConversionPolicy>,
-        gif_destination: Option<PathBuf>,
+        image_write_policy: ImageWritePolicy,
     ) -> Self {
-        let conversion_requested = conversion.is_some();
-        let image_write_pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-            allowed_formats,
-            conversion,
-            gif_destination.clone(),
-        ));
+        let conversion_requested = image_write_policy.is_conversion_configured();
+        let gif_destination = image_write_policy.gif_destination().map(Path::to_path_buf);
+        let image_write_pipeline = ImageWritePipeline::new(image_write_policy);
 
         Self {
             inputs,
