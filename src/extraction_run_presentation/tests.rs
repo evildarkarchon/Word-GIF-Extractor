@@ -156,6 +156,7 @@ fn produced_outcome(
 /// these outcomes and the no-documents one, and it is visible through the capture
 /// without the test holding the display the presentation owns.
 fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) {
+    let summary = final_summary_message(&outcome);
     let (output, capture) = TerminalOutput::captured();
     let mut presentation = ExtractionRunPresentation::new(output);
     let cover_only = match &outcome {
@@ -176,6 +177,12 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
     assert!(
         capture.writes() > drawn_before,
         "the terminal outcome should be drawn on the extraction display"
+    );
+    assert!(
+        capture.progress_text().contains(&summary),
+        "the drawn summary should be readable back; wanted {:?} within {:?}",
+        summary,
+        capture.progress_text()
     );
     assert_eq!(
         capture.stdout(),
@@ -531,6 +538,42 @@ fn terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display() {
     }
 }
 
+/// Verifies the capture reads back progress text other than the final summary.
+///
+/// The summary assertion in
+/// [`assert_terminal_observation_draws_the_summary`] covers the last thing a run
+/// draws. This covers what it drew on the way there: a phase caption and the
+/// per-document message that replaces it both belong to the progress display and
+/// reach neither text stream, so the capture is the only place they are readable.
+#[test]
+fn captured_progress_text_retains_the_captions_drawn_before_the_summary() {
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    presentation.on_observation(ExtractionRunObservation::ExtractionStarted {
+        total: 2,
+        cover_only: false,
+    });
+    presentation.on_observation(ExtractionRunObservation::DocumentStarted {
+        path: PathBuf::from("/tmp/documents/chapter.docx"),
+        display_name: "chapter.docx".to_string(),
+    });
+
+    let drawn = capture.progress_text();
+    assert!(
+        drawn.contains("Extracting images from documents"),
+        "the extraction caption should be readable back; got {:?}",
+        drawn
+    );
+    assert!(
+        drawn.contains("chapter.docx"),
+        "the per-document message should be readable back; got {:?}",
+        drawn
+    );
+    assert_eq!(capture.stdout(), "");
+    assert_eq!(capture.stderr(), "");
+}
+
 /// Verifies the one outcome that has no display to finish is printed instead.
 ///
 /// No documents means no extraction ever started, so there is no progress display
@@ -550,6 +593,7 @@ fn no_documents_terminal_outcome_is_printed_rather_than_drawn() {
     assert_eq!(capture.stderr(), "");
     assert_eq!(capture.writes(), 0);
     assert_eq!(capture.clear_lines(), 0);
+    assert_eq!(capture.progress_text(), "");
 }
 
 /// Verifies the two pre-run notices keep their existing wording and streams.

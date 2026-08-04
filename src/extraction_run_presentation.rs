@@ -54,24 +54,44 @@ pub fn run_cli(args: Args, output: TerminalOutput) -> Result<()> {
     Ok(())
 }
 
-/// Counts of the terminal operations a captured progress display performed.
+/// What a captured progress display did, and what it said doing it.
 ///
-/// Clearing and redrawing is what suspension does, so these two counters are how a
+/// Clearing and redrawing is what suspension does, so the two counters are how a
 /// captured run shows that a direct write was made without a redraw racing it.
+/// The counters alone cannot show *what* was drawn, which leaves the terminal
+/// summaries of the two output-bearing outcomes -- they are rendered onto the
+/// progress display and never touch a text stream -- unreadable, so the rendered
+/// text is kept alongside them.
 #[derive(Debug, Default)]
 struct TerminalActivity {
     clear_lines: usize,
     writes: usize,
+    rendered: String,
 }
 
-/// Progress-display terminal that counts operations instead of performing them.
+impl TerminalActivity {
+    /// Records one drawn terminal line, counting it and keeping its text.
+    ///
+    /// Both write operations land here terminated, because the progress library
+    /// makes one call per drawn line and uses the unterminated one only for the
+    /// last line of a draw, to leave the terminal cursor on it. Terminating both
+    /// keeps the readback one line per drawn line instead of running consecutive
+    /// redraws together.
+    fn record_write(&mut self, line: &str) {
+        self.writes += 1;
+        self.rendered.push_str(line);
+        self.rendered.push('\n');
+    }
+}
+
+/// Progress-display terminal that records operations instead of performing them.
 #[derive(Debug)]
 struct RecordingTerm {
     activity: Arc<Mutex<TerminalActivity>>,
 }
 
 impl RecordingTerm {
-    /// Borrows the shared counters for the duration of one recorded operation.
+    /// Borrows the shared recording for the duration of one recorded operation.
     fn counters(&self) -> MutexGuard<'_, TerminalActivity> {
         self.activity
             .lock()
@@ -100,13 +120,13 @@ impl TermLike for RecordingTerm {
         Ok(())
     }
 
-    fn write_line(&self, _s: &str) -> io::Result<()> {
-        self.counters().writes += 1;
+    fn write_line(&self, s: &str) -> io::Result<()> {
+        self.counters().record_write(s);
         Ok(())
     }
 
-    fn write_str(&self, _s: &str) -> io::Result<()> {
-        self.counters().writes += 1;
+    fn write_str(&self, s: &str) -> io::Result<()> {
+        self.counters().record_write(s);
         Ok(())
     }
 
@@ -269,6 +289,25 @@ impl Capture {
             .lock()
             .expect("terminal activity should be available")
             .writes
+    }
+
+    /// Returns every line the progress display has drawn so far, each terminated.
+    ///
+    /// This is the readback for the terminal summaries that end an output-bearing
+    /// run: they are drawn onto the extraction display rather than printed, so
+    /// [`Capture::stdout`] and [`Capture::stderr`] stay empty for them.
+    ///
+    /// A live progress display redraws the same line on every update, so a phase
+    /// contributes one entry per redraw and an assertion wants to match a summary
+    /// within the text rather than compare the whole of it. The progress library
+    /// renders through its own styling, so entries may carry terminal escapes
+    /// around the parts a style colours.
+    pub fn progress_text(&self) -> String {
+        self.progress_activity
+            .lock()
+            .expect("terminal activity should be available")
+            .rendered
+            .clone()
     }
 }
 
