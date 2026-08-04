@@ -176,3 +176,6 @@ fn find_cover_by_filename<I>(candidates: &[CoverCandidate<I>]) -> Option<&CoverC
                 .is_some_and(|ext| JPEG_EXTENSIONS.contains(&ext))
     })
 }
+
+#[cfg(test)]
+mod tests;
