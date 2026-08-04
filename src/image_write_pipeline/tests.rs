@@ -1238,6 +1238,43 @@ fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
+#[test]
+fn constructed_results_carry_their_facts_through_the_fold() {
+    let earlier_warning = ImageWriteWarning::UnsupportedCoverFormat {
+        format: ImageFormat::Emf,
+    };
+    let later_warning = ImageWriteWarning::CoverConversionFailed {
+        detail: "encoder rejected the payload".to_string(),
+    };
+    let mut earlier = ImageWriteResult::new(
+        ImageWriteCounts {
+            extracted: 1,
+            skipped: 3,
+            ..ImageWriteCounts::default()
+        },
+        vec![earlier_warning.clone()],
+        NormalImageOutput::Absent,
+    );
+
+    earlier.append(ImageWriteResult::new(
+        ImageWriteCounts {
+            extracted: 1,
+            gifs_routed: 1,
+            converted: 2,
+            skipped: 0,
+        },
+        vec![later_warning.clone()],
+        NormalImageOutput::Present,
+    ));
+
+    assert_eq!(earlier.counts.extracted, 2);
+    assert_eq!(earlier.counts.gifs_routed, 1);
+    assert_eq!(earlier.counts.converted, 2);
+    assert_eq!(earlier.counts.skipped, 3);
+    assert_eq!(earlier.warnings, vec![earlier_warning, later_warning]);
+    assert!(earlier.has_normal_image_output());
+}
+
 /// Builds a pipeline with a default Conversion policy for interface tests.
 fn pipeline_with_conversion(
     allowed_formats: HashSet<ImageFormat>,

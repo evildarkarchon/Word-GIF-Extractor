@@ -108,6 +108,16 @@ impl ImageWriteWarning {
     }
 }
 
+/// Whether an Image write pipeline invocation emitted any normal batch image.
+///
+/// Required-cover output is not normal image output, so a completed cover attempt
+/// reports `Absent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NormalImageOutput {
+    Present,
+    Absent,
+}
+
 /// Complete observable outcome of one Image write pipeline invocation.
 #[derive(Debug, Default)]
 pub(crate) struct ImageWriteResult {
@@ -117,6 +127,24 @@ pub(crate) struct ImageWriteResult {
 }
 
 impl ImageWriteResult {
+    /// Creates one complete Image write pipeline outcome from already-produced facts.
+    ///
+    /// `normal_image_output` supplies the normal-batch emission flag, which is
+    /// otherwise readable only through [`Self::has_normal_image_output`]. Taking it
+    /// as a parameter is what keeps that field private: a complete outcome can be
+    /// built anywhere in the crate without the field becoming crate-visible.
+    pub(crate) fn new(
+        counts: ImageWriteCounts,
+        warnings: Vec<ImageWriteWarning>,
+        normal_image_output: NormalImageOutput,
+    ) -> Self {
+        Self {
+            counts,
+            warnings,
+            has_normal_image_output: normal_image_output == NormalImageOutput::Present,
+        }
+    }
+
     /// Returns whether at least one normal batch image was emitted.
     pub(crate) fn has_normal_image_output(&self) -> bool {
         self.has_normal_image_output
@@ -428,7 +456,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
-    has_normal_image_output: bool,
+    normal_image_output: NormalImageOutput,
     pending_first: Option<PreparedImage>,
     multiple_emission: Option<ImageFileEmission<'request>>,
 }
@@ -448,7 +476,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
-            has_normal_image_output: false,
+            normal_image_output: NormalImageOutput::Absent,
             pending_first: None,
             multiple_emission: None,
         }
@@ -536,7 +564,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             prepared,
             &mut self.counts,
         )?;
-        self.has_normal_image_output = true;
+        self.normal_image_output = NormalImageOutput::Present;
         Ok(())
     }
 
@@ -556,15 +584,14 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
 
     /// Collects phase-ordered facts after traversal succeeds.
     fn into_result(self) -> ImageWriteResult {
-        ImageWriteResult {
-            counts: self.counts,
-            warnings: self
-                .discovery_warnings
+        ImageWriteResult::new(
+            self.counts,
+            self.discovery_warnings
                 .into_iter()
                 .chain(self.conversion_warnings)
                 .collect(),
-            has_normal_image_output: self.has_normal_image_output,
-        }
+            self.normal_image_output,
+        )
     }
 
     /// Retains facts accumulated before a traversal or emission failure.
