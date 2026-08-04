@@ -1,6 +1,5 @@
 //! EPUB file processing module
 
-#[path = "epub/resource_archive.rs"]
 mod resource_archive;
 
 use anyhow::Result;
@@ -276,10 +275,5 @@ fn visit_resource<'session>(
     Ok(())
 }
 
-// This module is attached to its parent by `#[path = "epub.rs"]`, which makes
-// rustc resolve child modules against `src/` rather than `src/epub/` — the same
-// situation `src/docx.rs` explains in full. The explicit path below is therefore
-// required, and is relative to `src/` rather than to this file.
 #[cfg(test)]
-#[path = "epub/tests.rs"]
 mod tests;

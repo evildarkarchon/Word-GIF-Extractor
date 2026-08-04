@@ -50,11 +50,5 @@ pub(super) fn process_file(
     )
 }
 
-// This module is attached to its parent by `#[path = "docx.rs"]`, which makes
-// rustc resolve child modules against `src/` rather than `src/docx/`. The
-// explicit path is therefore required; without it `mod tests;` looks for
-// `src/tests.rs`. Note the path below is relative to that resolution
-// directory, not to this file.
 #[cfg(test)]
-#[path = "docx/tests.rs"]
 mod tests;

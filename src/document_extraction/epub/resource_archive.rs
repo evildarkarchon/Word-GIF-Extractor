@@ -373,12 +373,5 @@ fn validate_percent_escapes(manifest_path: &str) -> std::result::Result<(), Reso
     Ok(())
 }
 
-// This module is attached to its parent by `#[path = "epub/resource_archive.rs"]`,
-// which makes rustc resolve child modules against `src/epub/` rather than
-// `src/epub/resource_archive/`. The explicit path is therefore required;
-// without it `mod tests;` looks for `src/epub/tests.rs`. Note the path below is
-// relative to that resolution directory, not to this file, which is why it
-// differs from the equivalent attribute in `src/docx.rs`.
 #[cfg(test)]
-#[path = "resource_archive/tests.rs"]
 mod tests;

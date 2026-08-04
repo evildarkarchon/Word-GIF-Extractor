@@ -1,8 +1,6 @@
 //! Per-document extraction policy, dispatch, and outcomes.
 
-#[path = "docx.rs"]
 mod docx;
-#[path = "epub.rs"]
 mod epub;
 
 use std::fmt;
