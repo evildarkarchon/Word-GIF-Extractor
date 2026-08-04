@@ -9,7 +9,7 @@ use crate::document_selection::{
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
 use crate::test_support::{
-    SilentDocumentSelectionObserver, temp_test_dir, write_epub_with_one_image,
+    SilentExtractionRunObserver, temp_test_dir, write_epub_with_one_image,
     write_stored_epub_fixture,
 };
 use std::collections::HashSet;
@@ -20,7 +20,7 @@ const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01
 
 /// Obtains one owned EPUB handoff through the production Document selection operation.
 fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
-    let mut observer = SilentDocumentSelectionObserver;
+    let mut observer = SilentExtractionRunObserver;
     let input_path = input_path.to_path_buf();
     let selected = select_documents(
         DocumentSelectionOptions {

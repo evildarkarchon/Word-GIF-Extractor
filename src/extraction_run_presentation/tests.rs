@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::extraction_run::{ConversionFacts, GifRoutingFacts, run as execute_extraction_run};
+use crate::extraction_run::run as execute_extraction_run;
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
+use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
 use crate::test_support::{temp_test_dir, write_docx};
 
 /// What a captured progress display did while single lines were written through it.
@@ -59,19 +60,14 @@ impl ExtractionRunObserver for FilesystemPresentationObserver {
     fn on_observation(&mut self, observation: ExtractionRunObservation) {
         let starts_recursive_scan = matches!(
             &observation,
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RecursiveDirectories,
-                    discovered: 0,
-                    status: DocumentSelectionPhaseStatus::Running,
-                }
-            )
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0,
+            }
         );
         let is_discovery_diagnostic = matches!(
             &observation,
-            ExtractionRunObservation::DocumentSelectionDiagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { .. }
-            )
+            ExtractionRunObservation::DocumentDiscoveryFailed { .. }
         );
         // Snapshot before delegation so only the diagnostic's suspend operation
         // contributes to the clear/redraw deltas measured below.
@@ -196,10 +192,7 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
 #[test]
 fn terminal_epub_filter_description_preserves_existing_wording() {
     assert_eq!(
-        epub_filter_description(&EpubFilter {
-            title: Some("Magic Book".to_string()),
-            author: Some("Test Author".to_string()),
-        }),
+        epub_filter_description(Some("Magic Book"), Some("Test Author")),
         "author 'Test Author' and title 'Magic Book'"
     );
 }
@@ -361,12 +354,10 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
     let mut released = SuspensionActivity::default();
     observer
         .inner
-        .on_observation(ExtractionRunObservation::DocumentSelectionDiagnostic(
-            DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
-                path: PathBuf::from("late"),
-                detail: "arrived after the scan phase finished".to_string(),
-            },
-        ));
+        .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed {
+            path: PathBuf::from("late"),
+            detail: "arrived after the scan phase finished".to_string(),
+        });
     released.accumulate(&observer.capture, after_run);
     assert_eq!(
         (released.clear_lines, released.writes),

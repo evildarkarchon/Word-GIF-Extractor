@@ -1,31 +1,16 @@
 //! Tests for the extraction run workflow.
 
 use super::*;
-use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
-    DocumentSelectionScanScope,
-};
 use crate::extraction_run_intake::{self, Args};
+use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
 use crate::test_support::{
-    create_directory_link, remove_directory_link, temp_test_dir, write_docx, write_epub_document,
+    RecordingRunObserver, create_directory_link, remove_directory_link, temp_test_dir, write_docx,
+    write_epub_document,
 };
 use clap::Parser;
 use image::DynamicImage;
 use std::fs;
 use std::io::Cursor;
-
-/// Records every live fact observed through the production run seam.
-#[derive(Default)]
-struct RecordingRunObserver {
-    observations: Vec<ExtractionRunObservation>,
-}
-
-impl ExtractionRunObserver for RecordingRunObserver {
-    /// Records the complete ordered live Extraction run timeline.
-    fn on_observation(&mut self, observation: ExtractionRunObservation) {
-        self.observations.push(observation);
-    }
-}
 
 /// Prepares one production request from directly built options.
 ///
@@ -133,31 +118,25 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
     assert_eq!(observer.observations.len(), 5);
     assert!(matches!(
         &observer.observations[0],
-        ExtractionRunObservation::DocumentSelectionDiagnostic(
-            DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-        ) if path == &first_failed_path && !detail.is_empty()
+        ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } if path == &first_failed_path && !detail.is_empty()
     ));
     assert!(matches!(
         &observer.observations[1],
-        ExtractionRunObservation::DocumentSelectionDiagnostic(
-            DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-        ) if path == &second_failed_path && !detail.is_empty()
+        ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } if path == &second_failed_path && !detail.is_empty()
     ));
     assert_eq!(
         observer.observations[2],
-        ExtractionRunObservation::DocumentSelectionProgress(DocumentSelectionProgress::Scanning {
-            scope: DocumentSelectionScanScope::RequestedInputs,
-            discovered: 0,
-            status: DocumentSelectionPhaseStatus::Running,
-        })
+        ExtractionRunObservation::DiscoveringDocuments {
+            scope: DocumentDiscoveryScope::RequestedInputs,
+            discovered: 0
+        }
     );
     assert_eq!(
         observer.observations[3],
-        ExtractionRunObservation::DocumentSelectionProgress(DocumentSelectionProgress::Scanning {
-            scope: DocumentSelectionScanScope::RequestedInputs,
-            discovered: 0,
-            status: DocumentSelectionPhaseStatus::Finished,
-        })
+        ExtractionRunObservation::DocumentDiscoveryFinished {
+            scope: DocumentDiscoveryScope::RequestedInputs,
+            discovered: 0
+        }
     );
     assert_single_terminal_observation(&observer, &outcome);
     assert!(!observer.observations.iter().any(|observation| matches!(
@@ -202,30 +181,13 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
     assert!(matches!(
         observer.observations.as_slice(),
         [
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    discovered: 0,
-                    status: DocumentSelectionPhaseStatus::Running,
-                    ..
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionDiagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Running,
-                    ..
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Finished,
-                    ..
-                }
-            ),
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0,
+                    .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1,
+                    .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1,
+                    .. },
             ExtractionRunObservation::ExtractionStarted { total: 1, .. },
             ..
         ] if path == &broken_link && !detail.is_empty()
@@ -268,30 +230,13 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
     assert!(matches!(
         observer.observations.as_slice(),
         [
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RecursiveDirectories,
-                    discovered: 0,
-                    status: DocumentSelectionPhaseStatus::Running,
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionDiagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RecursiveDirectories,
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Running,
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RecursiveDirectories,
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Finished,
-                }
-            ),
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                    discovered: 0 },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                    discovered: 1 },
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                    discovered: 1 },
             ExtractionRunObservation::ExtractionStarted { total: 1, .. },
             ..
         ] if path == &broken_link && !detail.is_empty()
@@ -302,9 +247,7 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
             .iter()
             .filter(|observation| matches!(
                 observation,
-                ExtractionRunObservation::DocumentSelectionDiagnostic(
-                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed { .. }
-                )
+                ExtractionRunObservation::DocumentDiscoveryFailed { .. }
             ))
             .count(),
         1
@@ -341,30 +284,19 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
     assert_eq!(
         observer.observations,
         vec![
-            ExtractionRunObservation::DocumentSelectionDiagnostic(
-                DocumentSelectionDiagnostic::MissingInput { path: missing_path }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RequestedInputs,
-                    discovered: 0,
-                    status: DocumentSelectionPhaseStatus::Running,
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RequestedInputs,
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Running,
-                }
-            ),
-            ExtractionRunObservation::DocumentSelectionProgress(
-                DocumentSelectionProgress::Scanning {
-                    scope: DocumentSelectionScanScope::RequestedInputs,
-                    discovered: 1,
-                    status: DocumentSelectionPhaseStatus::Finished,
-                }
-            ),
+            ExtractionRunObservation::MissingInput { path: missing_path },
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 0
+            },
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 1
+            },
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 1
+            },
             ExtractionRunObservation::ExtractionStarted {
                 total: 1,
                 cover_only: false,
@@ -383,27 +315,6 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
     );
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
-}
-
-#[test]
-fn produced_outcome_rejects_inconsistent_semantic_totals() {
-    let one = NonZeroUsize::new(1).expect("one should be nonzero");
-    let two = NonZeroUsize::new(2).expect("two should be nonzero");
-
-    assert!(
-        ExtractionRunOutcome::try_produced(ExtractionOutputKind::Images, one, two, None, None,)
-            .is_none()
-    );
-    assert!(
-        ExtractionRunOutcome::try_produced(
-            ExtractionOutputKind::Images,
-            one,
-            one,
-            Some(ConversionFacts::new(1, 0)),
-            Some(GifRoutingFacts::new(one, PathBuf::from("gifs"))),
-        )
-        .is_none()
-    );
 }
 
 #[test]

@@ -21,7 +21,7 @@ Which optional fact groups the eventual Extraction run outcome may carry — the
 _Avoid_: Conversion requested flag, run summary facts, presentation intent
 
 **Extraction run observation**:
-One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It excludes terminal wording and user-interface commands.
+One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It is the run's single observation vocabulary: every emitter reports through it, so no part of the run transports facts belonging to a second one. It excludes terminal wording, user-interface commands, and run policy.
 _Avoid_: Run event, progress callback, UI command
 
 **Extraction run presentation**:
@@ -65,7 +65,7 @@ The immutable handoff produced by Document selection for one eligible document, 
 _Avoid_: Extraction work item, selected file, document task
 
 **Document selection progress**:
-The live, user-observable status of Document selection while it scans inputs, filters EPUBs, and removes duplicates. It excludes per-document extraction status and terminal presentation details.
+The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. It excludes per-document extraction status and terminal presentation details.
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:

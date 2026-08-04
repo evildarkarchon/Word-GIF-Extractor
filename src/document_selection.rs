@@ -7,13 +7,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::epub_declarations::EpubDeclarations;
-
-pub use self::progress::{
-    DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionPhaseStatus,
-    DocumentSelectionProgress, DocumentSelectionScanScope, EpubMetadataPurpose,
+use crate::extraction_run_observation::{
+    EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
+
 use self::progress::{
-    DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck, ScanningProgress,
+    DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
 };
 
 /// Sanitizes declared document text for use as an output filename.
@@ -146,9 +145,9 @@ impl SelectedEpub {
 
 /// Options used to select documents for one extraction run.
 pub struct DocumentSelectionOptions<'a> {
-    /// Input files or directories to scan.
+    /// Input files or directories to inspect.
     pub inputs: &'a [PathBuf],
-    /// Whether directory inputs should be scanned recursively.
+    /// Whether directory inputs should be traversed recursively.
     pub recursive: bool,
     /// Optional output directory shared by every selected document.
     pub output: Option<&'a Path>,
@@ -195,9 +194,13 @@ impl DocumentCandidate {
 /// filters. Missing inputs, requested-root inspection failures, and unreadable
 /// EPUB declarations are reported as structured, non-fatal diagnostics through
 /// the informational observer.
+///
+/// Selection reports into the Extraction run observation stream directly. The
+/// observer is informational: callbacks cannot cancel selection or alter which
+/// documents are returned.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
-    observer: &mut impl DocumentSelectionObserver,
+    observer: &mut impl ExtractionRunObserver,
 ) -> Vec<SelectedDocument> {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
 
@@ -249,7 +252,7 @@ fn filter_epub_files(
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
                     // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                    progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
                         path,
                         purpose: EpubMetadataPurpose::Filtering,
                         detail: error.to_string(),
@@ -297,7 +300,7 @@ fn deduplicate_epubs_by_declarations(
                 match EpubDeclarations::acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
                     Err(error) => {
-                        progress.diagnostic(DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                        progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
                             path: path.clone(),
                             purpose: EpubMetadataPurpose::Deduplication,
                             detail: error.to_string(),

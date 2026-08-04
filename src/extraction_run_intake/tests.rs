@@ -2,7 +2,10 @@
 //! Extraction run request.
 
 use super::*;
-use crate::extraction_run::{ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput, run};
+use crate::extraction_run::run;
+use crate::extraction_run_observation::{
+    ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput,
+};
 use crate::test_support::{SilentExtractionRunObserver, temp_test_dir, write_docx};
 use clap::Parser;
 use image::DynamicImage;

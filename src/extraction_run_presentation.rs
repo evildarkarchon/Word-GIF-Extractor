@@ -29,15 +29,12 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
 
 use crate::conversion::ConversionPolicyError;
 use crate::document_extraction::DocumentExtractionWarning;
-use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionPhaseStatus, DocumentSelectionProgress,
-    DocumentSelectionScanScope, EpubFilter, EpubMetadataPurpose,
-};
-use crate::extraction_run::{
-    ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
-};
 use crate::extraction_run_intake::{
     Args, ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun,
+};
+use crate::extraction_run_observation::{
+    DocumentDiscoveryScope, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunObservation,
+    ExtractionRunObserver, ExtractionRunOutcome,
 };
 
 /// Runs one extraction end to end and renders it to the supplied destination.
@@ -291,11 +288,16 @@ fn create_spinner_style() -> ProgressStyle {
 }
 
 /// Formats EPUB filter criteria for terminal progress messages.
-fn epub_filter_description(filter: &EpubFilter) -> String {
-    match (&filter.author, &filter.title) {
-        (Some(author), Some(title)) => format!("author '{}' and title '{}'", author, title),
-        (Some(author), None) => format!("author '{}'", author),
-        (None, Some(title)) => format!("title '{}'", title),
+///
+/// The criteria arrive as observation facts rather than as the Document
+/// selection filter that holds them, so the two parts are passed separately.
+/// Parameter order matches both the match below and the observation's field
+/// order, because two `Option<&str>` arguments would otherwise swap silently.
+fn epub_filter_description(title: Option<&str>, author: Option<&str>) -> String {
+    match (title, author) {
+        (Some(title), Some(author)) => format!("author '{}' and title '{}'", author, title),
+        (None, Some(author)) => format!("author '{}'", author),
+        (Some(title), None) => format!("title '{}'", title),
         (None, None) => String::new(),
     }
 }
@@ -327,7 +329,7 @@ fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
 /// it renders into, not the renderer. Only in-crate tests construct one directly.
 pub(crate) struct ExtractionRunPresentation {
     output: TerminalOutput,
-    scan_pb: Option<ProgressBar>,
+    discovery_pb: Option<ProgressBar>,
     epub_filter_pb: Option<ProgressBar>,
     epub_dedup_pb: Option<ProgressBar>,
     extraction_pb: Option<ProgressBar>,
@@ -338,7 +340,7 @@ impl ExtractionRunPresentation {
     pub(crate) fn new(output: TerminalOutput) -> Self {
         Self {
             output,
-            scan_pb: None,
+            discovery_pb: None,
             epub_filter_pb: None,
             epub_dedup_pb: None,
             extraction_pb: None,
@@ -399,110 +401,134 @@ impl ExtractionRunPresentation {
         }
     }
 
-    /// Renders one Document selection progress snapshot without relying on callback deltas.
-    fn render_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
-        match progress {
-            DocumentSelectionProgress::Scanning {
-                scope,
-                discovered,
-                status,
-            } => match status {
-                DocumentSelectionPhaseStatus::Running => {
-                    if scope == DocumentSelectionScanScope::RecursiveDirectories
-                        && self.scan_pb.is_none()
-                    {
-                        let pb = self.new_progress_bar(None, create_spinner_style());
-                        pb.set_message("Scanning directories for documents...");
-                        pb.enable_steady_tick(std::time::Duration::from_millis(100));
-                        self.scan_pb = Some(pb);
-                    }
-                    if discovered > 0
-                        && let Some(pb) = &self.scan_pb
-                    {
-                        pb.set_message(format!("Found {} document(s)...", discovered));
-                    }
-                }
-                DocumentSelectionPhaseStatus::Finished => {
-                    if let Some(pb) = self.scan_pb.take() {
-                        pb.finish_with_message(format!("Found {} document(s)", discovered));
-                    }
-                }
-            },
-            DocumentSelectionProgress::FilteringEpubs {
-                filter,
-                checked,
-                total,
-                matching,
-                status,
-            } => match status {
-                DocumentSelectionPhaseStatus::Running => {
-                    if self.epub_filter_pb.is_none() {
-                        let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
-                        pb.set_message(format!(
-                            "Filtering EPUBs by {}",
-                            epub_filter_description(&filter)
-                        ));
-                        self.epub_filter_pb = Some(pb);
-                    }
-                    if let Some(pb) = &self.epub_filter_pb {
-                        pb.set_position(checked as u64);
-                    }
-                }
-                DocumentSelectionPhaseStatus::Finished => {
-                    if let Some(pb) = self.epub_filter_pb.take() {
-                        pb.set_position(checked as u64);
-                        pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
-                    }
-                }
-            },
-            DocumentSelectionProgress::DeduplicatingEpubs {
-                checked,
-                total,
-                duplicates_found,
-                unique_remaining,
-                status,
-            } => match status {
-                DocumentSelectionPhaseStatus::Running => {
-                    if self.epub_dedup_pb.is_none() {
-                        let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
-                        pb.set_message("Deduplicating EPUBs by metadata");
-                        self.epub_dedup_pb = Some(pb);
-                    }
-                    if let Some(pb) = &self.epub_dedup_pb {
-                        pb.set_position(checked as u64);
-                    }
-                }
-                DocumentSelectionPhaseStatus::Finished => {
-                    if let Some(pb) = self.epub_dedup_pb.take() {
-                        pb.set_position(checked as u64);
-                        if duplicates_found > 0 {
-                            pb.finish_with_message(format!(
-                                "Removed {} duplicate EPUB(s), {} unique remaining",
-                                duplicates_found, unique_remaining
-                            ));
-                        } else {
-                            pb.finish_and_clear();
-                        }
-                    }
-                }
-            },
+    /// Creates or advances the Document discovery spinner from one running observation.
+    ///
+    /// Rendered without relying on callback deltas: every running observation
+    /// carries the phase's full current state, so nothing is accumulated here.
+    /// The spinner is raised only for recursive traversal, which is the case slow
+    /// enough to be worth showing. Whether this is the phase's first running
+    /// observation is read from `is_none` rather than carried by the observation.
+    fn render_discovering_documents(&mut self, scope: DocumentDiscoveryScope, discovered: usize) {
+        if scope == DocumentDiscoveryScope::RecursiveDirectories && self.discovery_pb.is_none() {
+            let pb = self.new_progress_bar(None, create_spinner_style());
+            pb.set_message("Scanning directories for documents...");
+            pb.enable_steady_tick(std::time::Duration::from_millis(100));
+            self.discovery_pb = Some(pb);
+        }
+        if discovered > 0
+            && let Some(pb) = &self.discovery_pb
+        {
+            pb.set_message(format!("Found {} document(s)...", discovered));
         }
     }
 
-    /// Renders one structured Document selection diagnostic with terminal wording.
-    fn render_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
-        match diagnostic {
-            DocumentSelectionDiagnostic::MissingInput { path } => {
+    /// Creates or advances the EPUB filtering bar from one running observation.
+    ///
+    /// Rendered without relying on callback deltas: `checked` is the phase's full
+    /// current count, so the bar is positioned absolutely rather than incremented.
+    /// The filter caption is set once, when the bar is created.
+    fn render_filtering_epubs(
+        &mut self,
+        title: Option<String>,
+        author: Option<String>,
+        checked: usize,
+        total: usize,
+    ) {
+        if self.epub_filter_pb.is_none() {
+            let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
+            pb.set_message(format!(
+                "Filtering EPUBs by {}",
+                epub_filter_description(title.as_deref(), author.as_deref())
+            ));
+            self.epub_filter_pb = Some(pb);
+        }
+        if let Some(pb) = &self.epub_filter_pb {
+            pb.set_position(checked as u64);
+        }
+    }
+
+    /// Creates or advances the EPUB deduplication bar from one running observation.
+    ///
+    /// Rendered without relying on callback deltas: `checked` is the phase's full
+    /// current count, so the bar is positioned absolutely rather than incremented.
+    fn render_deduplicating_epubs(&mut self, checked: usize, total: usize) {
+        if self.epub_dedup_pb.is_none() {
+            let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
+            pb.set_message("Deduplicating EPUBs by metadata");
+            self.epub_dedup_pb = Some(pb);
+        }
+        if let Some(pb) = &self.epub_dedup_pb {
+            pb.set_position(checked as u64);
+        }
+    }
+}
+
+impl ExtractionRunObserver for ExtractionRunPresentation {
+    /// Renders one observation from the single run-wide vocabulary.
+    fn on_observation(&mut self, observation: ExtractionRunObservation) {
+        match observation {
+            ExtractionRunObservation::DiscoveringDocuments { scope, discovered } => {
+                self.render_discovering_documents(scope, discovered);
+            }
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered, .. } => {
+                if let Some(pb) = self.discovery_pb.take() {
+                    pb.finish_with_message(format!("Found {} document(s)", discovered));
+                }
+            }
+            ExtractionRunObservation::FilteringEpubs {
+                title,
+                author,
+                checked,
+                total,
+                ..
+            } => {
+                self.render_filtering_epubs(title, author, checked, total);
+            }
+            ExtractionRunObservation::EpubFilteringFinished {
+                checked, matching, ..
+            } => {
+                if let Some(pb) = self.epub_filter_pb.take() {
+                    pb.set_position(checked as u64);
+                    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
+                }
+            }
+            ExtractionRunObservation::DeduplicatingEpubs { checked, total, .. } => {
+                self.render_deduplicating_epubs(checked, total);
+            }
+            ExtractionRunObservation::EpubDeduplicationFinished {
+                checked,
+                duplicates_found,
+                unique_remaining,
+                ..
+            } => {
+                if let Some(pb) = self.epub_dedup_pb.take() {
+                    pb.set_position(checked as u64);
+                    if duplicates_found > 0 {
+                        pb.finish_with_message(format!(
+                            "Removed {} duplicate EPUB(s), {} unique remaining",
+                            duplicates_found, unique_remaining
+                        ));
+                    } else {
+                        pb.finish_and_clear();
+                    }
+                }
+            }
+            // The three arms below render structured Document selection
+            // diagnostics with terminal wording. Each suspends the progress bar
+            // belonging to the phase that produced it, because a diagnostic can
+            // arrive while that bar is live and the next redraw would otherwise
+            // corrupt or overwrite the line.
+            ExtractionRunObservation::MissingInput { path } => {
                 self.output.print_error(&format!(
                     "Warning: Input path does not exist: {}",
                     path.display()
                 ));
             }
-            DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail } => {
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } => {
                 // Recursive discovery can warn while its spinner is active; suspending
                 // prevents the next redraw from corrupting or overwriting the warning.
                 self.print_error_suspended(
-                    self.scan_pb.as_ref(),
+                    self.discovery_pb.as_ref(),
                     &format!(
                         "Warning: Could not inspect {} during document discovery: {}",
                         path.display(),
@@ -510,7 +536,7 @@ impl ExtractionRunPresentation {
                     ),
                 );
             }
-            DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+            ExtractionRunObservation::UnreadableEpubMetadata {
                 path,
                 purpose,
                 detail,
@@ -532,20 +558,6 @@ impl ExtractionRunPresentation {
                     );
                 }
             },
-        }
-    }
-}
-
-impl ExtractionRunObserver for ExtractionRunPresentation {
-    /// Renders one observation without exposing the nested selection observer seam.
-    fn on_observation(&mut self, observation: ExtractionRunObservation) {
-        match observation {
-            ExtractionRunObservation::DocumentSelectionProgress(progress) => {
-                self.render_document_selection_progress(progress);
-            }
-            ExtractionRunObservation::DocumentSelectionDiagnostic(diagnostic) => {
-                self.render_document_selection_diagnostic(diagnostic);
-            }
             ExtractionRunObservation::ExtractionStarted { total, cover_only } => {
                 let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
                 let extraction_msg = if cover_only {

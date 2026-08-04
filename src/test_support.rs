@@ -33,10 +33,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
-use crate::document_selection::{
-    DocumentSelectionDiagnostic, DocumentSelectionObserver, DocumentSelectionProgress,
-};
-use crate::extraction_run::{ExtractionRunObservation, ExtractionRunObserver};
+use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
 
 /// Returns an unused temporary directory path for one test.
 ///
@@ -131,25 +128,91 @@ pub(crate) fn remove_file_symlink(link: &Path) {
     fs::remove_file(link).expect("test file symlink should be removable");
 }
 
-/// Ignores every Document selection fact, for tests whose seam is further downstream.
-#[derive(Default)]
-pub(crate) struct SilentDocumentSelectionObserver;
-
-impl DocumentSelectionObserver for SilentDocumentSelectionObserver {
-    /// Ignores progress facts that are outside the calling test's seam.
-    fn on_document_selection_progress(&mut self, _progress: DocumentSelectionProgress) {}
-
-    /// Ignores diagnostics because the fixtures these tests build are readable.
-    fn on_document_selection_diagnostic(&mut self, _diagnostic: DocumentSelectionDiagnostic) {}
-}
-
 /// Ignores the live run timeline, for tests that assert files and semantic outcomes.
+///
+/// Document selection reports into the same stream as the rest of the run, so
+/// this one observer also serves tests whose seam is `select_documents`.
 #[derive(Default)]
 pub(crate) struct SilentExtractionRunObserver;
 
 impl ExtractionRunObserver for SilentExtractionRunObserver {
     /// Ignores live observations because the calling test asserts the returned outcome.
     fn on_observation(&mut self, _observation: ExtractionRunObservation) {}
+}
+
+/// Records every live fact observed through the production run seam.
+#[derive(Default)]
+pub(crate) struct RecordingRunObserver {
+    pub(crate) observations: Vec<ExtractionRunObservation>,
+}
+
+impl ExtractionRunObserver for RecordingRunObserver {
+    /// Records the complete ordered live Extraction run timeline.
+    fn on_observation(&mut self, observation: ExtractionRunObservation) {
+        self.observations.push(observation);
+    }
+}
+
+/// Which part of a run one observation reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservationKind {
+    SelectionProgress,
+    SelectionDiagnostic,
+    Extraction,
+}
+
+/// Classifies one observation for the filtered views below.
+///
+/// The match is exhaustive on purpose: a new observation variant fails to
+/// compile here rather than being silently dropped from every filtered view,
+/// which would quietly weaken the `is_empty` assertions that use them.
+fn observation_kind(observation: &ExtractionRunObservation) -> ObservationKind {
+    match observation {
+        ExtractionRunObservation::DiscoveringDocuments { .. }
+        | ExtractionRunObservation::DocumentDiscoveryFinished { .. }
+        | ExtractionRunObservation::FilteringEpubs { .. }
+        | ExtractionRunObservation::EpubFilteringFinished { .. }
+        | ExtractionRunObservation::DeduplicatingEpubs { .. }
+        | ExtractionRunObservation::EpubDeduplicationFinished { .. } => {
+            ObservationKind::SelectionProgress
+        }
+        ExtractionRunObservation::MissingInput { .. }
+        | ExtractionRunObservation::DocumentDiscoveryFailed { .. }
+        | ExtractionRunObservation::UnreadableEpubMetadata { .. } => {
+            ObservationKind::SelectionDiagnostic
+        }
+        ExtractionRunObservation::ExtractionStarted { .. }
+        | ExtractionRunObservation::DocumentStarted { .. }
+        | ExtractionRunObservation::DocumentWarning { .. }
+        | ExtractionRunObservation::DocumentError { .. }
+        | ExtractionRunObservation::DocumentFinished { .. }
+        | ExtractionRunObservation::Terminal(_) => ObservationKind::Extraction,
+    }
+}
+
+impl RecordingRunObserver {
+    /// Returns the observations of one kind, in recorded order.
+    fn of_kind(&self, kind: ObservationKind) -> Vec<ExtractionRunObservation> {
+        self.observations
+            .iter()
+            .filter(|observation| observation_kind(observation) == kind)
+            .cloned()
+            .collect()
+    }
+
+    /// Returns the Document selection phase observations, in recorded order.
+    ///
+    /// Selection progress and selection diagnostics interleave in one stream, so
+    /// tests that assert one without the other filter rather than read a second
+    /// collection. Assert against `observations` when the interleaving matters.
+    pub(crate) fn selection_progress(&self) -> Vec<ExtractionRunObservation> {
+        self.of_kind(ObservationKind::SelectionProgress)
+    }
+
+    /// Returns the Document selection diagnostics, in recorded order.
+    pub(crate) fn selection_diagnostics(&self) -> Vec<ExtractionRunObservation> {
+        self.of_kind(ObservationKind::SelectionDiagnostic)
+    }
 }
 
 /// Writes a ZIP archive containing the supplied entries in order, with the given options.

@@ -6,18 +6,17 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use super::{
-    DocumentCandidate, DocumentSelectionDiagnostic, DocumentSelectionLifecycle,
-    DocumentSelectionScanScope, ScanningProgress,
-};
+use crate::extraction_run_observation::{DocumentDiscoveryScope, ExtractionRunObservation};
 
-/// One successfully inspected requested input retained for the scanning phase.
+use super::{DocumentCandidate, DocumentDiscoveryProgress, DocumentSelectionLifecycle};
+
+/// One successfully inspected requested input retained for the Document discovery phase.
 enum RequestedInput {
     File(PathBuf),
     Directory(PathBuf),
 }
 
-/// A failed requested-input classification before scanning begins.
+/// A failed requested-input classification before Document discovery begins.
 enum RequestedInputFailure {
     Missing,
     Inspection(io::Error),
@@ -52,7 +51,7 @@ impl RequestedInput {
 
 /// Discovers supported document candidates from one ordered set of requested inputs.
 ///
-/// Every requested root is classified once before scanning, so root diagnostics
+/// Every requested root is classified once before discovery, so root diagnostics
 /// precede the initial snapshot and independently readable inputs still continue.
 /// Recursive failures retain their traversal position and nearest available path.
 /// Requested directory links are followed, while nested directory links are not.
@@ -67,12 +66,12 @@ pub(super) fn discover_documents(
             Ok(Some(input)) => requested_inputs.push(input),
             Ok(None) => {}
             Err(RequestedInputFailure::Missing) => {
-                lifecycle.diagnostic(DocumentSelectionDiagnostic::MissingInput {
+                lifecycle.diagnostic(ExtractionRunObservation::MissingInput {
                     path: input_path.clone(),
                 });
             }
             Err(RequestedInputFailure::Inspection(error)) => {
-                lifecycle.diagnostic(DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                lifecycle.diagnostic(ExtractionRunObservation::DocumentDiscoveryFailed {
                     path: input_path.clone(),
                     detail: error.to_string(),
                 });
@@ -85,17 +84,17 @@ pub(super) fn discover_documents(
             .iter()
             .any(|input| matches!(input, RequestedInput::Directory(_)))
     {
-        DocumentSelectionScanScope::RecursiveDirectories
+        DocumentDiscoveryScope::RecursiveDirectories
     } else {
-        DocumentSelectionScanScope::RequestedInputs
+        DocumentDiscoveryScope::RequestedInputs
     };
 
-    lifecycle.scanning(!inputs.is_empty(), scope, |progress| {
+    lifecycle.discovering(!inputs.is_empty(), scope, |progress| {
         let mut candidates = Vec::new();
         let record_supported =
             |path: PathBuf,
              candidates: &mut Vec<DocumentCandidate>,
-             progress: &mut ScanningProgress<'_>| {
+             progress: &mut DocumentDiscoveryProgress<'_>| {
                 if let Some(candidate) = DocumentCandidate::from_path(path) {
                     candidates.push(candidate);
                     progress.document_discovered();
@@ -145,7 +144,7 @@ pub(super) fn discover_documents(
                                             traversal.skip_current_dir();
                                         }
                                         progress.diagnostic(
-                                            DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                            ExtractionRunObservation::DocumentDiscoveryFailed {
                                                 path: entry_path,
                                                 detail: error.to_string(),
                                             },
@@ -165,7 +164,7 @@ pub(super) fn discover_documents(
                                     Path::to_path_buf,
                                 );
                                 progress.diagnostic(
-                                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                    ExtractionRunObservation::DocumentDiscoveryFailed {
                                         path: failure_path,
                                         detail: error.to_string(),
                                     },
@@ -194,7 +193,7 @@ pub(super) fn discover_documents(
                                             Ok(_) => {}
                                             Err(error) => {
                                                 progress.diagnostic(
-                                                    DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                                    ExtractionRunObservation::DocumentDiscoveryFailed {
                                                         path: entry_path,
                                                         detail: error.to_string(),
                                                     },
@@ -204,7 +203,7 @@ pub(super) fn discover_documents(
                                     }
                                     Err(error) => {
                                         progress.diagnostic(
-                                            DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                            ExtractionRunObservation::DocumentDiscoveryFailed {
                                                 path: path.clone(),
                                                 detail: error.to_string(),
                                             },
@@ -215,7 +214,7 @@ pub(super) fn discover_documents(
                         }
                         Err(error) => {
                             progress.diagnostic(
-                                DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                                ExtractionRunObservation::DocumentDiscoveryFailed {
                                     path,
                                     detail: error.to_string(),
                                 },

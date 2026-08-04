@@ -6,8 +6,8 @@ use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_doc
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
-    SilentDocumentSelectionObserver, temp_test_dir, write_docx, write_epub_fixture,
-    write_epub_image, write_epub_with_resources,
+    SilentExtractionRunObserver, temp_test_dir, write_docx, write_epub_fixture, write_epub_image,
+    write_epub_with_resources,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -34,7 +34,7 @@ fn warning_messages(facts: &DocumentExtractionFacts) -> Vec<&str> {
 
 /// Obtains one extraction handoff through the production Document selection operation.
 fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument {
-    let mut observer = SilentDocumentSelectionObserver;
+    let mut observer = SilentExtractionRunObserver;
     let input_path = input_path.to_path_buf();
     select_documents(
         DocumentSelectionOptions {
@@ -503,7 +503,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
     ];
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     write_epub_with_resources(&input_path, "images/selected.jpg", None, &archive_resources);
-    let mut observer = SilentDocumentSelectionObserver;
+    let mut observer = SilentExtractionRunObserver;
     let selected = select_documents(
         DocumentSelectionOptions {
             inputs: std::slice::from_ref(&input_path),
@@ -554,7 +554,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     fs::write(&input_path, b"not an EPUB").expect("invalid EPUB should be writable");
-    let mut observer = SilentDocumentSelectionObserver;
+    let mut observer = SilentExtractionRunObserver;
     let selected = select_documents(
         DocumentSelectionOptions {
             inputs: std::slice::from_ref(&input_path),

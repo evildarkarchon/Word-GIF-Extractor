@@ -15,12 +15,12 @@
 //! - [`TerminalOutput`], the destination it renders into,
 //! - [`Capture`], the readback for a destination that captured instead of printing.
 //!
-//! Everything else — the Document selection progress and diagnostic vocabulary, the
-//! Extraction run observation stream and its observer, the run request, outcome and
-//! fact types, the intake error and its notices, and the conversion target and policy
-//! error — is crate-private. The observation stream has no consumer outside the
-//! crate now that presentation lives inside it, so it is not duplicated into
-//! presentation-neutral equivalents at the boundary.
+//! Everything else — the Extraction run observation stream, its observer and the
+//! outcome and fact types it carries, the run request, the intake error and its
+//! notices, and the conversion target and policy error — is crate-private. One
+//! observation vocabulary covers the whole run, Document selection included, so
+//! there is no second selection vocabulary to duplicate into presentation-neutral
+//! equivalents at the boundary.
 //!
 //! [`Args`] is re-exported from Extraction run intake rather than defined here. Intake
 //! owns the type it takes as input, so no production module imports the crate root and
@@ -38,6 +38,7 @@ mod document_selection;
 mod epub_declarations;
 mod extraction_run;
 mod extraction_run_intake;
+mod extraction_run_observation;
 mod extraction_run_presentation;
 mod image_format;
 mod image_write_pipeline;

@@ -1,44 +1,20 @@
 //! Tests for Document selection.
 
 use super::*;
+use crate::extraction_run_observation::DocumentDiscoveryScope;
 use crate::test_support::{
-    create_directory_link, create_file_symlink, remove_directory_link, remove_file_symlink,
-    temp_test_dir, write_epub_with_descriptive_declarations,
+    RecordingRunObserver, create_directory_link, create_file_symlink, remove_directory_link,
+    remove_file_symlink, temp_test_dir, write_epub_with_descriptive_declarations,
 };
 use std::fs;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RecordedDocumentSelectionFact {
-    Progress(DocumentSelectionProgress),
-    Diagnostic(DocumentSelectionDiagnostic),
-}
-
-#[derive(Default)]
-struct RecordingDocumentSelectionObserver {
-    progress: Vec<DocumentSelectionProgress>,
-    diagnostics: Vec<DocumentSelectionDiagnostic>,
-    timeline: Vec<RecordedDocumentSelectionFact>,
-}
-
-impl DocumentSelectionObserver for RecordingDocumentSelectionObserver {
-    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
-        self.timeline
-            .push(RecordedDocumentSelectionFact::Progress(progress.clone()));
-        self.progress.push(progress);
-    }
-
-    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
-        self.timeline
-            .push(RecordedDocumentSelectionFact::Diagnostic(
-                diagnostic.clone(),
-            ));
-        self.diagnostics.push(diagnostic);
-    }
-}
-
+/// Removes one empty directory mid-discovery, then records the run timeline.
+///
+/// Selection reports into the run observation stream, so the delegate is the
+/// shared recording observer rather than a selection-specific one.
 struct RemoveDirectoryOnScanStartObserver {
     directory: Option<PathBuf>,
-    recording: RecordingDocumentSelectionObserver,
+    recording: RecordingRunObserver,
 }
 
 impl RemoveDirectoryOnScanStartObserver {
@@ -46,32 +22,23 @@ impl RemoveDirectoryOnScanStartObserver {
     fn new(directory: PathBuf) -> Self {
         Self {
             directory: Some(directory),
-            recording: RecordingDocumentSelectionObserver::default(),
+            recording: RecordingRunObserver::default(),
         }
     }
 }
 
-impl DocumentSelectionObserver for RemoveDirectoryOnScanStartObserver {
-    /// Removes the directory at the initial scan snapshot, then records the snapshot.
-    fn on_document_selection_progress(&mut self, progress: DocumentSelectionProgress) {
+impl ExtractionRunObserver for RemoveDirectoryOnScanStartObserver {
+    /// Removes the directory at the initial discovery observation, then records it.
+    fn on_observation(&mut self, observation: ExtractionRunObservation) {
         if matches!(
-            progress,
-            DocumentSelectionProgress::Scanning {
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }
+            observation,
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. }
         ) && let Some(directory) = self.directory.take()
         {
             fs::remove_dir(directory)
                 .expect("classified directory should be removable before opening");
         }
-        self.recording.on_document_selection_progress(progress);
-    }
-
-    /// Records diagnostics emitted after the induced real-filesystem open failure.
-    fn on_document_selection_diagnostic(&mut self, diagnostic: DocumentSelectionDiagnostic) {
-        self.recording.on_document_selection_diagnostic(diagnostic);
+        self.recording.on_observation(observation);
     }
 }
 
@@ -81,7 +48,7 @@ fn select_documents_reports_scanning_through_its_public_interface() {
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(temp_dir.join("book.docx"), []).expect("test DOCX should be writable");
     fs::write(temp_dir.join("notes.txt"), []).expect("ignored file should be writable");
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -95,26 +62,23 @@ fn select_documents_reports_scanning_through_its_public_interface() {
 
     assert_eq!(selected.len(), 1);
     assert_eq!(
-        observer.progress,
+        observer.selection_progress(),
         vec![
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RequestedInputs,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 0
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RequestedInputs,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 1
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RequestedInputs,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RequestedInputs,
+                discovered: 1
             },
         ]
     );
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
@@ -131,7 +95,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
         title: Some("magic".to_string()),
         author: None,
     };
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -144,111 +108,92 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
     );
 
     assert_eq!(selected.len(), 2);
-    let scan_counts: Vec<_> = observer
-        .progress
+    // Each phase is read as (count, is_final), which is what the running and
+    // finished variants together say: monotonic counts, one terminating entry.
+    let discovery: Vec<_> = observer
+        .selection_progress()
         .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::Scanning { discovered, .. } => Some(*discovered),
+        .filter_map(|observation| match observation {
+            ExtractionRunObservation::DiscoveringDocuments { discovered, .. } => {
+                Some((*discovered, false))
+            }
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered, .. } => {
+                Some((*discovered, true))
+            }
             _ => None,
         })
         .collect();
-    let filter_counts: Vec<_> = observer
-        .progress
+    let filtering: Vec<_> = observer
+        .selection_progress()
         .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::FilteringEpubs { checked, .. } => Some(*checked),
+        .filter_map(|observation| match observation {
+            ExtractionRunObservation::FilteringEpubs { checked, .. } => Some((*checked, false)),
+            ExtractionRunObservation::EpubFilteringFinished { checked, .. } => {
+                Some((*checked, true))
+            }
             _ => None,
         })
         .collect();
-    let dedup_counts: Vec<_> = observer
-        .progress
+    let deduplicating: Vec<_> = observer
+        .selection_progress()
         .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::DeduplicatingEpubs { checked, .. } => Some(*checked),
+        .filter_map(|observation| match observation {
+            ExtractionRunObservation::DeduplicatingEpubs { checked, .. } => Some((*checked, false)),
+            ExtractionRunObservation::EpubDeduplicationFinished { checked, .. } => {
+                Some((*checked, true))
+            }
             _ => None,
         })
         .collect();
-    let scan_statuses: Vec<_> = observer
-        .progress
-        .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::Scanning { status, .. } => Some(*status),
-            _ => None,
-        })
-        .collect();
-    let filter_statuses: Vec<_> = observer
-        .progress
-        .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::FilteringEpubs { status, .. } => Some(*status),
-            _ => None,
-        })
-        .collect();
-    let dedup_statuses: Vec<_> = observer
-        .progress
-        .iter()
-        .filter_map(|progress| match progress {
-            DocumentSelectionProgress::DeduplicatingEpubs { status, .. } => Some(*status),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(scan_counts, vec![0, 1, 2, 2]);
-    assert_eq!(filter_counts, vec![0, 1, 1]);
-    assert_eq!(dedup_counts, vec![0, 1, 1]);
     assert_eq!(
-        scan_statuses,
-        vec![
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Finished,
-        ]
+        discovery,
+        vec![(0, false), (1, false), (2, false), (2, true)]
     );
-    assert_eq!(
-        filter_statuses,
-        vec![
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Finished,
-        ]
-    );
-    assert_eq!(
-        dedup_statuses,
-        vec![
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Running,
-            DocumentSelectionPhaseStatus::Finished,
-        ]
-    );
+    assert_eq!(filtering, vec![(0, false), (1, false), (1, true)]);
+    assert_eq!(deduplicating, vec![(0, false), (1, false), (1, true)]);
 
+    let is_filtering = |observation: &ExtractionRunObservation| {
+        matches!(
+            observation,
+            ExtractionRunObservation::FilteringEpubs { .. }
+                | ExtractionRunObservation::EpubFilteringFinished { .. }
+        )
+    };
     let first_filter = observer
-        .progress
+        .selection_progress()
         .iter()
-        .position(|progress| matches!(progress, DocumentSelectionProgress::FilteringEpubs { .. }))
+        .position(is_filtering)
         .expect("filter progress should be reported");
     let last_scan = observer
-        .progress
+        .selection_progress()
         .iter()
-        .rposition(|progress| matches!(progress, DocumentSelectionProgress::Scanning { .. }))
+        .rposition(|observation| {
+            matches!(
+                observation,
+                ExtractionRunObservation::DiscoveringDocuments { .. }
+                    | ExtractionRunObservation::DocumentDiscoveryFinished { .. }
+            )
+        })
         .expect("scan progress should be reported");
     let first_dedup = observer
-        .progress
+        .selection_progress()
         .iter()
-        .position(|progress| {
+        .position(|observation| {
             matches!(
-                progress,
-                DocumentSelectionProgress::DeduplicatingEpubs { .. }
+                observation,
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
             )
         })
         .expect("deduplication progress should be reported");
     let last_filter = observer
-        .progress
+        .selection_progress()
         .iter()
-        .rposition(|progress| matches!(progress, DocumentSelectionProgress::FilteringEpubs { .. }))
+        .rposition(is_filtering)
         .expect("filter progress should be reported");
     assert!(last_scan < first_filter);
     assert!(last_filter < first_dedup);
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
@@ -256,7 +201,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
 #[test]
 fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
     let missing = temp_test_dir("document-selection", "missing-input").join("missing.docx");
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -270,8 +215,8 @@ fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
 
     assert!(selected.is_empty());
     assert_eq!(
-        observer.diagnostics,
-        vec![DocumentSelectionDiagnostic::MissingInput { path: missing }]
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::MissingInput { path: missing }]
     );
 }
 
@@ -294,7 +239,7 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
         unsupported_sibling,
         readable_sibling.clone(),
     ];
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -309,32 +254,26 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.timeline.as_slice(),
+        observer.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-                ..
-            }),
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0,
+                .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1,
+                .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1,
+                .. },
         ] if path == &broken_link && !detail.is_empty()
     ));
-    assert!(!observer.diagnostics.iter().any(|diagnostic| matches!(
-        diagnostic,
-        DocumentSelectionDiagnostic::MissingInput { path } if path == &broken_link
-    )));
+    assert!(
+        !observer
+            .selection_diagnostics()
+            .iter()
+            .any(|diagnostic| matches!(
+                diagnostic,
+                ExtractionRunObservation::MissingInput { path } if path == &broken_link
+            ))
+    );
 
     remove_directory_link(&broken_link);
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
@@ -356,7 +295,7 @@ fn select_documents_reports_broken_nested_link_before_later_supported_input() {
     fs::write(unsupported_entry, []).expect("unsupported entry should be writable");
     fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
     let inputs = vec![requested_directory, readable_sibling.clone()];
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -371,26 +310,15 @@ fn select_documents_reports_broken_nested_link_before_later_supported_input() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.timeline.as_slice(),
+        observer.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-                ..
-            }),
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0,
+                .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1,
+                .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1,
+                .. },
         ] if path == &broken_link && !detail.is_empty()
     ));
 
@@ -412,7 +340,7 @@ fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() 
     fs::remove_dir(&removed_target).expect("link target should be removable");
     fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
     let inputs = vec![requested_directory, readable_sibling.clone()];
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -427,26 +355,15 @@ fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.timeline.as_slice(),
+        observer.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-            }),
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0 },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
         ] if path == &broken_link && !detail.is_empty()
     ));
 
@@ -465,7 +382,7 @@ fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
     fs::create_dir_all(&removed_target).expect("link target should be creatable");
     create_directory_link(&removed_target, &broken_link);
     fs::remove_dir(&removed_target).expect("link target should be removable");
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -479,21 +396,13 @@ fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
 
     assert!(selected.is_empty());
     assert!(matches!(
-        observer.timeline.as_slice(),
+        observer.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Finished,
-            }),
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0 },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0 },
         ] if path == &broken_link && !detail.is_empty()
     ));
 
@@ -525,26 +434,15 @@ fn select_documents_reports_directory_open_failure_and_continues_to_supported_in
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.recording.timeline.as_slice(),
+        observer.recording.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-                ..
-            }),
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0,
+                .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1,
+                .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1,
+                .. },
         ] if path == &removed_directory && !detail.is_empty()
     ));
 
@@ -575,26 +473,15 @@ fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.recording.timeline.as_slice(),
+        observer.recording.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-            }),
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0 },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
         ] if path == &removed_directory && !detail.is_empty()
     ));
 
@@ -636,35 +523,22 @@ fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.recording.timeline.as_slice(),
+        observer.recording.observations.as_slice(),
         [
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0 },
+            ExtractionRunObservation::DocumentDiscoveryFailed {
                     path: first_path,
                     detail: first_detail,
-                }
-            ),
-            RecordedDocumentSelectionFact::Diagnostic(
-                DocumentSelectionDiagnostic::DocumentDiscoveryFailed {
+                },
+            ExtractionRunObservation::DocumentDiscoveryFailed {
                     path: second_path,
                     detail: second_detail,
-                }
-            ),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-            }),
-            RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-            }),
+                },
+            ExtractionRunObservation::DiscoveringDocuments { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1 },
         ] if first_path == &broken_link
             && !first_detail.is_empty()
             && second_path == &removed_directory
@@ -688,7 +562,7 @@ fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
     create_directory_link(&removed_target, &broken_link);
     fs::remove_dir(&removed_target).expect("link target should be removable");
     fs::write(&readable_sibling, []).expect("readable DOCX should be writable");
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -703,16 +577,15 @@ fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), readable_sibling);
     assert!(matches!(
-        observer.diagnostics.as_slice(),
-        [DocumentSelectionDiagnostic::DocumentDiscoveryFailed { path, detail }]
+        observer.selection_diagnostics().as_slice(),
+        [ExtractionRunObservation::DocumentDiscoveryFailed { path, detail }]
             if path == &broken_link && !detail.is_empty()
     ));
     assert!(matches!(
-        observer.progress.last(),
-        Some(DocumentSelectionProgress::Scanning {
-            scope: DocumentSelectionScanScope::RecursiveDirectories,
-            discovered: 1,
-            status: DocumentSelectionPhaseStatus::Finished,
+        observer.selection_progress().last(),
+        Some(ExtractionRunObservation::DocumentDiscoveryFinished {
+            scope: DocumentDiscoveryScope::RecursiveDirectories,
+            discovered: 1
         })
     ));
 
@@ -743,7 +616,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
             .is_symlink(),
         "fixture must be a genuine file symlink"
     );
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -757,25 +630,13 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), linked_document);
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
     assert!(matches!(
-        observer.progress.as_slice(),
+        observer.selection_progress().as_slice(),
         [
-            DocumentSelectionProgress::Scanning {
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            },
-            DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
-                ..
-            },
-            DocumentSelectionProgress::Scanning {
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
-                ..
-            },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1, .. },
         ]
     ));
 
@@ -799,7 +660,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
         fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
         return;
     }
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -813,24 +674,21 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), linked_document);
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
     assert!(matches!(
-        observer.progress.as_slice(),
+        observer.selection_progress().as_slice(),
         [
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1
             },
         ]
     ));
@@ -848,7 +706,7 @@ fn select_documents_follows_requested_directory_link_during_recursive_scanning()
     fs::create_dir_all(&target).expect("link target should be creatable");
     fs::write(target.join("linked.docx"), []).expect("linked DOCX should be writable");
     create_directory_link(&target, &requested_link);
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -862,24 +720,21 @@ fn select_documents_follows_requested_directory_link_during_recursive_scanning()
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), linked_document);
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
     assert!(matches!(
-        observer.progress.as_slice(),
+        observer.selection_progress().as_slice(),
         [
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 1
             },
         ]
     ));
@@ -900,7 +755,7 @@ fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
     fs::write(target_directory.join("outside.docx"), [])
         .expect("linked-directory DOCX should be writable");
     create_directory_link(&target_directory, &nested_link);
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -913,19 +768,17 @@ fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
     );
 
     assert!(selected.is_empty());
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
     assert_eq!(
-        observer.progress,
+        observer.selection_progress(),
         vec![
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Running,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0
             },
-            DocumentSelectionProgress::Scanning {
-                scope: DocumentSelectionScanScope::RecursiveDirectories,
-                discovered: 0,
-                status: DocumentSelectionPhaseStatus::Finished,
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RecursiveDirectories,
+                discovered: 0
             },
         ]
     );
@@ -936,7 +789,7 @@ fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
 
 #[test]
 fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -949,8 +802,8 @@ fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
     );
 
     assert!(selected.is_empty());
-    assert!(observer.progress.is_empty());
-    assert!(observer.diagnostics.is_empty());
+    assert!(observer.selection_progress().is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
 }
 
 #[test]
@@ -963,7 +816,7 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
         title: Some("needle".to_string()),
         author: None,
     };
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -977,27 +830,37 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
 
     assert!(selected.is_empty());
     assert!(matches!(
-        observer.diagnostics.as_slice(),
-        [DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+        observer.selection_diagnostics().as_slice(),
+        [ExtractionRunObservation::UnreadableEpubMetadata {
             path,
             purpose: EpubMetadataPurpose::Filtering,
             detail,
         }] if path == &epub_path && !detail.is_empty()
     ));
-    assert!(observer.progress.iter().any(|progress| matches!(
-        progress,
-        DocumentSelectionProgress::FilteringEpubs {
-            checked: 1,
-            total: 1,
-            matching: 0,
-            status: DocumentSelectionPhaseStatus::Finished,
-            ..
-        }
-    )));
-    assert!(!observer.progress.iter().any(|progress| matches!(
-        progress,
-        DocumentSelectionProgress::DeduplicatingEpubs { .. }
-    )));
+    assert!(
+        observer
+            .selection_progress()
+            .iter()
+            .any(|progress| matches!(
+                progress,
+                ExtractionRunObservation::EpubFilteringFinished {
+                    checked: 1,
+                    total: 1,
+                    matching: 0,
+                    ..
+                }
+            ))
+    );
+    assert!(
+        !observer
+            .selection_progress()
+            .iter()
+            .any(|progress| matches!(
+                progress,
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
+            ))
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
@@ -1015,7 +878,7 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
         title: Some("magic".to_string()),
         author: None,
     };
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -1029,19 +892,17 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
 
     assert_eq!(selected.len(), 1);
     let filtering_facts: Vec<_> = observer
-        .timeline
+        .observations
         .iter()
         .filter(|fact| {
             matches!(
                 fact,
-                RecordedDocumentSelectionFact::Progress(
-                    DocumentSelectionProgress::FilteringEpubs { .. }
-                ) | RecordedDocumentSelectionFact::Diagnostic(
-                    DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                ExtractionRunObservation::FilteringEpubs { .. }
+                    | ExtractionRunObservation::EpubFilteringFinished { .. }
+                    | ExtractionRunObservation::UnreadableEpubMetadata {
                         purpose: EpubMetadataPurpose::Filtering,
                         ..
                     }
-                )
             )
         })
         .collect();
@@ -1049,75 +910,58 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
     assert_eq!(filtering_facts.len(), 5);
     assert!(matches!(
         filtering_facts[0],
-        RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::FilteringEpubs {
+        ExtractionRunObservation::FilteringEpubs {
             checked: 0,
             matching: 0,
-            status: DocumentSelectionPhaseStatus::Running,
             ..
-        })
+        }
     ));
     assert!(matches!(
         filtering_facts[1],
-        RecordedDocumentSelectionFact::Diagnostic(
-            DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+        ExtractionRunObservation::UnreadableEpubMetadata {
                 path,
                 purpose: EpubMetadataPurpose::Filtering,
                 ..
-            }
-        ) if path == &invalid_epub
+            } if path == &invalid_epub
     ));
     assert!(matches!(
         filtering_facts[2],
-        RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::FilteringEpubs {
+        ExtractionRunObservation::FilteringEpubs {
             checked: 1,
             matching: 0,
-            status: DocumentSelectionPhaseStatus::Running,
             ..
-        })
+        }
     ));
     assert!(matches!(
         filtering_facts[3],
-        RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::FilteringEpubs {
+        ExtractionRunObservation::FilteringEpubs {
             checked: 2,
             matching: 1,
-            status: DocumentSelectionPhaseStatus::Running,
             ..
-        })
+        }
     ));
     assert!(matches!(
         filtering_facts[4],
-        RecordedDocumentSelectionFact::Progress(DocumentSelectionProgress::FilteringEpubs {
+        ExtractionRunObservation::EpubFilteringFinished {
             checked: 2,
             matching: 1,
-            status: DocumentSelectionPhaseStatus::Finished,
             ..
-        })
+        }
     ));
 
     let filter_finished = observer
-        .timeline
+        .observations
         .iter()
-        .position(|fact| {
-            matches!(
-                fact,
-                RecordedDocumentSelectionFact::Progress(
-                    DocumentSelectionProgress::FilteringEpubs {
-                        status: DocumentSelectionPhaseStatus::Finished,
-                        ..
-                    }
-                )
-            )
-        })
+        .position(|fact| matches!(fact, ExtractionRunObservation::EpubFilteringFinished { .. }))
         .expect("filtering should finish");
     let dedup_started = observer
-        .timeline
+        .observations
         .iter()
         .position(|fact| {
             matches!(
                 fact,
-                RecordedDocumentSelectionFact::Progress(
-                    DocumentSelectionProgress::DeduplicatingEpubs { .. }
-                )
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
             )
         })
         .expect("deduplication should start for the matching EPUB");
@@ -1161,7 +1005,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
     fs::write(nested.join("nested.epub"), []).expect("nested epub should be writable");
     fs::write(temp_dir.join("ignored.txt"), []).expect("ignored file should be writable");
 
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
     let non_recursive = select_documents(
         DocumentSelectionOptions {
             inputs: std::slice::from_ref(&temp_dir),
@@ -1173,7 +1017,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
     );
     assert_eq!(non_recursive.len(), 1);
 
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
     let recursive = select_documents(
         DocumentSelectionOptions {
             inputs: std::slice::from_ref(&temp_dir),
@@ -1184,13 +1028,21 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
         &mut observer,
     );
     assert_eq!(recursive.len(), 2);
-    assert!(observer.progress.iter().any(|progress| matches!(
-        progress,
-        DocumentSelectionProgress::Scanning {
-            scope: DocumentSelectionScanScope::RecursiveDirectories,
-            ..
-        }
-    )));
+    assert!(
+        observer
+            .selection_progress()
+            .iter()
+            .any(|progress| matches!(
+                progress,
+                ExtractionRunObservation::DiscoveringDocuments {
+                    scope: DocumentDiscoveryScope::RecursiveDirectories,
+                    ..
+                } | ExtractionRunObservation::DocumentDiscoveryFinished {
+                    scope: DocumentDiscoveryScope::RecursiveDirectories,
+                    ..
+                }
+            ))
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
@@ -1205,7 +1057,7 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
         title: Some("needle".to_string()),
         author: None,
     };
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
 
     let selected = select_documents(
         DocumentSelectionOptions {
@@ -1218,11 +1070,18 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
     );
 
     assert_eq!(selected.len(), 1);
-    assert!(!observer.progress.iter().any(|progress| matches!(
-        progress,
-        DocumentSelectionProgress::FilteringEpubs { .. }
-            | DocumentSelectionProgress::DeduplicatingEpubs { .. }
-    )));
+    assert!(
+        !observer
+            .selection_progress()
+            .iter()
+            .any(|progress| matches!(
+                progress,
+                ExtractionRunObservation::FilteringEpubs { .. }
+                    | ExtractionRunObservation::EpubFilteringFinished { .. }
+                    | ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
+            ))
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
@@ -1236,7 +1095,7 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
     write_epub_with_descriptive_declarations(&first, "Shared Creator", "Shared Title");
     write_epub_with_descriptive_declarations(&second, "Shared Creator", "Shared Title");
 
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
     let selected = select_documents(
         DocumentSelectionOptions {
             inputs: &[first.clone(), second],
@@ -1249,13 +1108,12 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), first);
-    assert!(observer.progress.iter().any(|progress| {
+    assert!(observer.selection_progress().iter().any(|progress| {
         matches!(
             progress,
-            DocumentSelectionProgress::DeduplicatingEpubs {
+            ExtractionRunObservation::EpubDeduplicationFinished {
                 duplicates_found: 1,
                 unique_remaining: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
                 ..
             }
         )
@@ -1276,7 +1134,7 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
     fs::write(&first, b"not an epub").expect("first invalid epub should be writable");
     fs::write(&second, b"not an epub").expect("second invalid epub should be writable");
 
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
     let selected = select_documents(
         DocumentSelectionOptions {
             inputs: &[first.clone(), second],
@@ -1289,24 +1147,23 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), first);
-    assert!(observer.progress.iter().any(|progress| {
+    assert!(observer.selection_progress().iter().any(|progress| {
         matches!(
             progress,
-            DocumentSelectionProgress::DeduplicatingEpubs {
+            ExtractionRunObservation::EpubDeduplicationFinished {
                 duplicates_found: 1,
                 unique_remaining: 1,
-                status: DocumentSelectionPhaseStatus::Finished,
                 ..
             }
         )
     }));
     assert_eq!(
         observer
-            .diagnostics
+            .selection_diagnostics()
             .iter()
             .filter(|diagnostic| matches!(
                 diagnostic,
-                DocumentSelectionDiagnostic::UnreadableEpubMetadata {
+                ExtractionRunObservation::UnreadableEpubMetadata {
                     purpose: EpubMetadataPurpose::Deduplication,
                     ..
                 }
@@ -1324,7 +1181,7 @@ fn select_documents_uses_declaration_derived_display_name() {
     let epub_path = temp_dir.join("sample.epub");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     write_epub_with_descriptive_declarations(&epub_path, "Tester", "Magic Test");
-    let mut observer = RecordingDocumentSelectionObserver::default();
+    let mut observer = RecordingRunObserver::default();
     let selected = select_documents(
         DocumentSelectionOptions {
             inputs: std::slice::from_ref(&epub_path),
