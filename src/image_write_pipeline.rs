@@ -249,6 +249,16 @@ impl ImageWritePipeline {
         Self { policy }
     }
 
+    /// Forwards whether the bound Image write policy carries a Conversion policy.
+    pub(crate) fn is_conversion_configured(&self) -> bool {
+        self.policy.is_conversion_configured()
+    }
+
+    /// Forwards the bound Image write policy's GIF destination, if any.
+    pub(crate) fn gif_destination(&self) -> Option<&Path> {
+        self.policy.gif_destination()
+    }
+
     /// Discovers and writes one required EPUB cover through a scoped source reader.
     ///
     /// Acquisition failures return a retry disposition. Filtering and other Image

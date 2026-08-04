@@ -16,6 +16,10 @@ _Avoid_: Run options, prepared options, configuration bundle
 The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts; the outcome excludes terminal wording and raw cross-module counters.
 _Avoid_: Run report, extraction summary, final counters
 
+**Applicable outcome facts**:
+Which optional fact groups the eventual Extraction run outcome may carry — the applicable conversion and GIF-routing facts — together with the GIF destination when routing applies. Document extraction reports it from Image write policy at the moment an Extraction run needs it. It excludes counts, terminal wording, and outcome classification.
+_Avoid_: Conversion requested flag, run summary facts, presentation intent
+
 **Extraction run observation**:
 One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It excludes terminal wording and user-interface commands.
 _Avoid_: Run event, progress callback, UI command

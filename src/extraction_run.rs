@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use crate::document_extraction::{
-    DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
+    ApplicableOutcomeFacts, DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
     DocumentExtractionPolicy, DocumentExtractionWarning,
 };
 use crate::document_selection::{
@@ -16,26 +16,19 @@ use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 /// Opaque, ready-to-execute handoff produced by Extraction run intake.
 ///
 /// Construction takes the two assembled policies that govern the run — the
-/// Document extraction policy and the Image write policy — and derives
-/// presentation-relevant intent from the latter, so conversion and GIF-routing
-/// facts cannot drift from the configured workflow. An Extraction run consumes
-/// this request by value.
+/// Document extraction policy and the Image write policy — and retains no facts
+/// derived from either. An Extraction run consumes this request by value and
+/// asks Document extraction for the derived facts when it needs them.
 pub struct ExtractionRunRequest {
     inputs: Vec<PathBuf>,
     recursive: bool,
     output: Option<PathBuf>,
     epub_filter: EpubFilter,
     document_extraction: DocumentExtraction,
-    conversion_requested: bool,
-    gif_destination: Option<PathBuf>,
 }
 
 impl ExtractionRunRequest {
     /// Builds one valid request from normalized inputs and workflow policies.
-    ///
-    /// Conversion intent and the GIF destination are read off the assembled
-    /// Image write policy and retained alongside the pipeline the request wraps
-    /// it in, for outcome classification.
     pub(crate) fn new(
         inputs: Vec<PathBuf>,
         recursive: bool,
@@ -44,8 +37,6 @@ impl ExtractionRunRequest {
         document_extraction_policy: DocumentExtractionPolicy,
         image_write_policy: ImageWritePolicy,
     ) -> Self {
-        let conversion_requested = image_write_policy.is_conversion_configured();
-        let gif_destination = image_write_policy.gif_destination().map(Path::to_path_buf);
         let image_write_pipeline = ImageWritePipeline::new(image_write_policy);
 
         Self {
@@ -57,8 +48,6 @@ impl ExtractionRunRequest {
                 document_extraction_policy,
                 image_write_pipeline,
             ),
-            conversion_requested,
-            gif_destination,
         }
     }
 }
@@ -323,8 +312,6 @@ pub fn run(
         output,
         epub_filter,
         document_extraction,
-        conversion_requested,
-        gif_destination,
     } = request;
     let cover_only = document_extraction.is_epub_cover_extraction_configured();
     let selected_documents = {
@@ -350,7 +337,7 @@ pub fn run(
         total: selected_documents.len(),
         cover_only,
     });
-    let mut aggregation = RunAggregation::new(conversion_requested, gif_destination);
+    let mut aggregation = RunAggregation::new(document_extraction.applicable_outcome_facts());
 
     for selected_document in selected_documents {
         // The run retains only observer-facing facts before transferring the
@@ -393,16 +380,22 @@ pub fn run(
 
 impl RunAggregation {
     /// Starts aggregation with only the facts applicable to the requested workflow.
-    fn new(conversion_requested: bool, gif_destination: Option<PathBuf>) -> Self {
+    fn new(applicable: ApplicableOutcomeFacts) -> Self {
+        let conversion = applicable
+            .is_conversion_applicable()
+            .then(ConversionAggregation::default);
+
         Self {
             emitted_images: 0,
             documents_with_output: 0,
             has_normal_image_output: false,
-            conversion: conversion_requested.then(ConversionAggregation::default),
-            gif_routing: gif_destination.map(|destination| GifRoutingAggregation {
-                routed_gifs: 0,
-                destination,
-            }),
+            conversion,
+            gif_routing: applicable
+                .into_gif_destination()
+                .map(|destination| GifRoutingAggregation {
+                    routed_gifs: 0,
+                    destination,
+                }),
         }
     }
 
@@ -412,14 +405,9 @@ impl RunAggregation {
         if let Some(conversion) = &mut self.conversion {
             conversion.converted_images += facts.get_converted_images();
             conversion.skipped_conversions += facts.get_skipped_conversions();
-        } else {
-            debug_assert_eq!(facts.get_converted_images(), 0);
-            debug_assert_eq!(facts.get_skipped_conversions(), 0);
         }
         if let Some(gif_routing) = &mut self.gif_routing {
             gif_routing.routed_gifs += facts.get_gifs_routed();
-        } else {
-            debug_assert_eq!(facts.get_gifs_routed(), 0);
         }
 
         if facts.get_emitted_images() > 0 {

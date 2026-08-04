@@ -6,6 +6,7 @@ mod docx;
 mod epub;
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use crate::document_selection::SelectedDocument;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
@@ -52,6 +53,22 @@ impl DocumentExtraction {
         self.policy.is_epub_cover_only()
     }
 
+    /// Reports which optional outcome fact groups the bound workflow permits.
+    ///
+    /// The Image write policy is the single owner of both facts. Asking it here,
+    /// at the seam that already translates Image write accounting into run-facing
+    /// values, is what lets the Extraction run seed aggregation without keeping a
+    /// copy that construction would have to keep correct.
+    pub(crate) fn applicable_outcome_facts(&self) -> ApplicableOutcomeFacts {
+        ApplicableOutcomeFacts {
+            conversion: self.image_write_pipeline.is_conversion_configured(),
+            gif_destination: self
+                .image_write_pipeline
+                .gif_destination()
+                .map(Path::to_path_buf),
+        }
+    }
+
     /// Consumes one selected document and dispatches its authoritative variant.
     ///
     /// Document-local errors are returned as failed outcomes so the Extraction
@@ -76,6 +93,29 @@ impl DocumentExtraction {
                 error: DocumentExtractionError::from_source(failure.error),
             },
         }
+    }
+}
+
+/// Which optional fact groups an eventual Extraction run outcome may carry.
+///
+/// The value says only that much, plus where routed GIFs go when routing applies:
+/// it carries no counts, no terminal wording, and no outcome classification. It
+/// owns its destination rather than borrowing it, so it carries no lifetime.
+#[derive(Debug)]
+pub(crate) struct ApplicableOutcomeFacts {
+    conversion: bool,
+    gif_destination: Option<PathBuf>,
+}
+
+impl ApplicableOutcomeFacts {
+    /// Returns whether the eventual outcome may carry conversion facts.
+    pub(crate) fn is_conversion_applicable(&self) -> bool {
+        self.conversion
+    }
+
+    /// Consumes the value into the destination that receives routed GIFs, if any.
+    pub(crate) fn into_gif_destination(self) -> Option<PathBuf> {
+        self.gif_destination
     }
 }
 
