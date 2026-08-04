@@ -1,5 +1,6 @@
 //! EPUB file processing module
 
+mod cover_extraction;
 mod resource_archive;
 
 use anyhow::Result;
@@ -11,16 +12,14 @@ use crate::document_selection::SelectedEpub;
 use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
-    ImageWriteRequest, ImageWriteResult, RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
+    ImageWriteRequest, RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
 };
 
+use self::cover_extraction::{CoverAttempts, CoverCandidate};
 use self::resource_archive::{
     ArchiveResourceIdentity, EpubResourceArchive, EpubResourceArchiveSession, ResourceAcquisition,
     ResourceKey,
 };
-
-/// Common JPEG file extensions for cover image fallback detection
-const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
 /// Consumes one authoritative Selected EPUB and applies its Document extraction policy.
 ///
@@ -68,15 +67,22 @@ pub(super) fn extract(
             ),
             DocumentExtractionPolicy::EpubCover {
                 fallback_to_normal_images,
-            } => extract_required_cover(
-                &mut archive,
-                &plan,
-                declarations.cover_id(),
-                &output_dir,
-                &base_name,
-                fallback_to_normal_images,
-                pipeline,
-            ),
+            } => {
+                let candidates = cover_candidates(&plan);
+                let mut attempts = EpubCoverAttempts {
+                    archive: &mut archive,
+                    plan: &plan,
+                    output_base_dir: &output_dir,
+                    base_name: &base_name,
+                    pipeline,
+                };
+                cover_extraction::extract_required_cover(
+                    &candidates,
+                    declarations.cover_id(),
+                    fallback_to_normal_images,
+                    &mut attempts,
+                )
+            }
         }
     })?
 }
@@ -149,65 +155,69 @@ fn extract_all_images<'session>(
     )
 }
 
-/// Searches for a cover image by filename when the declared cover identity fails.
-/// Looks for files named "cover" (case-insensitive) with common JPEG extensions.
-/// Returns the first matching deterministic manifest candidate.
-fn find_cover_by_filename<'resource, 'session>(
-    resources: &'resource [EpubImagePlan<'session>],
-) -> Option<&'resource EpubImagePlan<'session>> {
-    resources.iter().find(|candidate| {
-        let path = Path::new(&candidate.manifest_path);
-        let file_stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
-        let extension = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_lowercase());
-
-        file_stem.as_deref() == Some("cover")
-            && extension
-                .as_deref()
-                .is_some_and(|ext| JPEG_EXTENSIONS.contains(&ext))
-    })
+/// Copies the session-local plan into the cover candidates EPUB cover extraction orders.
+///
+/// The plan index becomes the candidate position, which is how [`EpubCoverAttempts`]
+/// gets back to a resource key in constant time. Manifest-path lookup was rejected:
+/// it is a linear scan, and aliasing spellings make it non-unique.
+fn cover_candidates<'session>(
+    plan: &[EpubImagePlan<'session>],
+) -> Vec<CoverCandidate<ArchiveResourceIdentity<'session>>> {
+    plan.iter()
+        .enumerate()
+        .map(|(position, resource)| {
+            CoverCandidate::new(
+                position,
+                &resource.id,
+                &resource.manifest_path,
+                resource.identity,
+            )
+        })
+        .collect()
 }
 
-/// Extracts one required EPUB cover and optionally falls back to normal images.
+/// Production adapter giving EPUB cover extraction one archive session and pipeline.
 ///
-/// The declared metadata cover precedes the first deterministic JPEG-family
-/// filename candidate. Archive resource identities are recorded before attempts,
-/// suppress aliases, and exclude every attempted payload from normal fallback.
-/// Only retry dispositions advance; every completed Image write decision is terminal.
-///
-/// # Errors
-///
-/// Returns an error when cover or fallback emission fails. Facts from earlier cover
-/// attempts and successful normal-image writes remain attached to the failure.
-fn extract_required_cover<'session>(
-    archive: &mut EpubResourceArchiveSession<'session>,
-    resources: &[EpubImagePlan<'session>],
-    cover_id: Option<&str>,
-    output_base_dir: &Path,
-    base_name: &str,
-    fallback_to_normal_images: bool,
-    pipeline: &ImageWritePipeline,
-) -> ImageWriteOutcome {
-    let metadata_cover = cover_id.and_then(|id| resources.iter().find(|item| item.id == id));
-    let filename_cover = find_cover_by_filename(resources);
-    let mut attempted_identities = HashSet::new();
-    let mut aggregate = ImageWriteResult::default();
+/// It lives here rather than in the child module because the fallback operation runs
+/// this file's normal-image traversal; owning it there would make the child call its
+/// parent, which is the mutual dependency ADR-0004 removed elsewhere in this crate.
+struct EpubCoverAttempts<'attempts, 'session> {
+    archive: &'attempts mut EpubResourceArchiveSession<'session>,
+    plan: &'attempts [EpubImagePlan<'session>],
+    output_base_dir: &'attempts Path,
+    base_name: &'attempts str,
+    pipeline: &'attempts ImageWritePipeline,
+}
 
-    for candidate in [metadata_cover, filename_cover].into_iter().flatten() {
-        if !attempted_identities.insert(candidate.identity) {
-            continue;
-        }
+impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
+    for EpubCoverAttempts<'_, 'session>
+{
+    /// Acquires one planned cover candidate and writes it through the cover purpose.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the candidate was not built by [`cover_candidates`] from this
+    /// adapter's plan, since its position addresses that plan directly.
+    fn attempt(
+        &mut self,
+        candidate: &CoverCandidate<ArchiveResourceIdentity<'session>>,
+    ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
+        // Destructured so the traversal closure's mutable archive borrow stays
+        // disjoint from the plan and pipeline borrows taken around it.
+        let Self {
+            archive,
+            plan,
+            output_base_dir,
+            base_name,
+            pipeline,
+        } = self;
+        let resource = &plan[candidate.position()];
 
-        let outcome = match pipeline.write_required_cover(
+        pipeline.write_required_cover(
             RequiredCoverWriteRequest::new(output_base_dir, base_name),
             |visitor| {
-                let source = candidate.required_cover_source();
-                let acquisition = archive.acquire(candidate.key, |mut payload| {
+                let source = resource.required_cover_source();
+                let acquisition = archive.acquire(resource.key, |mut payload| {
                     visitor.visit(source.clone(), &mut payload)
                 })?;
                 if let ResourceAcquisition::Unavailable(error) = acquisition {
@@ -215,42 +225,23 @@ fn extract_required_cover<'session>(
                 }
                 Ok(())
             },
-        ) {
-            Ok(outcome) => outcome,
-            Err(mut failure) => {
-                failure.prepend(aggregate);
-                return Err(failure);
-            }
-        };
-
-        match outcome {
-            RequiredCoverWriteOutcome::Retry(result) => aggregate.append(result),
-            RequiredCoverWriteOutcome::Completed(result) => {
-                aggregate.append(result);
-                return Ok(aggregate);
-            }
-        }
+        )
     }
 
-    if fallback_to_normal_images {
-        let fallback = match extract_all_images(
-            archive,
-            resources,
-            &attempted_identities,
-            output_base_dir,
-            base_name,
-            pipeline,
-        ) {
-            Ok(fallback) => fallback,
-            Err(mut failure) => {
-                failure.prepend(aggregate);
-                return Err(failure);
-            }
-        };
-        aggregate.append(fallback);
+    /// Runs normal-image traversal over the same plan, skipping attempted payloads.
+    fn fallback(
+        &mut self,
+        excluded_identities: &HashSet<ArchiveResourceIdentity<'session>>,
+    ) -> ImageWriteOutcome {
+        extract_all_images(
+            self.archive,
+            self.plan,
+            excluded_identities,
+            self.output_base_dir,
+            self.base_name,
+            self.pipeline,
+        )
     }
-
-    Ok(aggregate)
 }
 
 /// Visits one keyed normal-image resource while keeping its payload borrow scoped.

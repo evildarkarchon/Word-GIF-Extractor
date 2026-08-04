@@ -96,6 +96,10 @@ _Avoid_: Write mode, archive image purpose, extraction kind
 The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
 _Avoid_: Cover pipeline, cover selection, cover helper
 
+**Cover candidate**:
+One declared manifest resource considered for cover use by EPUB cover extraction, carrying the declared facts that ordering and exclusion are decided from. Several distinct cover candidates can share a single Archive resource identity, so a candidate is a reference under consideration rather than the payload it resolves to. It excludes archive payload acquisition and Image write decisions.
+_Avoid_: Cover match, cover entry, candidate path
+
 **Archive image discovery**:
 The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
