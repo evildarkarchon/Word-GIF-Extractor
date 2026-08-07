@@ -209,7 +209,45 @@ pub(crate) struct DocumentExtractionFacts {
 
 impl DocumentExtractionFacts {
     /// Translates inner Image write facts at the Document extraction seam.
+    ///
+    /// A debug assertion pins the emitted-image partition where the pipeline's
+    /// counts cross into Document extraction; see the comment on it. The
+    /// translation itself is infallible.
     fn from_image_write_result(result: ImageWriteResult) -> Self {
+        // Tripwire for an Image write pipeline regression, not a runtime
+        // condition. Each emitted image takes at most one of the three roles
+        // only because the pipeline returns early for routed GIFs before
+        // conversion runs, which is what keeps routed and converted disjoint —
+        // and nothing in the pipeline states that. Stating it here, at the
+        // boundary the counts cross, is what makes a conversion change trip
+        // next to the edit instead of three modules away.
+        //
+        // Nothing reachable through Document extraction's interface can produce
+        // a violating result, so there is deliberately no test for it. Firing it
+        // would take hand-built pipeline counts reaching around that interface —
+        // do not contort a test into doing so. The existing Extraction run test
+        // pinning three emitted images as one converted, one conversion-skipped
+        // and one GIF-routed is the boundary case that exercises it in debug
+        // builds, at equality.
+        //
+        // The sum saturates rather than wrapping so the tripwire fails closed:
+        // a build with debug assertions but no overflow checks would otherwise
+        // wrap a bogus total back under the emitted count and stay silent.
+        debug_assert!(
+            result
+                .counts
+                .converted
+                .saturating_add(result.counts.skipped)
+                .saturating_add(result.counts.gifs_routed)
+                <= result.counts.extracted,
+            "Image write pipeline classified more images than it emitted: \
+             converted {} + skipped {} + routed {} > emitted {}",
+            result.counts.converted,
+            result.counts.skipped,
+            result.counts.gifs_routed,
+            result.counts.extracted,
+        );
+
         // "Nothing emitted" is read off the emitted count rather than from the
         // pipeline, which reports only whether the normal batch produced output.
         // The pipeline never emits a normal image and a required cover for the
