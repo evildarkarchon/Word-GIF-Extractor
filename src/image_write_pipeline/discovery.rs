@@ -344,3 +344,6 @@ fn starts_with_ignore_ascii_case(data: &[u8], prefix: &[u8]) -> bool {
             .zip(prefix)
             .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
 }
+
+#[cfg(test)]
+mod tests;
