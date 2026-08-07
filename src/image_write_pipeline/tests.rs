@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
-use crate::test_support::temp_test_dir;
+use crate::test_support::{FailAfterReader, temp_test_dir};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
@@ -97,38 +97,6 @@ fn magic_format_cases() -> Vec<MagicFormatCase> {
             payload: b"\x00\x00\x01\x00ico payload".to_vec(),
         },
     ]
-}
-
-struct FailAfterReader {
-    cursor: Cursor<Vec<u8>>,
-    fail_at: u64,
-}
-
-impl FailAfterReader {
-    /// Creates a reader that reports an error after the requested byte offset.
-    fn new(data: Vec<u8>, fail_at: u64) -> Self {
-        Self {
-            cursor: Cursor::new(data),
-            fail_at,
-        }
-    }
-}
-
-impl Read for FailAfterReader {
-    /// Reads through `fail_at`, then returns the injected acquisition failure.
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let position = self.cursor.position();
-        if position >= self.fail_at {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "injected archive resource failure",
-            ));
-        }
-
-        let remaining = (self.fail_at - position) as usize;
-        let read_len = buffer.len().min(remaining);
-        self.cursor.read(&mut buffer[..read_len])
-    }
 }
 
 struct AssertOutputBeforeTailReader {

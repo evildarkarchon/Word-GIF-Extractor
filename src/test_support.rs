@@ -1,8 +1,8 @@
 //! Shared fixtures for the crate's in-crate tests.
 //!
 //! Every temporary-directory helper, ZIP fixture builder, platform directory-link
-//! helper and silent observer used by a `#[cfg(test)] mod tests` sibling lives here,
-//! so that adding a test never means writing another copy of one.
+//! helper, failing reader adapter and silent observer used by a `#[cfg(test)] mod tests`
+//! sibling lives here, so that adding a test never means writing another copy of one.
 //!
 //! # Why this is a plain `#[cfg(test)]` module
 //!
@@ -28,7 +28,7 @@
 //! overlap grows past a few helpers — the workspace crate becomes the better option.
 
 use std::fs;
-use std::io::Write;
+use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
@@ -126,6 +126,44 @@ pub(crate) fn create_file_symlink(target: &Path, link: &Path) -> bool {
 /// Removes a file symlink without removing its target.
 pub(crate) fn remove_file_symlink(link: &Path) {
     fs::remove_file(link).expect("test file symlink should be removable");
+}
+
+/// A reader that serves a buffered payload and then fails partway through it.
+///
+/// Archive image discovery reads a source in two phases, so a source that fails
+/// only in the second phase is the fixture that separates a bounded evidence read
+/// from a failed acquisition. Both the discovery tests and the pipeline tests need
+/// one, which is what puts it here rather than in either module.
+pub(crate) struct FailAfterReader {
+    cursor: Cursor<Vec<u8>>,
+    fail_at: u64,
+}
+
+impl FailAfterReader {
+    /// Creates a reader that reports an error after the requested byte offset.
+    pub(crate) fn new(data: Vec<u8>, fail_at: u64) -> Self {
+        Self {
+            cursor: Cursor::new(data),
+            fail_at,
+        }
+    }
+}
+
+impl Read for FailAfterReader {
+    /// Reads through `fail_at`, then returns the injected acquisition failure.
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let position = self.cursor.position();
+        if position >= self.fail_at {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "injected archive resource failure",
+            ));
+        }
+
+        let remaining = (self.fail_at - position) as usize;
+        let read_len = buffer.len().min(remaining);
+        self.cursor.read(&mut buffer[..read_len])
+    }
 }
 
 /// Ignores the live run timeline, for tests that assert files and semantic outcomes.
