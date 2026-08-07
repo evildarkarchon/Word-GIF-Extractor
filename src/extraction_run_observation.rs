@@ -15,9 +15,10 @@
 //! the Extraction run and Extraction run presentation all depend on this module,
 //! and it depends on none of them.
 //!
-//! The one outward dependency is [`DocumentExtractionWarning`], whose wording is
-//! owned by Document extraction and transported here opaquely. Document
-//! extraction never observes a run, so that edge does not come back.
+//! The one outward dependency is Document extraction: the wording of a
+//! [`DocumentExtractionWarning`] is owned there and transported here opaquely,
+//! and [`ExtractionRunOutcomeAccumulator`] folds the facts that module retains.
+//! Document extraction never observes a run, so that edge does not come back.
 //!
 //! # What is deliberately absent
 //!
@@ -30,7 +31,10 @@
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use crate::document_extraction::DocumentExtractionWarning;
+use crate::document_extraction::{
+    ApplicableOutcomeFacts, DocumentExtractionFacts, DocumentExtractionWarning,
+    DocumentOutputPurpose,
+};
 
 /// Scope of the Document discovery phase reported in the observation stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +171,16 @@ impl ExtractionRunOutcome {
     /// Positive count types prevent terminal adapters and tests from creating a
     /// produced state with zero output. The remaining checks ensure documents
     /// and classified output facts cannot exceed the emitted-image total.
+    ///
+    /// This is the constructor for arbitrary totals, and it is how a caller with
+    /// no run to execute — Extraction run presentation's tests, building one
+    /// outcome to render — reaches a produced state. It is not leftover from the
+    /// production path: an Extraction run builds its outcome through
+    /// [`ExtractionRunOutcomeAccumulator`], which is valid by construction and
+    /// needs no validation to reject.
+    // Only tests call it now that the run builds outcomes by construction, which
+    // is the decision recorded in ADR-0006 rather than an unfinished migration.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_produced(
         output_kind: ExtractionOutputKind,
         emitted_images: NonZeroUsize,
@@ -197,6 +211,144 @@ impl ExtractionRunOutcome {
             conversion,
             gif_routing,
         }))
+    }
+}
+
+/// Routed-GIF totals held while the routed count may still be zero.
+///
+/// [`GifRoutingFacts`] requires a positive routed count and so cannot be
+/// accumulated into from zero; the count is lifted into that type once, at
+/// finish, and only if any GIF was in fact routed.
+struct RoutedGifTally {
+    routed_gifs: usize,
+    destination: PathBuf,
+}
+
+/// Builds one [`ExtractionRunOutcome`] from the documents an Extraction run processed.
+///
+/// The value is seeded from [`ApplicableOutcomeFacts`], folded once per
+/// document with that document's [`DocumentExtractionFacts`], and finished into
+/// an outcome. Finish takes the run's cover intent and cannot fail.
+///
+/// This is the production path, and it is the counterpart to
+/// [`ExtractionRunOutcome::try_produced`]: this one is valid by construction and
+/// is the only way an Extraction run assembles an outcome, while that one
+/// validates arbitrary totals for callers holding no run state. Neither
+/// replaces the other.
+///
+/// # Why finishing needs no check
+///
+/// `try_produced` rejects a produced outcome whose documents or whose
+/// classified output exceed its emitted-image total. Both branches are
+/// discharged before the fold begins rather than re-tested after it, per
+/// ADR-0006: one document's converted, conversion-skipped and GIF-routed counts
+/// never together exceed its emitted count — asserted where Image write
+/// accounting becomes Document extraction facts — so neither can the sums, and
+/// a document only raises the document count by emitting at least one image.
+/// Restating either check here would put back the assumption ADR-0006 removed.
+pub(crate) struct ExtractionRunOutcomeAccumulator {
+    emitted_images: usize,
+    documents_with_output: usize,
+    /// Every folded document's output purpose merged, not any one document's.
+    merged_output_purpose: DocumentOutputPurpose,
+    /// Conversion totals, which are valid at zero, kept in their outcome type.
+    conversion: Option<ConversionFacts>,
+    gif_routing: Option<RoutedGifTally>,
+}
+
+impl ExtractionRunOutcomeAccumulator {
+    /// Seeds accumulation with only the fact groups the run's workflow permits.
+    ///
+    /// The seed comes from Document extraction's report rather than from the
+    /// Image write policy that owns those facts: naming that policy here would
+    /// give this module a second outward edge, to the Image write pipeline,
+    /// which is the coupling ADR-0004 exists to keep out.
+    pub(crate) fn new(applicable: ApplicableOutcomeFacts) -> Self {
+        let conversion = applicable
+            .is_conversion_applicable()
+            .then(|| ConversionFacts::new(0, 0));
+
+        Self {
+            emitted_images: 0,
+            documents_with_output: 0,
+            merged_output_purpose: DocumentOutputPurpose::NothingEmitted,
+            conversion,
+            gif_routing: applicable
+                .into_gif_destination()
+                .map(|destination| RoutedGifTally {
+                    routed_gifs: 0,
+                    destination,
+                }),
+        }
+    }
+
+    /// Folds in the facts retained by one completed or failed Document extraction.
+    ///
+    /// The cross-document fold lives here rather than in Document extraction, so
+    /// that module stays stateless across documents.
+    pub(crate) fn fold(&mut self, facts: &DocumentExtractionFacts) {
+        // The counter shape is read once, from the value that owns it, rather
+        // than re-spelled accessor by accessor.
+        let totals = facts.get_emitted_image_totals();
+        self.emitted_images += totals.get_emitted_images();
+        if let Some(conversion) = &mut self.conversion {
+            conversion.converted_images += totals.get_converted_images();
+            conversion.skipped_conversions += totals.get_skipped_conversions();
+        }
+        if let Some(gif_routing) = &mut self.gif_routing {
+            gif_routing.routed_gifs += totals.get_routed_gifs();
+        }
+
+        // Folding the classification needs no emitted-count guard of its own: a
+        // document that emitted nothing classifies as `NothingEmitted`, which is
+        // the identity of the fold.
+        self.merged_output_purpose = self
+            .merged_output_purpose
+            .merged_with(facts.get_output_purpose());
+
+        if totals.get_emitted_images() > 0 {
+            self.documents_with_output += 1;
+        }
+    }
+
+    /// Consumes the accumulated facts into the run's terminal outcome.
+    ///
+    /// `cover_only` is the run's cover intent, which arrives here rather than
+    /// inside [`ApplicableOutcomeFacts`] because it classifies the outcome
+    /// instead of enabling a fact group — and the zero-output case needs it
+    /// exactly when there is no folded document purpose left to read.
+    pub(crate) fn finish(self, cover_only: bool) -> ExtractionRunOutcome {
+        // EPUB fallback and DOCX output are normal images even during a cover-only run.
+        // Classify output as covers only when no document included normal images.
+        let output_kind = if cover_only
+            && self.merged_output_purpose != DocumentOutputPurpose::IncludedNormalImages
+        {
+            ExtractionOutputKind::Covers
+        } else {
+            ExtractionOutputKind::Images
+        };
+        // The two counts are zero together or positive together, because a
+        // document joins the document count exactly by emitting an image. The
+        // pattern reads both rather than deriving one from the other, which is
+        // what keeps this a total match instead of a discharged assumption.
+        let (Some(emitted_images), Some(documents_with_output)) = (
+            NonZeroUsize::new(self.emitted_images),
+            NonZeroUsize::new(self.documents_with_output),
+        ) else {
+            return ExtractionRunOutcome::NoOutput(output_kind);
+        };
+        let gif_routing = self.gif_routing.and_then(|tally| {
+            NonZeroUsize::new(tally.routed_gifs)
+                .map(|routed_gifs| GifRoutingFacts::new(routed_gifs, tally.destination))
+        });
+
+        ExtractionRunOutcome::ProducedOutput(ProducedOutput {
+            output_kind,
+            emitted_images,
+            documents_with_output,
+            conversion: self.conversion,
+            gif_routing,
+        })
     }
 }
 

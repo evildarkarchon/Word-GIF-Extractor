@@ -1,18 +1,26 @@
-//! Extraction run workflow for document selection, sequencing, and aggregation.
+//! Extraction run workflow for document selection, sequencing, and observation.
+//!
+//! The run sequences documents and reports them; it no longer keeps counters of
+//! its own. Each document's facts are folded into an
+//! [`ExtractionRunOutcomeAccumulator`], which builds the terminal outcome by
+//! construction — see ADR-0006.
 
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use crate::document_extraction::{
-    ApplicableOutcomeFacts, DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
-    DocumentExtractionPolicy, DocumentOutputPurpose,
+    DocumentExtraction, DocumentExtractionOutcome, DocumentExtractionPolicy,
 };
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter};
 use crate::extraction_run_observation::{
-    ConversionFacts, ExtractionOutputKind, ExtractionRunObservation, ExtractionRunObserver,
-    ExtractionRunOutcome, GifRoutingFacts,
+    ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
+    ExtractionRunOutcomeAccumulator,
 };
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+
+// The run reads its outcome only as a whole value; these two parts of it are
+// named by the in-crate tests, which reach them through `use super::*`.
+#[cfg(test)]
+use crate::extraction_run_observation::{ConversionFacts, ExtractionOutputKind};
 
 /// Opaque, ready-to-execute handoff produced by Extraction run intake.
 ///
@@ -51,27 +59,6 @@ impl ExtractionRunRequest {
             ),
         }
     }
-}
-
-#[derive(Default)]
-struct ConversionAggregation {
-    converted_images: usize,
-    skipped_conversions: usize,
-}
-
-struct GifRoutingAggregation {
-    routed_gifs: usize,
-    destination: PathBuf,
-}
-
-/// Run-private aggregation that can be consumed only into a valid outcome.
-struct RunAggregation {
-    emitted_images: usize,
-    documents_with_output: usize,
-    /// Every document's output purpose merged so far, not any one document's.
-    merged_output_purpose: DocumentOutputPurpose,
-    conversion: Option<ConversionAggregation>,
-    gif_routing: Option<GifRoutingAggregation>,
 }
 
 /// Executes one Extraction run and returns its semantic outcome directly.
@@ -115,7 +102,8 @@ pub fn run(
         total: selected_documents.len(),
         cover_only,
     });
-    let mut aggregation = RunAggregation::new(document_extraction.applicable_outcome_facts());
+    let mut outcome_accumulator =
+        ExtractionRunOutcomeAccumulator::new(document_extraction.applicable_outcome_facts());
 
     for selected_document in selected_documents {
         // The run retains only observer-facing facts before transferring the
@@ -140,7 +128,7 @@ pub fn run(
                 warning: warning.clone(),
             });
         }
-        aggregation.record_document_result(&facts);
+        outcome_accumulator.fold(&facts);
         if let Some(error) = error {
             observer.on_observation(ExtractionRunObservation::DocumentError {
                 path: path.clone(),
@@ -151,93 +139,9 @@ pub fn run(
         observer.on_observation(ExtractionRunObservation::DocumentFinished { path: path.clone() });
     }
 
-    let outcome = aggregation.into_outcome(cover_only);
+    let outcome = outcome_accumulator.finish(cover_only);
     observer.on_observation(ExtractionRunObservation::Terminal(outcome.clone()));
     outcome
-}
-
-impl RunAggregation {
-    /// Starts aggregation with only the facts applicable to the requested workflow.
-    fn new(applicable: ApplicableOutcomeFacts) -> Self {
-        let conversion = applicable
-            .is_conversion_applicable()
-            .then(ConversionAggregation::default);
-
-        Self {
-            emitted_images: 0,
-            documents_with_output: 0,
-            merged_output_purpose: DocumentOutputPurpose::NothingEmitted,
-            conversion,
-            gif_routing: applicable.into_gif_destination().map(|destination| {
-                GifRoutingAggregation {
-                    routed_gifs: 0,
-                    destination,
-                }
-            }),
-        }
-    }
-
-    /// Records Document extraction facts retained by one completed or failed outcome.
-    fn record_document_result(&mut self, facts: &DocumentExtractionFacts) {
-        // The counter shape is read once, from the value that owns it, rather
-        // than re-spelled accessor by accessor. The split into this run's own
-        // accumulators below is unchanged; ADR-0006 is what eventually makes
-        // that split valid by construction.
-        let totals = facts.get_emitted_image_totals();
-        self.emitted_images += totals.get_emitted_images();
-        if let Some(conversion) = &mut self.conversion {
-            conversion.converted_images += totals.get_converted_images();
-            conversion.skipped_conversions += totals.get_skipped_conversions();
-        }
-        if let Some(gif_routing) = &mut self.gif_routing {
-            gif_routing.routed_gifs += totals.get_routed_gifs();
-        }
-
-        // Folding the classification needs no emitted-count guard of its own: a
-        // document that emitted nothing classifies as `NothingEmitted`, which is
-        // the identity of the fold.
-        self.merged_output_purpose = self
-            .merged_output_purpose
-            .merged_with(facts.get_output_purpose());
-
-        if totals.get_emitted_images() > 0 {
-            self.documents_with_output += 1;
-        }
-    }
-
-    /// Consumes aggregate counters into one closed, state-valid semantic outcome.
-    fn into_outcome(self, cover_only: bool) -> ExtractionRunOutcome {
-        // EPUB fallback and DOCX output are normal images even during a cover-only run.
-        // Classify output as covers only when no document included normal images.
-        let output_kind = if cover_only
-            && self.merged_output_purpose != DocumentOutputPurpose::IncludedNormalImages
-        {
-            ExtractionOutputKind::Covers
-        } else {
-            ExtractionOutputKind::Images
-        };
-        let Some(emitted_images) = NonZeroUsize::new(self.emitted_images) else {
-            return ExtractionRunOutcome::NoOutput(output_kind);
-        };
-        let documents_with_output = NonZeroUsize::new(self.documents_with_output)
-            .expect("emitted output must belong to at least one document");
-        let conversion = self
-            .conversion
-            .map(|facts| ConversionFacts::new(facts.converted_images, facts.skipped_conversions));
-        let gif_routing = self.gif_routing.and_then(|facts| {
-            NonZeroUsize::new(facts.routed_gifs)
-                .map(|routed_gifs| GifRoutingFacts::new(routed_gifs, facts.destination))
-        });
-
-        ExtractionRunOutcome::try_produced(
-            output_kind,
-            emitted_images,
-            documents_with_output,
-            conversion,
-            gif_routing,
-        )
-        .expect("run aggregation must produce consistent semantic totals")
-    }
 }
 
 #[cfg(test)]
