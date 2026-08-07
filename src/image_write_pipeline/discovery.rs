@@ -100,12 +100,14 @@ struct IdentifiedImage {
 }
 
 /// One source's typed discovery outcome and phase-ordered warning facts.
+#[derive(Debug, PartialEq)]
 pub(super) struct DiscoveredImage {
     pub(super) outcome: ArchiveImageDiscoveryOutcome,
     pub(super) warnings: Vec<ImageWriteWarning>,
 }
 
 /// Purpose-independent completion state from one archive source discovery attempt.
+#[derive(Debug, PartialEq)]
 pub(super) enum ArchiveImageDiscoveryOutcome {
     /// The complete payload was acquired and accepted by Image write policy.
     Accepted(AcceptedImage),
