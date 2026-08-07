@@ -41,6 +41,19 @@ use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunO
 /// failing test leaves its directory behind; the process id and nanosecond stamp
 /// are what actually keep concurrent tests from colliding. The directory is not
 /// created — callers that need it on disk create it themselves.
+///
+/// # `!path.exists()` is not evidence of non-emission
+///
+/// Because nothing here touches the filesystem, the returned path is absent the
+/// moment it is handed back. Asserting that it is still absent therefore passes
+/// whether the code under test rejected its input, produced nothing, failed
+/// partway, or never ran at all — it is a property of this function, not of the
+/// subject. Prove non-emission from the subject's own return value instead: a
+/// count that stayed at zero, or an outcome that says nothing was written.
+///
+/// The assertion is only meaningful once something is known to have created a
+/// directory here, which is why a test that writes to one subdirectory may
+/// legitimately assert a sibling was never created.
 pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
