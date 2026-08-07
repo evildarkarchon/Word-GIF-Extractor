@@ -108,6 +108,15 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     assert_eq!(result.counts.gifs_routed, 0);
     assert_eq!(result.counts.converted, 0);
     assert_eq!(result.counts.skipped, 0);
+    // Emitted something, but not normal image output: that pair is exactly what
+    // Document extraction reads to classify a document as covers-only
+    // (`document_extraction.rs`, `DocumentOutputPurpose`). It holds because the
+    // required-cover visitor never sets the normal-batch flag, so a change that
+    // started setting it would misreport this document as containing normal
+    // images — which is what this assertion is here to catch. Do not remove it
+    // as unfailable; the invariant it guards belongs to the code under test,
+    // not to the fixture. The count must stay beside it, because the consumer
+    // never reads the flag at all when nothing was emitted.
     assert!(!result.has_normal_image_output());
     assert_eq!(
         result.warnings,
@@ -156,7 +165,6 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
         panic!("a filtered cover should complete rather than retry");
     };
     assert_eq!(result.counts.extracted, 0);
-    assert!(!result.has_normal_image_output());
 }
 
 /// Pins that a failed acquisition leaves the cover decision open.
@@ -190,7 +198,6 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
         panic!("a tail read failure should permit another cover candidate");
     };
     assert_eq!(result.counts.extracted, 0);
-    assert!(!result.has_normal_image_output());
 }
 
 #[test]
@@ -220,7 +227,6 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     };
     assert_eq!(result.counts.extracted, 0);
     assert_eq!(result.counts.skipped, 0);
-    assert!(!result.has_normal_image_output());
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::CoverConversionSkipped {
@@ -256,7 +262,6 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     };
     assert_eq!(result.counts.extracted, 0);
     assert_eq!(result.counts.skipped, 0);
-    assert!(!result.has_normal_image_output());
     assert!(matches!(
         &result.warnings[..],
         [ImageWriteWarning::CoverConversionFailed { detail }]
