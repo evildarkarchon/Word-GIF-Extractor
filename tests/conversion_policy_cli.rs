@@ -1,87 +1,58 @@
-use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, Rgb, RgbImage};
+//! Conversion policy behaviour for a source image that already matches the target.
+
+mod support;
+
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
-use zip::write::SimpleFileOptions;
+use std::path::Path;
 
-/// Creates a temporary directory unique to this test process.
-fn temp_test_dir(test_name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock should be after Unix epoch")
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-conversion-policy-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
-}
+use anyhow::Result;
+use word_image_extractor::Capture;
 
-/// Encodes a small valid JPEG whose bytes can be compared after extraction.
-fn test_jpeg() -> Vec<u8> {
-    let mut image = RgbImage::new(8, 8);
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        *pixel = Rgb([(x * 31) as u8, (y * 29) as u8, ((x + y) * 17) as u8]);
+use support::{run_captured, temp_test_dir, test_jpeg, write_docx};
+
+/// Runs one extraction that converts to JPEG, with an optional quality override.
+fn run_jpeg_conversion(
+    input: &Path,
+    output_dir: &Path,
+    quality: Option<u8>,
+) -> (Result<()>, Capture) {
+    // The three owned values are bound before the argument list so they outlive the
+    // borrows in it.
+    let input = input.to_string_lossy();
+    let output_dir = output_dir.to_string_lossy();
+    let quality = quality.map(|quality| quality.to_string());
+
+    let mut arguments = vec![
+        input.as_ref(),
+        "--output",
+        output_dir.as_ref(),
+        "--formats",
+        "jpg",
+        "--convert",
+        "jpg",
+    ];
+    if let Some(quality) = &quality {
+        arguments.extend(["--quality", quality.as_str()]);
     }
 
-    let mut bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut bytes, 95)
-        .encode_image(&DynamicImage::ImageRgb8(image))
-        .expect("test JPEG should encode");
-    bytes
-}
-
-/// Writes a minimal DOCX-like ZIP archive containing one JPEG resource.
-fn write_docx_with_jpeg(path: &Path, jpeg: &[u8]) {
-    let file = fs::File::create(path).expect("test DOCX should be creatable");
-    let mut archive = zip::ZipWriter::new(file);
-    archive
-        .start_file("word/media/image1.jpg", SimpleFileOptions::default())
-        .expect("JPEG archive entry should start");
-    archive
-        .write_all(jpeg)
-        .expect("JPEG archive entry should be writable");
-    archive.finish().expect("test DOCX should finish");
-}
-
-/// Runs the extractor with a JPEG conversion request and optional quality.
-fn run_jpeg_conversion(input: &Path, output_dir: &Path, quality: Option<u8>) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"));
-    command
-        .arg(input)
-        .arg("--output")
-        .arg(output_dir)
-        .arg("--formats")
-        .arg("jpg")
-        .arg("--convert")
-        .arg("jpg");
-    if let Some(quality) = quality {
-        command.arg("--quality").arg(quality.to_string());
-    }
-    command.output().expect("extractor binary should run")
+    run_captured(&arguments)
 }
 
 #[test]
 fn matching_jpeg_is_preserved_when_quality_is_implicit() {
-    let temp_dir = temp_test_dir("implicit");
+    let temp_dir = temp_test_dir("conversion-policy", "implicit");
     let input_dir = temp_dir.join("input");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&input_dir).expect("input directory should be creatable");
     fs::create_dir_all(&output_dir).expect("output directory should be creatable");
     let input_path = input_dir.join("sample.docx");
     let original = test_jpeg();
-    write_docx_with_jpeg(&input_path, &original);
+    write_docx(&input_path, &[("word/media/image1.jpg", &original)]);
 
-    let output = run_jpeg_conversion(&input_path, &output_dir, None);
+    let (result, capture) = run_jpeg_conversion(&input_path, &output_dir, None);
 
-    assert!(
-        output.status.success(),
-        "extractor failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    result.expect("intake should accept a JPEG conversion with no quality named");
+    assert_eq!(capture.stderr(), "", "unexpected standard error");
     assert_eq!(
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable"),
         original
@@ -92,27 +63,46 @@ fn matching_jpeg_is_preserved_when_quality_is_implicit() {
 
 #[test]
 fn matching_jpeg_is_reencoded_when_quality_is_explicit() {
-    let temp_dir = temp_test_dir("explicit");
+    let temp_dir = temp_test_dir("conversion-policy", "explicit");
     let input_dir = temp_dir.join("input");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&input_dir).expect("input directory should be creatable");
     fs::create_dir_all(&output_dir).expect("output directory should be creatable");
     let input_path = input_dir.join("sample.docx");
     let original = test_jpeg();
-    write_docx_with_jpeg(&input_path, &original);
+    write_docx(&input_path, &[("word/media/image1.jpg", &original)]);
 
-    let output = run_jpeg_conversion(&input_path, &output_dir, Some(70));
+    let (result, capture) = run_jpeg_conversion(&input_path, &output_dir, Some(70));
 
-    assert!(
-        output.status.success(),
-        "extractor failed\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    result.expect("intake should accept a JPEG conversion at an explicit quality");
+    assert_eq!(capture.stderr(), "", "unexpected standard error");
     let converted =
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable");
     assert_ne!(converted, original);
     image::load_from_memory(&converted).expect("converted JPEG should remain decodable");
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}
+
+/// Verifies a policy `clap` accepts but intake refuses arrives as the returned error.
+///
+/// This is the other half of the seam, and the one place the split matters. A quality
+/// override against PNG parses cleanly — the two flags are individually valid and `clap`
+/// has no rule tying them together — so the refusal happens in Extraction run intake,
+/// after parsing and before anything renders. Its wording travels as the returned error
+/// and never reaches the destination, because printing a returned error is the process
+/// exit path's job, so the capture stays empty on both streams.
+#[test]
+fn quality_against_png_is_refused_through_the_returned_error() {
+    let (result, capture) = run_captured(&["--convert", "png", "--quality", "90"]);
+
+    let error = result.expect_err("a quality override against PNG should fail intake");
+    assert!(
+        error
+            .to_string()
+            .contains("--quality cannot be used with --convert png"),
+        "error was: {error}"
+    );
+    assert_eq!(capture.stdout(), "", "intake wording must not be captured");
+    assert_eq!(capture.stderr(), "", "intake wording must not be captured");
 }

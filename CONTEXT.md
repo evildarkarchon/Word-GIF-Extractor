@@ -8,6 +8,26 @@ This context names the concepts involved in extracting images from document arch
 The project workflow for turning requested input paths into processed documents and a final outcome, including Document selection and per-document extraction.
 _Avoid_: CLI orchestration, processing loop
 
+**Extraction run request**:
+The ready-to-execute handoff produced by Extraction run intake, containing the requested inputs, workflow policies, and facts needed to classify the eventual Extraction run outcome. The Extraction run consumes it exactly once; it excludes pre-run intake notices and terminal wording.
+_Avoid_: Run options, prepared options, configuration bundle
+
+**Extraction run outcome**:
+The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts; the outcome excludes terminal wording and raw cross-module counters.
+_Avoid_: Run report, extraction summary, final counters
+
+**Applicable outcome facts**:
+Which optional fact groups the eventual Extraction run outcome may carry — the applicable conversion and GIF-routing facts — together with the GIF destination when routing applies. Document extraction reports it from Image write policy at the moment an Extraction run needs it. It excludes counts, terminal wording, and outcome classification. Cover intent is classification input rather than an applicable fact group: whether a run sought covers reaches the Extraction run outcome at the moment that outcome is classified, never through this value.
+_Avoid_: Conversion requested flag, run summary facts, presentation intent
+
+**Extraction run observation**:
+One structured, ordered fact emitted while an Extraction run progresses, spanning Document selection progress and diagnostics, per-document extraction status, and the terminal Extraction run outcome. It is the run's single observation vocabulary: every emitter reports through it, so no part of the run transports facts belonging to a second one. It excludes terminal wording, user-interface commands, and run policy.
+_Avoid_: Run event, progress callback, UI command
+
+**Extraction run presentation**:
+The project responsibility for turning Extraction run observations into terminal output, including progress display, diagnostic and warning rendering, terminal wording, and the terminal summary. It owns all user-facing wording and excludes outcome classification and observation ordering.
+_Avoid_: Terminal adapter, observer, renderer, UI
+
 **Document extraction**:
 The per-document responsibility within an Extraction run for turning one selected document into an extraction outcome, including document-kind handling, cover behavior, warnings, and output classification. It excludes Document selection, cross-document sequencing, and run-level presentation.
 _Avoid_: Per-document execution, document processor
@@ -17,7 +37,7 @@ The terminal result of Document extraction: either completed or failed with a do
 _Avoid_: Per-file result, extraction return value
 
 **Document extraction facts**:
-The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings.
+The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings. Its emitted-image totals are one value in which the converted, conversion-skipped and GIF-routed counts together never exceed the emitted count, because the Image write pipeline places each emitted image in exactly one of those roles; folding the facts of several documents therefore cannot produce an Extraction run outcome with inconsistent totals. Its output-purpose classification is a closed three-way value — covers only, included normal images, or nothing emitted — rather than a normal-image boolean.
 _Avoid_: Image write result, extraction summary, raw counters
 
 **Document extraction warning**:
@@ -33,15 +53,23 @@ The valid per-run choices governing normal document images versus EPUB cover ext
 _Avoid_: Cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across Document extraction policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
 _Avoid_: File collection, scan results, work item builder
 
+**Document discovery**:
+The part of Document selection that inspects requested files and directories, reports non-fatal inspection failures, and yields supported document candidates in encounter order. It excludes EPUB filtering, deduplication, identity, and output placement.
+_Avoid_: File collection, directory scan, input traversal, source discovery
+
+**Selected document**:
+The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, display identity, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
+_Avoid_: Extraction work item, selected file, document task
+
 **Document selection progress**:
-The live, user-observable status of Document selection while it scans inputs, filters EPUBs, and removes duplicates. It excludes per-document extraction status and terminal presentation details.
+The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. It excludes per-document extraction status and terminal presentation details.
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:
-A non-fatal fact explaining why Document selection skipped an input or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
+A non-fatal fact explaining why Document selection skipped a requested input, could not inspect part of its document search, or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
 _Avoid_: Warning string, selection error, progress message
 
 **Extraction run intake**:
@@ -65,19 +93,23 @@ The role of one source set in the Image write pipeline: normal batch images or a
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **EPUB cover extraction**:
-The EPUB-only responsibility for turning ordered cover candidates into one required-cover outcome, including acquisition fallback, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes archive resource reading mechanics and Image file emission.
+The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
 _Avoid_: Cover pipeline, cover selection, cover helper
+
+**Cover candidate**:
+One declared manifest resource considered for cover use by EPUB cover extraction, carrying the declared facts that ordering and exclusion are decided from. Several distinct cover candidates can share a single Archive resource identity, so a candidate is a reference under consideration rather than the payload it resolves to. It excludes archive payload acquisition and Image write decisions.
+_Avoid_: Cover match, cover entry, candidate path
 
 **Archive image discovery**:
 The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
 
 **Archive resource identity**:
-The stable identity of one archive payload across multiple document references, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. References that cannot be resolved to a payload remain distinct.
+The stable identity of one archive payload across multiple document references within a single EPUB resource archive, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. It has no equality meaning across different archives or archive sessions. References that cannot be resolved to a payload remain distinct.
 _Avoid_: ZIP index, resource path
 
 **EPUB resource archive**:
-The ordered set of resources declared by an EPUB together with their available archive payloads. It preserves document-facing resource facts while distinguishing references from Archive resource identity.
+The ordered custody of resources declared by an EPUB together with their available archive payloads. It owns deterministic ordering, the distinction between document-facing references and Archive resource identity, and scoped payload acquisition. Failure to establish that custody fails Document extraction, while the unavailability of one declared resource is a non-fatal acquisition fact. It excludes cover-candidate ordering, retry or completion decisions, fallback behavior, Archive image discovery, and Image file emission.
 _Avoid_: Direct ZIP adapter, resource list
 
 **EPUB declarations**:

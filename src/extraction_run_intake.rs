@@ -1,20 +1,127 @@
 //! Extraction run intake for turning parsed user options into a ready run.
+//!
+//! Intake owns the command-line argument structure it consumes. That keeps the
+//! module graph acyclic — nothing here reaches back up to the crate root, which in
+//! turn reaches back down for the module tree — and it keeps the fourteen flags
+//! defined in exactly one place. `clap` in the library interface is the accepted
+//! cost of that: the alternative is a fourteen-field parallel structure with a
+//! mapping to keep in sync.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::Args;
-use crate::conversion::{ConversionPolicy, ConversionPolicyError, ConversionRequest};
-use crate::document_extraction::{DocumentExtraction, DocumentExtractionPolicy};
+use clap::{Parser, ValueEnum};
+
+use crate::conversion::{
+    ConversionPolicy, ConversionPolicyError, ConversionRequest, ConversionTarget,
+};
+use crate::document_extraction::DocumentExtractionPolicy;
 use crate::document_selection::EpubFilter;
-use crate::extraction_run::RunOptions;
+use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+use crate::image_write_pipeline::ImageWritePolicy;
+
+/// Conversion target spelling accepted by the CLI adapter.
+///
+/// Crate-visible to match the field that names it: a narrower visibility trips
+/// `private_interfaces`, because [`Args::convert`] is reachable crate-wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ConversionTargetArg {
+    /// JPEG output.
+    Jpg,
+    /// PNG output.
+    Png,
+    /// WebP output.
+    Webp,
+}
+
+impl From<ConversionTargetArg> for ConversionTarget {
+    /// Maps CLI target spelling to the Clap-independent conversion target.
+    fn from(target: ConversionTargetArg) -> Self {
+        match target {
+            ConversionTargetArg::Jpg => ConversionTarget::Jpg,
+            ConversionTargetArg::Png => ConversionTarget::Png,
+            ConversionTargetArg::Webp => ConversionTarget::Webp,
+        }
+    }
+}
+
+/// Parsed user options for one extraction run.
+///
+/// The fields are crate-visible rather than public: outside the crate this is only
+/// ever parsed and handed to [`prepare`], while in-crate tests build it directly so
+/// that run-level tests do not have to spell command-line flags to reach the run.
+///
+/// [`Default`] is derived only under `cfg(test)`, where it matches what `clap`
+/// produces for an invocation with no flags. It exists so a test can name the two
+/// or three options it cares about and leave the rest alone; it is not part of what
+/// the library promises. [`PartialEq`] is test-only for the same reason: it lets one
+/// test hold that default against a real parse without enumerating the fields, so a
+/// fifteenth flag cannot drift the two apart unnoticed.
+#[derive(Parser, Debug)]
+#[cfg_attr(test, derive(Default, PartialEq))]
+#[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
+pub struct Args {
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    pub(crate) inputs: Vec<PathBuf>,
+
+    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    #[arg(short = 'i', long = "input", num_args = 1..)]
+    pub(crate) named_inputs: Vec<PathBuf>,
+
+    /// Optional output directory (defaults to each input file's directory)
+    #[arg(short, long)]
+    pub(crate) output: Option<PathBuf>,
+
+    /// Recursively search for .docx/.epub files if input is a directory
+    #[arg(short, long)]
+    pub(crate) recursive: bool,
+
+    /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
+    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    pub(crate) formats: Option<Vec<String>>,
+
+    /// Extract only cover image from EPUB files
+    #[arg(short = 'c', long)]
+    pub(crate) cover_only: bool,
+
+    /// Fallback to extracting all images if cover not found (EPUB only, requires --cover-only)
+    #[arg(long, requires = "cover_only")]
+    pub(crate) cover_fallback: bool,
+
+    /// Filter EPUB files by title (case-insensitive substring match)
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+
+    /// Filter EPUB files by author (case-insensitive substring match)
+    #[arg(long)]
+    pub(crate) author: Option<String>,
+
+    /// Convert extracted images to specified format (jpg, png, webp)
+    #[arg(short = 'C', long, conflicts_with = "gif_only")]
+    pub(crate) convert: Option<ConversionTargetArg>,
+
+    /// JPEG/WebP encoding quality override (1-100, default: 85)
+    #[arg(short = 'q', long, requires = "convert", conflicts_with = "lossless", value_parser = clap::value_parser!(u8).range(1..=100))]
+    pub(crate) quality: Option<u8>,
+
+    /// Use lossless WebP encoding instead of lossy
+    #[arg(short = 'L', long, requires = "convert", conflicts_with = "quality")]
+    pub(crate) lossless: bool,
+
+    /// Extract only GIF files (skip all other image formats)
+    #[arg(short = 'g', long, conflicts_with = "convert")]
+    pub(crate) gif_only: bool,
+
+    /// Separate output directory for GIF files
+    #[arg(short = 'G', long)]
+    pub(crate) gif_output: Option<PathBuf>,
+}
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
-pub(crate) enum ExtractionRunIntakeError {
+pub enum ExtractionRunIntakeError {
     /// The fallback input directory could not be resolved.
     CurrentDirectory(std::io::Error),
     /// The requested conversion facts did not form a valid Conversion policy.
@@ -41,30 +148,29 @@ impl std::error::Error for ExtractionRunIntakeError {
     }
 }
 
-/// Prepared extraction run data consumed by the CLI adapter.
-///
-/// The extraction run options are the stable workflow interface. The remaining
-/// fields are adapter facts needed to preserve user-facing messages after the
-/// run has completed.
-pub(crate) struct PreparedExtractionRun {
-    /// Ready-to-run extraction workflow options.
-    pub(crate) options: RunOptions,
-    /// Whether conversion was requested by the user.
-    pub(crate) has_convert: bool,
-    /// GIF output directory for final summary rendering.
-    pub(crate) gif_output: Option<PathBuf>,
-    /// Current directory used when the user did not provide any input.
-    pub(crate) defaulted_input: Option<PathBuf>,
-    /// Format tokens ignored while preparing allowed image formats.
-    pub(crate) ignored_formats: Vec<String>,
+/// Structured fact that the terminal adapter renders before an Extraction run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreRunNotice {
+    /// Intake selected the current directory because no input was requested.
+    DefaultedInput { path: PathBuf },
+    /// Intake ignored one unrecognized image-format token.
+    IgnoredFormat { format: String },
+}
+
+/// Intake result containing one executable request and its ordered pre-run notices.
+pub struct PreparedExtractionRun {
+    /// Opaque request consumed by the Extraction run exactly once.
+    pub request: ExtractionRunRequest,
+    /// Ordered pre-run facts for adapter rendering.
+    pub notices: Vec<PreRunNotice>,
 }
 
 /// Prepares an extraction run from parsed CLI arguments.
 ///
 /// This concentrates input fallback, format selection, GIF-only behavior,
-/// conversion defaults, EPUB filters, and post-run summary facts behind one
-/// intake interface.
-pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
+/// conversion defaults, EPUB filters, and production-valid request construction
+/// behind one intake interface.
+pub fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {
     let Args {
         inputs,
         named_inputs,
@@ -82,7 +188,6 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
         gif_output,
     } = args;
 
-    let has_convert = convert.is_some();
     let conversion = convert
         .map(|target| {
             ConversionPolicy::try_from(ConversionRequest {
@@ -104,12 +209,6 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
     };
 
     let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
-    let gif_output_for_summary = gif_output.clone();
-    let image_write_pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        allowed_formats,
-        conversion,
-        gif_output,
-    ));
     let document_extraction_policy = if cover_only {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: cover_fallback,
@@ -118,24 +217,30 @@ pub(crate) fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRun
         DocumentExtractionPolicy::NormalImages
     };
 
-    let options = RunOptions {
-        inputs: all_inputs,
+    // Intake selects all three Image write policy ingredients, so it assembles the
+    // policy here and hands the finished value over. The request wraps it in the
+    // Image write pipeline itself, which keeps pipeline types out of intake.
+    let image_write_policy = ImageWritePolicy::new(allowed_formats, conversion, gif_output);
+
+    let request = ExtractionRunRequest::new(
+        all_inputs,
         recursive,
         output,
-        epub_filter: EpubFilter { title, author },
-        document_extraction: DocumentExtraction::new(
-            document_extraction_policy,
-            image_write_pipeline,
-        ),
-    };
+        EpubFilter { title, author },
+        document_extraction_policy,
+        image_write_policy,
+    );
+    let mut notices = Vec::new();
+    if let Some(path) = defaulted_input {
+        notices.push(PreRunNotice::DefaultedInput { path });
+    }
+    notices.extend(
+        ignored_formats
+            .into_iter()
+            .map(|format| PreRunNotice::IgnoredFormat { format }),
+    );
 
-    Ok(PreparedExtractionRun {
-        options,
-        has_convert,
-        gif_output: gif_output_for_summary,
-        defaulted_input,
-        ignored_formats,
-    })
+    Ok(PreparedExtractionRun { request, notices })
 }
 
 /// Resolves the image formats accepted by one extraction run.
@@ -174,213 +279,4 @@ fn select_allowed_formats(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::document_extraction::{
-        DocumentExtractionFacts, DocumentExtractionOutcome, SelectedDocument,
-    };
-    use clap::Parser;
-    use image::DynamicImage;
-    use std::fs;
-    use std::io::{Cursor, Write};
-    use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use zip::write::SimpleFileOptions;
-
-    fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
-        let args = Args::try_parse_from(args).expect("test args should parse");
-        prepare(args).expect("extraction run intake should succeed")
-    }
-
-    fn temp_test_dir(test_name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock should be after Unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "word-image-extractor-intake-{test_name}-{}-{nanos}",
-            std::process::id()
-        ))
-    }
-
-    /// Writes sources through the prepared Document extraction interface.
-    fn write_sources(
-        prepared: &PreparedExtractionRun,
-        output_dir: &Path,
-        sources: Vec<(&str, Vec<u8>)>,
-    ) -> DocumentExtractionFacts {
-        fs::create_dir_all(output_dir).expect("temporary output directory should be creatable");
-        let input_path = output_dir.join("input.docx");
-        let file = fs::File::create(&input_path).expect("test DOCX should be creatable");
-        let mut zip = zip::ZipWriter::new(file);
-        for (name, data) in sources {
-            zip.start_file(name, SimpleFileOptions::default())
-                .expect("ZIP entry should start");
-            zip.write_all(&data)
-                .expect("ZIP entry payload should be writable");
-        }
-        zip.finish().expect("test DOCX should finish");
-
-        let document =
-            SelectedDocument::docx(input_path, output_dir.to_path_buf(), "sample", "input.docx");
-        match prepared.options.document_extraction.extract(&document) {
-            DocumentExtractionOutcome::Completed(result) => result,
-            DocumentExtractionOutcome::Failed { error, .. } => {
-                panic!("prepared Document extraction should succeed: {error}")
-            }
-        }
-    }
-
-    fn valid_png() -> Vec<u8> {
-        let mut cursor = Cursor::new(Vec::new());
-        DynamicImage::new_rgba8(1, 1)
-            .write_to(&mut cursor, image::ImageFormat::Png)
-            .expect("test PNG should encode");
-        cursor.into_inner()
-    }
-
-    #[test]
-    fn combines_positional_and_named_inputs() {
-        let prepared = prepare_from(["test", "first.docx", "--input", "second.epub"]);
-
-        assert_eq!(
-            prepared.options.inputs,
-            vec![PathBuf::from("first.docx"), PathBuf::from("second.epub")]
-        );
-        assert!(prepared.defaulted_input.is_none());
-    }
-
-    #[test]
-    fn defaults_to_current_directory_when_inputs_are_empty() {
-        let prepared = prepare_from(["test"]);
-        let cwd = std::env::current_dir().expect("current directory should be readable");
-
-        assert_eq!(prepared.options.inputs, vec![cwd.clone()]);
-        assert_eq!(prepared.defaulted_input, Some(cwd));
-    }
-
-    #[test]
-    fn parses_allowed_formats_and_records_ignored_tokens() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "png,unknown,jpeg"]);
-        let temp_dir = temp_test_dir("selected-formats");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
-            vec![
-                ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
-                ("photo.bin", b"\xFF\xD8\xFF".to_vec()),
-                ("animation.bin", b"GIF89a".to_vec()),
-            ],
-        );
-
-        assert_eq!(result.get_emitted_images(), 2);
-        assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("sample_1.png").exists());
-        assert!(temp_dir.join("sample_2.jpg").exists());
-        assert!(!temp_dir.join("sample_3.gif").exists());
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "unknown"]);
-        let temp_dir = temp_test_dir("all-formats-fallback");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
-            vec![("vector.bin", b"<svg/>".to_vec())],
-        );
-
-        assert_eq!(result.get_emitted_images(), 1);
-        assert_eq!(prepared.ignored_formats, vec!["unknown"]);
-        assert!(temp_dir.join("sample.svg").exists());
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn gif_only_overrides_format_selection() {
-        let prepared = prepare_from(["test", "book.epub", "--formats", "png,jpg", "--gif-only"]);
-        let temp_dir = temp_test_dir("gif-only");
-
-        let result = write_sources(
-            &prepared,
-            &temp_dir,
-            vec![
-                ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
-                ("animation.bin", b"GIF89a".to_vec()),
-            ],
-        );
-
-        assert_eq!(result.get_emitted_images(), 1);
-        assert!(temp_dir.join("sample.gif").exists());
-        assert!(!temp_dir.join("sample.png").exists());
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn builds_default_conversion_policy() {
-        let prepared = prepare_from(["test", "book.epub", "--convert", "jpg"]);
-        let temp_dir = temp_test_dir("default-conversion");
-
-        let result = write_sources(&prepared, &temp_dir, vec![("image.png", valid_png())]);
-
-        assert_eq!(result.get_emitted_images(), 1);
-        assert_eq!(result.get_converted_images(), 1);
-        assert!(temp_dir.join("sample.jpg").exists());
-
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
-    }
-
-    #[test]
-    fn retains_conversion_and_gif_summary_facts() {
-        let prepared = prepare_from([
-            "test",
-            "book.epub",
-            "--convert",
-            "webp",
-            "--quality",
-            "90",
-            "--gif-output",
-            "gifs",
-        ]);
-
-        assert!(prepared.has_convert);
-        assert_eq!(prepared.gif_output, Some(PathBuf::from("gifs")));
-    }
-
-    #[test]
-    fn builds_validated_epub_cover_extraction_policy() {
-        let prepared = prepare_from(["test", "book.epub", "--cover-only", "--cover-fallback"]);
-
-        assert_eq!(
-            prepared.options.document_extraction.get_policy(),
-            DocumentExtractionPolicy::EpubCover {
-                fallback_to_normal_images: true,
-            }
-        );
-    }
-
-    #[test]
-    fn returns_typed_conversion_policy_error() {
-        let args =
-            Args::try_parse_from(["test", "book.epub", "--convert", "png", "--quality", "90"])
-                .expect("CLI syntax should parse before semantic validation");
-
-        let error = match prepare(args) {
-            Ok(_) => panic!("PNG quality should be rejected by intake"),
-            Err(error) => error,
-        };
-
-        assert!(matches!(
-            error,
-            ExtractionRunIntakeError::ConversionPolicy(
-                ConversionPolicyError::QualityUnsupportedForPng
-            )
-        ));
-    }
-}
+mod tests;
