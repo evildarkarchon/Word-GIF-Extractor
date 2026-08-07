@@ -17,7 +17,7 @@ The terminal result of an Extraction run, distinguishing no selected documents, 
 _Avoid_: Run report, extraction summary, final counters
 
 **Applicable outcome facts**:
-Which optional fact groups the eventual Extraction run outcome may carry — the applicable conversion and GIF-routing facts — together with the GIF destination when routing applies. Document extraction reports it from Image write policy at the moment an Extraction run needs it. It excludes counts, terminal wording, and outcome classification.
+Which optional fact groups the eventual Extraction run outcome may carry — the applicable conversion and GIF-routing facts — together with the GIF destination when routing applies. Document extraction reports it from Image write policy at the moment an Extraction run needs it. It excludes counts, terminal wording, and outcome classification. Cover intent is classification input rather than an applicable fact group: whether a run sought covers reaches the Extraction run outcome at the moment that outcome is classified, never through this value.
 _Avoid_: Conversion requested flag, run summary facts, presentation intent
 
 **Extraction run observation**:
@@ -37,7 +37,7 @@ The terminal result of Document extraction: either completed or failed with a do
 _Avoid_: Per-file result, extraction return value
 
 **Document extraction facts**:
-The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings.
+The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings. Its emitted-image totals are one value in which the converted, conversion-skipped and GIF-routed counts together never exceed the emitted count, because the Image write pipeline places each emitted image in exactly one of those roles; folding the facts of several documents therefore cannot produce an Extraction run outcome with inconsistent totals. Its output-purpose classification is a closed three-way value — covers only, included normal images, or nothing emitted — rather than a normal-image boolean.
 _Avoid_: Image write result, extraction summary, raw counters
 
 **Document extraction warning**:

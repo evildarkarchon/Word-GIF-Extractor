@@ -66,3 +66,7 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 graphify-out/
+.mcp.json
+*[Rr]eview.html
+*[Rr]eview_[0-9].html
+*[Rr]eview_[0-9]_files/
