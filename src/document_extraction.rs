@@ -157,6 +157,45 @@ impl EmittedImageTotals {
     }
 }
 
+/// What one document's emitted output was for.
+///
+/// The three states are closed and mutually exclusive, which is what a
+/// normal-image boolean could not express: a document that emitted nothing and a
+/// document that emitted covers only both denied that boolean, so a caller could
+/// not tell them apart. This type is owned by Document extraction rather than
+/// reusing the run-level [`crate::extraction_run_observation::ExtractionOutputKind`],
+/// because that type lives in a module that already depends on this one and
+/// importing it back would close the cycle ADR-0004 removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocumentOutputPurpose {
+    /// Every emitted file came from required-cover extraction.
+    CoversOnly,
+    /// At least one emitted file came from normal-image extraction.
+    IncludedNormalImages,
+    /// The document emitted no files at all.
+    NothingEmitted,
+}
+
+impl DocumentOutputPurpose {
+    /// Combines this classification with a later document's, most inclusive winning.
+    ///
+    /// `NothingEmitted` is the identity because a document that emitted nothing
+    /// cannot change what a run's output was for, and `IncludedNormalImages`
+    /// absorbs because one normal image anywhere in a run means the run did not
+    /// produce covers only. The combination rule lives here, with the variants it
+    /// orders; the accumulator that applies it across documents does not, so
+    /// Document extraction stays stateless across documents.
+    pub(crate) fn merged_with(self, later: Self) -> Self {
+        match (self, later) {
+            (Self::IncludedNormalImages, _) | (_, Self::IncludedNormalImages) => {
+                Self::IncludedNormalImages
+            }
+            (Self::CoversOnly, _) | (_, Self::CoversOnly) => Self::CoversOnly,
+            (Self::NothingEmitted, Self::NothingEmitted) => Self::NothingEmitted,
+        }
+    }
+}
+
 /// Opaque facts retained by one completed or failed Document extraction.
 ///
 /// The value translates Image write pipeline accounting and warnings at the
@@ -164,14 +203,25 @@ impl EmittedImageTotals {
 #[derive(Debug)]
 pub(crate) struct DocumentExtractionFacts {
     emitted_image_totals: EmittedImageTotals,
-    has_normal_image_output: bool,
+    output_purpose: DocumentOutputPurpose,
     warnings: Vec<DocumentExtractionWarning>,
 }
 
 impl DocumentExtractionFacts {
     /// Translates inner Image write facts at the Document extraction seam.
     fn from_image_write_result(result: ImageWriteResult) -> Self {
-        let has_normal_image_output = result.has_normal_image_output();
+        // "Nothing emitted" is read off the emitted count rather than from the
+        // pipeline, which reports only whether the normal batch produced output.
+        // The pipeline never emits a normal image and a required cover for the
+        // same document, so a non-zero emitted count with no normal-image output
+        // can only be required-cover output.
+        let output_purpose = if result.counts.extracted == 0 {
+            DocumentOutputPurpose::NothingEmitted
+        } else if result.has_normal_image_output() {
+            DocumentOutputPurpose::IncludedNormalImages
+        } else {
+            DocumentOutputPurpose::CoversOnly
+        };
         Self {
             emitted_image_totals: EmittedImageTotals {
                 emitted_images: result.counts.extracted,
@@ -179,7 +229,7 @@ impl DocumentExtractionFacts {
                 converted_images: result.counts.converted,
                 skipped_conversions: result.counts.skipped,
             },
-            has_normal_image_output,
+            output_purpose,
             warnings: result
                 .warnings
                 .into_iter()
@@ -193,9 +243,9 @@ impl DocumentExtractionFacts {
         self.emitted_image_totals
     }
 
-    /// Returns whether any emitted file came from normal-image extraction.
-    pub(crate) fn is_normal_image_output_present(&self) -> bool {
-        self.has_normal_image_output
+    /// Returns what this document's emitted output was for.
+    pub(crate) fn get_output_purpose(&self) -> DocumentOutputPurpose {
+        self.output_purpose
     }
 
     /// Returns ordered non-fatal warnings produced before the outcome ended.

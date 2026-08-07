@@ -79,7 +79,10 @@ fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
         panic!("valid DOCX extraction should complete");
     };
     assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(facts.is_normal_image_output_present());
+    assert_eq!(
+        facts.get_output_purpose(),
+        DocumentOutputPurpose::IncludedNormalImages
+    );
     assert!(facts.get_warnings().is_empty());
     assert!(output_dir.join("sample.png").exists());
 
@@ -118,7 +121,10 @@ fn failed_extraction_retains_document_extraction_facts() {
     };
 
     assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(facts.is_normal_image_output_present());
+    assert_eq!(
+        facts.get_output_purpose(),
+        DocumentOutputPurpose::IncludedNormalImages
+    );
     assert_eq!(
         facts
             .get_warnings()
@@ -267,6 +273,10 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
             .get_emitted_images(),
         0
     );
+    assert_eq!(
+        filtered_facts.get_output_purpose(),
+        DocumentOutputPurpose::NothingEmitted
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
@@ -320,6 +330,10 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
             .get_emitted_images(),
         0
     );
+    assert_eq!(
+        unsupported_facts.get_output_purpose(),
+        DocumentOutputPurpose::NothingEmitted
+    );
 
     let failed_path = temp_dir.join("failed.epub");
     let failed_output = temp_dir.join("failed-output");
@@ -353,6 +367,10 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
     assert_eq!(
         failed_facts.get_emitted_image_totals().get_emitted_images(),
         0
+    );
+    assert_eq!(
+        failed_facts.get_output_purpose(),
+        DocumentOutputPurpose::NothingEmitted
     );
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
@@ -395,7 +413,10 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
     };
 
     assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(facts.is_normal_image_output_present());
+    assert_eq!(
+        facts.get_output_purpose(),
+        DocumentOutputPurpose::IncludedNormalImages
+    );
     assert_eq!(
         warning_messages(&facts),
         vec![
@@ -409,7 +430,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
 }
 
 #[test]
-fn epub_cover_output_is_not_classified_as_normal_images() {
+fn epub_cover_output_is_classified_as_covers_only() {
     let temp_dir = temp_test_dir("document-extraction", "epub-cover-purpose");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
@@ -437,7 +458,10 @@ fn epub_cover_output_is_not_classified_as_normal_images() {
     };
 
     assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(!result.is_normal_image_output_present());
+    assert_eq!(
+        result.get_output_purpose(),
+        DocumentOutputPurpose::CoversOnly
+    );
     assert!(output_dir.join("Test.jpg").exists());
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
@@ -467,7 +491,10 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
     };
 
     assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(result.is_normal_image_output_present());
+    assert_eq!(
+        result.get_output_purpose(),
+        DocumentOutputPurpose::IncludedNormalImages
+    );
     assert!(output_dir.join("Test.jpg").exists());
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
@@ -500,7 +527,10 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
     };
 
     assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert!(result.is_normal_image_output_present());
+    assert_eq!(
+        result.get_output_purpose(),
+        DocumentOutputPurpose::IncludedNormalImages
+    );
     assert!(output_dir.join("Test.jpg").exists());
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");

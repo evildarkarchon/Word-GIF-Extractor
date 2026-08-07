@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::document_extraction::{
     ApplicableOutcomeFacts, DocumentExtraction, DocumentExtractionFacts, DocumentExtractionOutcome,
-    DocumentExtractionPolicy,
+    DocumentExtractionPolicy, DocumentOutputPurpose,
 };
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter};
 use crate::extraction_run_observation::{
@@ -68,7 +68,8 @@ struct GifRoutingAggregation {
 struct RunAggregation {
     emitted_images: usize,
     documents_with_output: usize,
-    has_normal_image_output: bool,
+    /// Every document's output purpose merged so far, not any one document's.
+    merged_output_purpose: DocumentOutputPurpose,
     conversion: Option<ConversionAggregation>,
     gif_routing: Option<GifRoutingAggregation>,
 }
@@ -165,7 +166,7 @@ impl RunAggregation {
         Self {
             emitted_images: 0,
             documents_with_output: 0,
-            has_normal_image_output: false,
+            merged_output_purpose: DocumentOutputPurpose::NothingEmitted,
             conversion,
             gif_routing: applicable.into_gif_destination().map(|destination| {
                 GifRoutingAggregation {
@@ -192,17 +193,25 @@ impl RunAggregation {
             gif_routing.routed_gifs += totals.get_routed_gifs();
         }
 
+        // Folding the classification needs no emitted-count guard of its own: a
+        // document that emitted nothing classifies as `NothingEmitted`, which is
+        // the identity of the fold.
+        self.merged_output_purpose = self
+            .merged_output_purpose
+            .merged_with(facts.get_output_purpose());
+
         if totals.get_emitted_images() > 0 {
             self.documents_with_output += 1;
-            self.has_normal_image_output |= facts.is_normal_image_output_present();
         }
     }
 
     /// Consumes aggregate counters into one closed, state-valid semantic outcome.
     fn into_outcome(self, cover_only: bool) -> ExtractionRunOutcome {
         // EPUB fallback and DOCX output are normal images even during a cover-only run.
-        // Classify output as covers only when every emitted file used required-cover purpose.
-        let output_kind = if cover_only && !self.has_normal_image_output {
+        // Classify output as covers only when no document included normal images.
+        let output_kind = if cover_only
+            && self.merged_output_purpose != DocumentOutputPurpose::IncludedNormalImages
+        {
             ExtractionOutputKind::Covers
         } else {
             ExtractionOutputKind::Images
