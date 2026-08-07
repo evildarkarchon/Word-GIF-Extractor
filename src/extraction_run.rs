@@ -178,16 +178,21 @@ impl RunAggregation {
 
     /// Records Document extraction facts retained by one completed or failed outcome.
     fn record_document_result(&mut self, facts: &DocumentExtractionFacts) {
-        self.emitted_images += facts.get_emitted_images();
+        // The counter shape is read once, from the value that owns it, rather
+        // than re-spelled accessor by accessor. The split into this run's own
+        // accumulators below is unchanged; ADR-0006 is what eventually makes
+        // that split valid by construction.
+        let totals = facts.get_emitted_image_totals();
+        self.emitted_images += totals.get_emitted_images();
         if let Some(conversion) = &mut self.conversion {
-            conversion.converted_images += facts.get_converted_images();
-            conversion.skipped_conversions += facts.get_skipped_conversions();
+            conversion.converted_images += totals.get_converted_images();
+            conversion.skipped_conversions += totals.get_skipped_conversions();
         }
         if let Some(gif_routing) = &mut self.gif_routing {
-            gif_routing.routed_gifs += facts.get_gifs_routed();
+            gif_routing.routed_gifs += totals.get_routed_gifs();
         }
 
-        if facts.get_emitted_images() > 0 {
+        if totals.get_emitted_images() > 0 {
             self.documents_with_output += 1;
             self.has_normal_image_output |= facts.is_normal_image_output_present();
         }

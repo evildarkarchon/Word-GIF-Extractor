@@ -78,7 +78,7 @@ fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
     let DocumentExtractionOutcome::Completed(facts) = outcome else {
         panic!("valid DOCX extraction should complete");
     };
-    assert_eq!(facts.get_emitted_images(), 1);
+    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(facts.is_normal_image_output_present());
     assert!(facts.get_warnings().is_empty());
     assert!(output_dir.join("sample.png").exists());
@@ -117,7 +117,7 @@ fn failed_extraction_retains_document_extraction_facts() {
         panic!("blocked GIF destination should fail Document extraction");
     };
 
-    assert_eq!(facts.get_emitted_images(), 1);
+    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(facts.is_normal_image_output_present());
     assert_eq!(
         facts
@@ -170,9 +170,10 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
         panic!("warning-producing DOCX extraction should complete");
     };
 
-    assert_eq!(facts.get_emitted_images(), 4);
-    assert_eq!(facts.get_converted_images(), 0);
-    assert_eq!(facts.get_skipped_conversions(), 4);
+    let totals = facts.get_emitted_image_totals();
+    assert_eq!(totals.get_emitted_images(), 4);
+    assert_eq!(totals.get_converted_images(), 0);
+    assert_eq!(totals.get_skipped_conversions(), 4);
     assert_eq!(
         warning_messages(&facts),
         vec![
@@ -226,7 +227,12 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
             "Cover image MIME 'application/x-cover-art' could not be identified; defaulting to .jpg extension."
         ]
     );
-    assert_eq!(unidentified_facts.get_emitted_images(), 1);
+    assert_eq!(
+        unidentified_facts
+            .get_emitted_image_totals()
+            .get_emitted_images(),
+        1
+    );
 
     let filtered_path = temp_dir.join("filtered.epub");
     let filtered_output = temp_dir.join("filtered-output");
@@ -255,7 +261,12 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         warning_messages(&filtered_facts),
         vec!["Cover image format 'png' not in allowed formats, skipping."]
     );
-    assert_eq!(filtered_facts.get_emitted_images(), 0);
+    assert_eq!(
+        filtered_facts
+            .get_emitted_image_totals()
+            .get_emitted_images(),
+        0
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
@@ -303,7 +314,12 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         warning_messages(&unsupported_facts),
         vec!["Cover image format 'svg' not supported for conversion, skipping cover."]
     );
-    assert_eq!(unsupported_facts.get_emitted_images(), 0);
+    assert_eq!(
+        unsupported_facts
+            .get_emitted_image_totals()
+            .get_emitted_images(),
+        0
+    );
 
     let failed_path = temp_dir.join("failed.epub");
     let failed_output = temp_dir.join("failed-output");
@@ -334,7 +350,10 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         warning_messages(&failed_facts),
         vec!["Cover conversion failed: Failed to decode image"]
     );
-    assert_eq!(failed_facts.get_emitted_images(), 0);
+    assert_eq!(
+        failed_facts.get_emitted_image_totals().get_emitted_images(),
+        0
+    );
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
@@ -375,7 +394,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
         panic!("unreadable cover candidates should allow normal-image fallback");
     };
 
-    assert_eq!(facts.get_emitted_images(), 1);
+    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(facts.is_normal_image_output_present());
     assert_eq!(
         warning_messages(&facts),
@@ -417,7 +436,7 @@ fn epub_cover_output_is_not_classified_as_normal_images() {
         panic!("valid EPUB cover extraction should complete");
     };
 
-    assert_eq!(result.get_emitted_images(), 1);
+    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(!result.is_normal_image_output_present());
     assert!(output_dir.join("Test.jpg").exists());
 
@@ -447,7 +466,7 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
         panic!("EPUB cover fallback should complete");
     };
 
-    assert_eq!(result.get_emitted_images(), 1);
+    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(result.is_normal_image_output_present());
     assert!(output_dir.join("Test.jpg").exists());
 
@@ -480,7 +499,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         panic!("normal EPUB extraction should complete");
     };
 
-    assert_eq!(result.get_emitted_images(), 1);
+    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
     assert!(result.is_normal_image_output_present());
     assert!(output_dir.join("Test.jpg").exists());
 
@@ -538,7 +557,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         panic!("retained EPUB declarations should support extraction");
     };
 
-    assert_eq!(result.get_emitted_images(), 1);
+    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
     assert_eq!(
         fs::read(output_dir.join("Test.jpg")).expect("selected image should be readable"),
         selected_payload
@@ -590,7 +609,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         panic!("Document extraction should retry unavailable EPUB declarations");
     };
 
-    assert_eq!(result.get_emitted_images(), 1);
+    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
     assert_eq!(
         fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
         b"\xFF\xD8\xFFrecovered"

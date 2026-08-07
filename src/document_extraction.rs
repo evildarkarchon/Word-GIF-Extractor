@@ -117,16 +117,53 @@ impl ApplicableOutcomeFacts {
     }
 }
 
+/// The emitted-image counts retained by one Document extraction outcome.
+///
+/// The four counts are one value rather than four accessors because every
+/// caller wants the whole counter shape: naming it once here is what stops a
+/// caller from re-spelling it field by field, and what makes adding a fifth
+/// counter a change to this type alone.
+///
+/// The converted, conversion-skipped and GIF-routed counts never together
+/// exceed the emitted count, because the Image write pipeline places each
+/// emitted image in exactly one of those roles.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EmittedImageTotals {
+    emitted_images: usize,
+    routed_gifs: usize,
+    converted_images: usize,
+    skipped_conversions: usize,
+}
+
+impl EmittedImageTotals {
+    /// Returns the number of images successfully emitted before the outcome ended.
+    pub(crate) fn get_emitted_images(self) -> usize {
+        self.emitted_images
+    }
+
+    /// Returns the number of emitted GIFs routed to the configured destination.
+    pub(crate) fn get_routed_gifs(self) -> usize {
+        self.routed_gifs
+    }
+
+    /// Returns the number of images successfully converted before emission.
+    pub(crate) fn get_converted_images(self) -> usize {
+        self.converted_images
+    }
+
+    /// Returns the number of conversion attempts skipped while preserving source bytes.
+    pub(crate) fn get_skipped_conversions(self) -> usize {
+        self.skipped_conversions
+    }
+}
+
 /// Opaque facts retained by one completed or failed Document extraction.
 ///
 /// The value translates Image write pipeline accounting and warnings at the
 /// Document extraction seam so callers do not depend on inner pipeline types.
 #[derive(Debug)]
 pub(crate) struct DocumentExtractionFacts {
-    emitted_images: usize,
-    gifs_routed: usize,
-    converted_images: usize,
-    skipped_conversions: usize,
+    emitted_image_totals: EmittedImageTotals,
     has_normal_image_output: bool,
     warnings: Vec<DocumentExtractionWarning>,
 }
@@ -136,10 +173,12 @@ impl DocumentExtractionFacts {
     fn from_image_write_result(result: ImageWriteResult) -> Self {
         let has_normal_image_output = result.has_normal_image_output();
         Self {
-            emitted_images: result.counts.extracted,
-            gifs_routed: result.counts.gifs_routed,
-            converted_images: result.counts.converted,
-            skipped_conversions: result.counts.skipped,
+            emitted_image_totals: EmittedImageTotals {
+                emitted_images: result.counts.extracted,
+                routed_gifs: result.counts.gifs_routed,
+                converted_images: result.counts.converted,
+                skipped_conversions: result.counts.skipped,
+            },
             has_normal_image_output,
             warnings: result
                 .warnings
@@ -149,24 +188,9 @@ impl DocumentExtractionFacts {
         }
     }
 
-    /// Returns the number of images successfully emitted before the outcome ended.
-    pub(crate) fn get_emitted_images(&self) -> usize {
-        self.emitted_images
-    }
-
-    /// Returns the number of emitted GIFs routed to the configured destination.
-    pub(crate) fn get_gifs_routed(&self) -> usize {
-        self.gifs_routed
-    }
-
-    /// Returns the number of images successfully converted before emission.
-    pub(crate) fn get_converted_images(&self) -> usize {
-        self.converted_images
-    }
-
-    /// Returns the number of conversion attempts skipped while preserving source bytes.
-    pub(crate) fn get_skipped_conversions(&self) -> usize {
-        self.skipped_conversions
+    /// Returns the emitted, GIF-routed, converted and conversion-skipped counts together.
+    pub(crate) fn get_emitted_image_totals(&self) -> EmittedImageTotals {
+        self.emitted_image_totals
     }
 
     /// Returns whether any emitted file came from normal-image extraction.
