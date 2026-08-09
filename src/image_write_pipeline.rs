@@ -205,7 +205,7 @@ impl std::error::Error for ImageWriteFailure {
 /// Result of an Image write operation that retains partial facts on failure.
 pub(crate) type ImageWriteOutcome<T = ImageWriteResult> = std::result::Result<T, ImageWriteFailure>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct AcceptedImage {
     data: Vec<u8>,
     format: ImageFormat,

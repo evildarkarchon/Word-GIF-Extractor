@@ -14,12 +14,20 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the right-hand column to match whatever vocabulary you actually use.
 
-## Repo status
+## How a label is applied
 
-As of setup, `ready-for-agent` and `wontfix` already exist on `evildarkarchon/Word-GIF-Extractor`. `needs-triage`, `needs-info`, and `ready-for-human` do **not** — create them on first use:
+This repo's issue tracker is local markdown (`docs/agents/issue-tracker.md`), so there is
+nothing to create up front — a label is just the role string written on the `Status:` line
+near the top of the issue file:
 
-```bash
-gh label create "needs-triage"    --description "Maintainer needs to evaluate this issue"
-gh label create "needs-info"      --description "Waiting on reporter for more information"
-gh label create "ready-for-human" --description "Requires human implementation"
+```markdown
+# Cover detection misses spine-only EPUBs
+
+Status: needs-triage
 ```
+
+Re-triaging means editing that line. A file with no `Status:` line is untriaged and should
+be read as `needs-triage`.
+
+The repo's GitHub labels are now unrelated to triage — `ready-for-agent` and `wontfix`
+exist there from the previous GitHub-backed setup, but no skill reads them.

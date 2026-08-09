@@ -207,3 +207,6 @@ fn is_safe_archive_path(name: &str) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests;

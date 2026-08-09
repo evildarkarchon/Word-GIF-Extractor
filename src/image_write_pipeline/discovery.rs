@@ -100,12 +100,14 @@ struct IdentifiedImage {
 }
 
 /// One source's typed discovery outcome and phase-ordered warning facts.
+#[derive(Debug, PartialEq)]
 pub(super) struct DiscoveredImage {
     pub(super) outcome: ArchiveImageDiscoveryOutcome,
     pub(super) warnings: Vec<ImageWriteWarning>,
 }
 
 /// Purpose-independent completion state from one archive source discovery attempt.
+#[derive(Debug, PartialEq)]
 pub(super) enum ArchiveImageDiscoveryOutcome {
     /// The complete payload was acquired and accepted by Image write policy.
     Accepted(AcceptedImage),
@@ -342,3 +344,6 @@ fn starts_with_ignore_ascii_case(data: &[u8], prefix: &[u8]) -> bool {
             .zip(prefix)
             .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
 }
+
+#[cfg(test)]
+mod tests;
