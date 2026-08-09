@@ -23,7 +23,18 @@ Create a new file under `.scratch/<feature-slug>/` (creating the directory if ne
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Read the file at the referenced path. A bare number is **not** a ticket reference — numbering
+restarts at `01` inside every `.scratch/<feature-slug>/issues/` directory, so `01` names as many
+tickets as there are features. A usable reference carries the feature too, either as a full path
+(`.scratch/epub-cover/issues/01-detect-spine.md`) or as the slug and number together (`epub-cover
+01`, which resolves to the one `01-*.md` under that feature).
+
+If you are handed a bare number, resolve it from the feature already established in the
+conversation. Where no feature is established, ask which one — never scan for a matching number and
+take the first hit.
+
+Bare numbers *are* unambiguous within one feature: the wayfinding `Blocked by: NN, NN` line is
+scoped to its own effort directory and needs no slug.
 
 ## Wayfinding operations
 
