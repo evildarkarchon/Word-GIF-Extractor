@@ -29,5 +29,10 @@ Status: needs-triage
 Re-triaging means editing that line. A file with no `Status:` line is untriaged and should
 be read as `needs-triage`.
 
+`Status:` holds a triage role and nothing else — never a workflow's own state. A workflow that
+tracks something orthogonal writes its own line instead, the way `/wayfinder` records `open` /
+`claimed` / `resolved` on a `Wayfinder:` line (see `issue-tracker.md`). That keeps triage readable
+on every issue file, whatever else is happening to it.
+
 The repo's GitHub labels are now unrelated to triage — `ready-for-agent` and `wontfix`
 exist there from the previous GitHub-backed setup, but no skill reads them.

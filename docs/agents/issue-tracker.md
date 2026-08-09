@@ -30,8 +30,13 @@ Read the file at the referenced path. The user will normally pass the path or th
 Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
 - **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body.
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Wayfinder:` line records where the ticket sits on the map — `open`, `claimed`, or `resolved`, with an absent line read as `open`.
+- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `Wayfinder: resolved`.
+- **Frontier**: scan `.scratch/<effort>/issues/` for files that are `Wayfinder: open` and unblocked; first by number wins.
+- **Claim**: set `Wayfinder: claimed` and save before any work.
+- **Resolve**: append the answer under an `## Answer` heading, set `Wayfinder: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+
+Wayfinding state gets its own `Wayfinder:` line rather than reusing `Status:`, because `Status:`
+carries one of the five canonical triage roles and nothing else (`triage-labels.md`). The two lines
+are independent: a wayfinder ticket may carry both, and claiming or resolving it never rewrites its
+triage role.
