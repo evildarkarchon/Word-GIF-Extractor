@@ -48,12 +48,12 @@ _Avoid_: Image write warning, warning string
 The document-local failure attached to a failed Document extraction outcome. It preserves its underlying cause without exposing document-adapter or Image write pipeline error types across the Document extraction seam.
 _Avoid_: Image write failure, raw anyhow error
 
-**Document extraction policy**:
-The valid per-run choices governing normal document images versus EPUB cover extraction and optional cover fallback. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
-_Avoid_: Cover flags, extraction booleans
+**EPUB cover policy**:
+The per-run choice to extract a required EPUB cover instead of normal document images, and whether an EPUB without a usable cover falls back to normal images. Its absence is what asks for normal images, so a run seeking no covers carries no cover policy at all and cover behaviour reaches only the document kind that has covers. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
+_Avoid_: Document extraction policy, cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across Document extraction policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across EPUB cover policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:

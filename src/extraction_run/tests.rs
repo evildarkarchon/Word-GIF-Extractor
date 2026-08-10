@@ -373,6 +373,55 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 }
 
 #[test]
+fn docx_in_a_cover_only_run_still_emits_its_normal_images() {
+    // Cover intent no longer reaches the DOCX arm at all — a cover policy is a
+    // value only the EPUB arm receives. That is a structural fact and needs no
+    // test. What still needs one is the user-visible consequence: a cover-only
+    // run over mixed kinds must not silence the kind that has no covers. This
+    // replaces the deleted `docx_uses_normal_images_when_policy_requests_an_epub_cover`,
+    // which could only ask the question of a single document.
+    let temp_dir = temp_test_dir("run", "cover-only-mixed-kinds");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let docx_path = temp_dir.join("sample.docx");
+    let epub_path = temp_dir.join("book.epub");
+    let output_dir = temp_dir.join("output");
+    write_docx(
+        &docx_path,
+        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
+    );
+    write_epub_document(
+        &epub_path,
+        "Test Creator",
+        "Covered",
+        Some(("cover.jpg", b"\xFF\xD8\xFFcover", true)),
+    );
+
+    let request = prepare_request(vec![
+        "test".to_string(),
+        docx_path.to_string_lossy().into_owned(),
+        epub_path.to_string_lossy().into_owned(),
+        "--output".to_string(),
+        output_dir.to_string_lossy().into_owned(),
+        "--cover-only".to_string(),
+    ]);
+    let mut observer = RecordingRunObserver::default();
+
+    let outcome = run(request, &mut observer);
+    let output = produced(&outcome);
+
+    assert_eq!(output.emitted_images(), 2);
+    assert_eq!(output.documents_with_output(), 2);
+    assert!(output_dir.join("sample.png").exists());
+    assert!(output_dir.join("Test Creator - Covered.jpg").exists());
+    // One normal image anywhere in the run means the run did not produce covers
+    // only, so a mixed cover-only run classifies as Images.
+    assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
+    assert_single_terminal_observation(&observer, &outcome);
+
+    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+}
+
+#[test]
 fn normal_document_output_returns_produced_images() {
     let temp_dir = temp_test_dir("run", "normal-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
