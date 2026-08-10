@@ -74,6 +74,7 @@ struct ListingFailure {
 pub(crate) struct InMemorySearchSurface {
     nodes: BTreeMap<PathBuf, SearchNode>,
     listing_failures: BTreeMap<PathBuf, ListingFailure>,
+    unreadable_entries: BTreeMap<PathBuf, io::ErrorKind>,
     inspection_overrides: BTreeMap<PathBuf, Result<InspectedKind, io::ErrorKind>>,
 }
 
@@ -83,6 +84,7 @@ impl InMemorySearchSurface {
         Self {
             nodes: BTreeMap::new(),
             listing_failures: BTreeMap::new(),
+            unreadable_entries: BTreeMap::new(),
             inspection_overrides: BTreeMap::new(),
         }
     }
@@ -131,6 +133,24 @@ impl InMemorySearchSurface {
                 reports_path: true,
             },
         );
+        self
+    }
+
+    /// Declares a directory that opens but whose listing fails on one entry.
+    ///
+    /// Opening a directory and reading one of its entries are separate operations
+    /// that fail separately, which is why [`DocumentSearchSurface::read_directory`]
+    /// returns a fallible iterator of fallible items. Document discovery reports a
+    /// per-entry failure against the directory and keeps reading the rest; without
+    /// this, only a real filesystem could produce that condition.
+    ///
+    /// The failing entry is not a node. An entry that never materialises has no
+    /// path to inspect — the failure is the only thing observable about it.
+    pub(crate) fn with_unreadable_entry(mut self, directory: impl Into<PathBuf>) -> Self {
+        let directory = directory.into();
+        self.nodes.insert(directory.clone(), SearchNode::Directory);
+        self.unreadable_entries
+            .insert(directory, io::ErrorKind::PermissionDenied);
         self
     }
 
@@ -217,7 +237,7 @@ impl InMemorySearchSurface {
     }
 
     /// Flattens one recursive traversal into the items it yields, in encounter order.
-    fn traversal_items(&self, root: &Path) -> Vec<Result<TraversedEntry, TraversalFailure>> {
+    fn traversal_items(&self, root: &Path) -> Vec<PendingItem> {
         let mut items = Vec::new();
         match self.resolve(root) {
             Some((resolved, SearchNode::Directory)) => {
@@ -225,11 +245,14 @@ impl InMemorySearchSurface {
             }
             // A traversal of anything that is not a readable directory fails at its
             // root, in the position the root itself would have occupied.
-            _ => items.push(Err(TraversalFailure::new(
-                0,
-                Some(root.to_path_buf()),
-                Self::failure(io::ErrorKind::NotFound, root),
-            ))),
+            _ => items.push(PendingItem {
+                listed_directory: root.to_path_buf(),
+                item: Err(TraversalFailure::new(
+                    0,
+                    Some(root.to_path_buf()),
+                    Self::failure(io::ErrorKind::NotFound, root),
+                )),
+            }),
         }
         items
     }
@@ -240,22 +263,28 @@ impl InMemorySearchSurface {
         resolved_root: &Path,
         display_root: &Path,
         depth: usize,
-        items: &mut Vec<Result<TraversedEntry, TraversalFailure>>,
+        items: &mut Vec<PendingItem>,
     ) {
         if let Some(failure) = self.listing_failures.get(display_root) {
             // The failure takes the directory's own depth, so truncating by it
             // leaves the nearest confirmed parent at the top of the caller's stack.
-            items.push(Err(TraversalFailure::new(
-                depth.saturating_sub(1),
-                failure.reports_path.then(|| display_root.to_path_buf()),
-                Self::failure(failure.kind, display_root),
-            )));
+            items.push(PendingItem {
+                listed_directory: display_root.to_path_buf(),
+                item: Err(TraversalFailure::new(
+                    depth.saturating_sub(1),
+                    failure.reports_path.then(|| display_root.to_path_buf()),
+                    Self::failure(failure.kind, display_root),
+                )),
+            });
             return;
         }
 
         for (path, node) in self.children(resolved_root, display_root) {
             let is_directory = matches!(node, SearchNode::Directory);
-            items.push(Ok(TraversedEntry::new(path.clone(), depth, is_directory)));
+            items.push(PendingItem {
+                listed_directory: display_root.to_path_buf(),
+                item: Ok(TraversedEntry::new(path.clone(), depth, is_directory)),
+            });
             if is_directory {
                 // Nested links are enumerated but never descended into, so a
                 // traversal cannot widen its scope through one. A directory below
@@ -305,11 +334,17 @@ impl DocumentSearchSurface for InMemorySearchSurface {
 
         match self.resolve(path) {
             Some((resolved, SearchNode::Directory)) => {
-                let entries: Vec<_> = self
+                let mut entries: Vec<io::Result<PathBuf>> = self
                     .children(&resolved, path)
                     .into_iter()
                     .map(|(child, _)| Ok(child))
                     .collect();
+                if let Some(kind) = self.unreadable_entries.get(path) {
+                    // Placed ahead of the entries that did materialise, so that a
+                    // test asserting the listing continued past it has something
+                    // left to find. A failing entry has no name to order it by.
+                    entries.insert(0, Err(Self::failure(*kind, path)));
+                }
                 Ok(Box::new(entries.into_iter()))
             }
             Some(_) => Err(Self::failure(io::ErrorKind::InvalidInput, path)),
@@ -401,33 +436,42 @@ impl EpubDeclarationSource for DeclaredEpubDeclarations {
     }
 }
 
+/// One flattened traversal item together with the directory whose listing produced it.
+///
+/// The producing directory is what makes `skip_current_dir` exact. A failure can
+/// arrive without a path, and a predicate reading only the item's own path has
+/// nothing to test such a failure against — so it would keep it, and report a
+/// branch a real traversal skipped without ever opening. Every item belongs to a
+/// listing whether or not it can name itself, which is the fact worth recording.
+struct PendingItem {
+    listed_directory: PathBuf,
+    item: Result<TraversedEntry, TraversalFailure>,
+}
+
 /// One traversal of a declared tree, flattened ahead of time.
 struct DeclaredTraversal {
-    pending: std::collections::VecDeque<Result<TraversedEntry, TraversalFailure>>,
+    pending: std::collections::VecDeque<PendingItem>,
     last_directory: Option<PathBuf>,
 }
 
 impl DocumentSearchTraversal for DeclaredTraversal {
     fn next_entry(&mut self) -> Option<Result<TraversedEntry, TraversalFailure>> {
-        let item = self.pending.pop_front()?;
-        self.last_directory = match &item {
+        let pending = self.pending.pop_front()?;
+        self.last_directory = match &pending.item {
             Ok(entry) if entry.is_directory() => Some(entry.path().to_path_buf()),
             _ => None,
         };
-        Some(item)
+        Some(pending.item)
     }
 
     fn skip_current_dir(&mut self) {
         let Some(directory) = self.last_directory.take() else {
             return;
         };
-        self.pending.retain(|item| {
-            let path = match item {
-                Ok(entry) => Some(entry.path()),
-                Err(failure) => failure.path(),
-            };
-            path.is_none_or(|path| !path.starts_with(&directory))
-        });
+        // Dropping by producing directory rather than by item path drops the whole
+        // abandoned branch, including the descendant listings under it.
+        self.pending
+            .retain(|pending| !pending.listed_directory.starts_with(&directory));
     }
 }
 

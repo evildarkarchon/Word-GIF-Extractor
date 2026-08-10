@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::document_search_surface::{DocumentSearchSurface, InspectedKind};
 use crate::extraction_run_observation::DocumentDiscoveryScope;
 
-use super::{DocumentCandidate, DocumentDiscoveryProgress, DocumentSelectionLifecycle};
+use super::{
+    CandidateOrigin, DocumentCandidate, DocumentDiscoveryProgress, DocumentSelectionLifecycle,
+};
 
 /// One successfully inspected requested input retained for the Document discovery phase.
 enum RequestedInput {
@@ -95,11 +97,15 @@ pub(super) fn discover_documents(
 
     lifecycle.discovering(!inputs.is_empty(), scope, |progress| {
         let mut candidates = Vec::new();
+        // Origin is recorded at the point the path was found, which is the only
+        // place that still knows: an input the user named and the same file reached
+        // through a directory above it are indistinguishable once both are paths.
         let record_supported =
             |path: PathBuf,
+             origin: CandidateOrigin,
              candidates: &mut Vec<DocumentCandidate>,
              progress: &mut DocumentDiscoveryProgress<'_>| {
-                if let Some(candidate) = DocumentCandidate::from_path(path) {
+                if let Some(candidate) = DocumentCandidate::from_path(path, origin) {
                     candidates.push(candidate);
                     progress.document_discovered();
                 }
@@ -108,7 +114,7 @@ pub(super) fn discover_documents(
         for input in requested_inputs {
             match input {
                 RequestedInput::File(path) => {
-                    record_supported(path, &mut candidates, progress);
+                    record_supported(path, CandidateOrigin::Requested, &mut candidates, progress);
                 }
                 RequestedInput::Directory(path) if recursive => {
                     // Index each known directory by traversal depth so truncation leaves
@@ -132,7 +138,12 @@ pub(super) fn discover_documents(
                                             // using its now-stale directory classification.
                                             traversal.skip_current_dir();
                                         }
-                                        record_supported(entry_path, &mut candidates, progress);
+                                        record_supported(
+                                            entry_path,
+                                            CandidateOrigin::Traversed,
+                                            &mut candidates,
+                                            progress,
+                                        );
                                     }
                                     Ok(kind) => {
                                         if was_directory && kind != InspectedKind::Directory {
@@ -180,6 +191,7 @@ pub(super) fn discover_documents(
                                             Ok(InspectedKind::File) => {
                                                 record_supported(
                                                     entry_path,
+                                                    CandidateOrigin::Traversed,
                                                     &mut candidates,
                                                     progress,
                                                 );

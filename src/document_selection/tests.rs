@@ -538,6 +538,24 @@ fn select_documents_abandons_a_recursive_branch_that_stopped_being_a_directory()
     assert!(observer.selection_diagnostics().is_empty());
 }
 
+/// Verifies an abandoned branch reports nothing, including a failure that has no path.
+#[test]
+fn select_documents_abandons_a_recursive_branch_including_its_pathless_failures() {
+    // A traversal that never opens the stale branch never reaches the failing
+    // directory below it, so no diagnostic may arrive from inside it. A failure
+    // carrying no path is the case that gets this wrong: there is no path to
+    // compare against the abandoned branch, only the branch that produced it.
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_stale_directory("root/stale", InspectedKind::File)
+        .with_pathless_listing_failure("root/stale/deep");
+
+    let (selected, observer) = select_against(&surface, &["root"], true);
+
+    assert!(selected.is_empty());
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
 /// Verifies a branch is abandoned once, without a second failure, when inspection fails.
 #[test]
 fn select_documents_abandons_a_recursive_branch_whose_inspection_failed() {
@@ -575,6 +593,25 @@ fn select_documents_attributes_a_pathless_failure_to_the_nearest_known_directory
         observer.selection_diagnostics().as_slice(),
         [ExtractionRunObservation::DocumentDiscoveryFailed { path, detail }]
             if path == Path::new("root/branch") && !detail.is_empty()
+    ));
+}
+
+/// Verifies a directory that opens but fails on one entry is reported and read to the end.
+#[test]
+fn select_documents_reports_an_unreadable_directory_entry_and_keeps_listing() {
+    // Opening a directory succeeded, so the failure has no path of its own and is
+    // attributed to the directory being listed. The entries after it still count.
+    let surface = InMemorySearchSurface::new()
+        .with_unreadable_entry("root")
+        .with_file("root/book.docx");
+
+    let (selected, observer) = select_against(&surface, &["root"], false);
+
+    assert_eq!(selected.len(), 1);
+    assert!(matches!(
+        observer.selection_diagnostics().as_slice(),
+        [ExtractionRunObservation::DocumentDiscoveryFailed { path, detail }]
+            if path == Path::new("root") && !detail.is_empty()
     ));
 }
 
@@ -661,6 +698,31 @@ fn epub_only_selection_drops_a_traversed_docx_in_silence() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_display_name(), "Test Author - Magic Book");
     assert!(observer.selection_diagnostics().is_empty());
+}
+
+#[test]
+fn epub_only_selection_diagnoses_a_requested_docx_once_when_its_directory_is_also_requested() {
+    // The DOCX is discovered twice — once through the directory, once as the file
+    // the user named — and the two candidates are equal as paths. Only the second
+    // was named, so exactly one diagnostic is owed; the traversal hit stays silent.
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/document.docx");
+
+    let (selected, observer) = select_epub_only(
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &["root", "root/document.docx"],
+        true,
+    );
+
+    assert!(selected.is_empty());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: PathBuf::from("root/document.docx")
+        }]
+    );
 }
 
 #[test]

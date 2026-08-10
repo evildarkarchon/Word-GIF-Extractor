@@ -57,7 +57,7 @@ The part of an Extraction run that decides which discovered documents are eligib
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:
-The part of Document selection that inspects requested files and directories through the Document search surface, reports non-fatal inspection failures, and yields supported document candidates in encounter order. It excludes EPUB filtering, deduplication, identity, and output placement.
+The part of Document selection that inspects requested files and directories through the Document search surface, reports non-fatal inspection failures, and yields supported document candidates in encounter order. Each candidate carries how it was found — named by the user, or turned up by a directory search — because discovery is the last stage that still knows: the same file named directly and reached through a directory above it yields two candidates that are equal as paths. It excludes EPUB filtering, deduplication, identity, and output placement.
 _Avoid_: File collection, directory scan, input traversal, source discovery
 
 **Document search surface**:

@@ -205,30 +205,47 @@ pub struct DocumentSelectionOptions<'a> {
     pub epub_only: bool,
 }
 
+/// How one candidate reached Document discovery's output.
+///
+/// Discovery is the only stage that knows this, so it records it rather than
+/// leaving later stages to infer it. Path equality cannot answer the question:
+/// naming a directory and a file inside it discovers that file twice, and the two
+/// candidates are equal as paths while only one of them was named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateOrigin {
+    /// The user named this exact path as an input.
+    Requested,
+    /// A directory search turned the path up.
+    Traversed,
+}
+
 /// Private pre-eligibility representation used during filtering and deduplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DocumentCandidate {
     Docx {
         path: PathBuf,
+        origin: CandidateOrigin,
     },
     Epub {
         path: PathBuf,
+        origin: CandidateOrigin,
         epub_declarations: Option<EpubDeclarations>,
     },
 }
 
 impl DocumentCandidate {
     /// Classifies a supported path into its private pre-eligibility variant.
-    fn from_path(path: PathBuf) -> Option<Self> {
+    fn from_path(path: PathBuf, origin: CandidateOrigin) -> Option<Self> {
         match path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_lowercase)
             .as_deref()
         {
-            Some("docx") => Some(Self::Docx { path }),
+            Some("docx") => Some(Self::Docx { path, origin }),
             Some("epub") => Some(Self::Epub {
                 path,
+                origin,
                 epub_declarations: None,
             }),
             _ => None,
@@ -269,7 +286,7 @@ pub fn select_documents(
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
     let eligible = if options.epub_only {
-        retain_epub_candidates(candidates, options.inputs, &mut lifecycle)
+        retain_epub_candidates(candidates, &mut lifecycle)
     } else {
         candidates
     };
@@ -301,20 +318,21 @@ fn is_epub(candidate: &DocumentCandidate) -> bool {
 /// Only inputs the user named are diagnosed. A path swept up by directory
 /// traversal is dropped in silence, matching how an EPUB rejected by
 /// [`EpubFilter`] is dropped: reporting one line per traversal hit would make a
-/// recursive run over a large tree unreadable. Requested file inputs reach
-/// discovery verbatim, so comparing against them is exact rather than heuristic.
+/// recursive run over a large tree unreadable. Which candidate was named is read
+/// off the candidate's own [`CandidateOrigin`] rather than recovered by comparing
+/// paths against the requested inputs: a run naming both a directory and a file
+/// inside it discovers that file twice, and both copies match the named path.
 fn retain_epub_candidates(
     candidates: Vec<DocumentCandidate>,
-    requested_inputs: &[PathBuf],
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     let (epub_candidates, skipped): (Vec<_>, Vec<_>) = candidates.into_iter().partition(is_epub);
 
     for candidate in skipped {
-        let DocumentCandidate::Docx { path } = candidate else {
+        let DocumentCandidate::Docx { path, origin } = candidate else {
             continue;
         };
-        if requested_inputs.contains(&path) {
+        if origin == CandidateOrigin::Requested {
             lifecycle.skipped_non_epub_input(path);
         }
     }
@@ -337,13 +355,14 @@ fn filter_epub_files(
         let mut matching_epubs = Vec::new();
 
         for candidate in epub_files {
-            let DocumentCandidate::Epub { path, .. } = candidate else {
+            let DocumentCandidate::Epub { path, origin, .. } = candidate else {
                 continue;
             };
             let outcome = match declarations.acquire(&path) {
                 Ok(declarations) if matches_filter(&declarations, filter) => {
                     matching_epubs.push(DocumentCandidate::Epub {
                         path,
+                        origin,
                         epub_declarations: Some(declarations),
                     });
                     EpubFilterCheck::Matched
@@ -387,6 +406,7 @@ fn deduplicate_epubs_by_declarations(
         for candidate in epub_files {
             let DocumentCandidate::Epub {
                 path,
+                origin,
                 mut epub_declarations,
             } = candidate
             else {
@@ -416,6 +436,7 @@ fn deduplicate_epubs_by_declarations(
                 entry.insert(path.clone());
                 unique_epubs.push(DocumentCandidate::Epub {
                     path,
+                    origin,
                     epub_declarations,
                 });
                 EpubDeduplicationCheck::Unique
@@ -477,7 +498,7 @@ fn selected_document_from_candidate(
     global_output: Option<&Path>,
 ) -> SelectedDocument {
     match candidate {
-        DocumentCandidate::Docx { path } => {
+        DocumentCandidate::Docx { path, .. } => {
             let output_dir = resolve_output_dir(&path, global_output);
             let base_name = fallback_base_name(&path);
             let display_name = fallback_display_name(&path);
@@ -489,6 +510,7 @@ fn selected_document_from_candidate(
         DocumentCandidate::Epub {
             path,
             epub_declarations,
+            ..
         } => {
             let output_dir = resolve_output_dir(&path, global_output);
             let fallback_base_name = fallback_base_name(&path);
