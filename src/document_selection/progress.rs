@@ -20,6 +20,33 @@ use crate::extraction_run_observation::{
 
 use super::EpubFilter;
 
+/// Emits one observation only while its phase is active.
+///
+/// The silence gate for ten of the module's twelve phase-scoped emissions, so
+/// an inactive phase cannot be made to speak by one site forgetting to check.
+/// Two sites stay inline rather than calling here: the final observations of
+/// filtering and deduplication are preceded by a completeness assertion that
+/// must share their guard, and splitting the two apart would test the same flag
+/// twice and separate the assertion from the emission it justifies.
+///
+/// The two lifecycle diagnostics are not phase-scoped at all — they are emitted
+/// before any phase opens, and `DocumentSelectionLifecycle` holds no active flag
+/// to pass here.
+///
+/// The observation is built before the flag is tested, so a silent phase still
+/// pays for constructing what it discards. That is bounded to four lifecycle
+/// snapshots: a phase is inactive exactly when its work set is empty, so no
+/// per-item emission is reachable while silent.
+fn emit_when(
+    observer: &mut dyn ExtractionRunObserver,
+    active: bool,
+    observation: ExtractionRunObservation,
+) {
+    if active {
+        observer.on_observation(observation);
+    }
+}
+
 /// Semantic result of checking one EPUB against an EPUB filter.
 pub(super) enum EpubFilterCheck {
     Matched,
@@ -74,13 +101,14 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         scope: DocumentDiscoveryScope,
         body: impl FnOnce(&mut DocumentDiscoveryProgress<'_>) -> R,
     ) -> R {
-        if active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DiscoveringDocuments {
-                    scope,
-                    discovered: 0,
-                });
-        }
+        emit_when(
+            self.observer,
+            active,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope,
+                discovered: 0,
+            },
+        );
 
         // Keep the reporter reborrow scoped so the final observation can use the observer again.
         let (result, discovered) = {
@@ -94,13 +122,11 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
             (result, progress.discovered)
         };
 
-        if active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DocumentDiscoveryFinished {
-                    scope,
-                    discovered,
-                });
-        }
+        emit_when(
+            self.observer,
+            active,
+            ExtractionRunObservation::DocumentDiscoveryFinished { scope, discovered },
+        );
 
         result
     }
@@ -116,16 +142,17 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         total: usize,
         body: impl FnOnce(&mut EpubFilteringProgress<'_>) -> R,
     ) -> R {
-        if active {
-            self.observer
-                .on_observation(ExtractionRunObservation::FilteringEpubs {
-                    title: filter.title.clone(),
-                    author: filter.author.clone(),
-                    checked: 0,
-                    total,
-                    matching: 0,
-                });
-        }
+        emit_when(
+            self.observer,
+            active,
+            ExtractionRunObservation::FilteringEpubs {
+                title: filter.title.clone(),
+                author: filter.author.clone(),
+                checked: 0,
+                total,
+                matching: 0,
+            },
+        );
 
         // Keep the reporter reborrow scoped so the final observation can use the observer again.
         let (result, checked, matching) = {
@@ -165,15 +192,16 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         total: usize,
         body: impl FnOnce(&mut EpubDeduplicationProgress<'_>) -> R,
     ) -> R {
-        if active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DeduplicatingEpubs {
-                    checked: 0,
-                    total,
-                    duplicates_found: 0,
-                    unique_remaining: 0,
-                });
-        }
+        emit_when(
+            self.observer,
+            active,
+            ExtractionRunObservation::DeduplicatingEpubs {
+                checked: 0,
+                total,
+                duplicates_found: 0,
+                unique_remaining: 0,
+            },
+        );
 
         // Keep the reporter reborrow scoped so the final observation can use the observer again.
         let (result, checked, duplicates_found, unique_remaining) = {
@@ -224,22 +252,24 @@ pub(super) struct DocumentDiscoveryProgress<'observer> {
 impl DocumentDiscoveryProgress<'_> {
     /// Emits one inspection failure at its encounter position inside active discovery.
     pub(super) fn discovery_failed(&mut self, path: PathBuf, detail: String) {
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed { path, detail });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+        );
     }
 
     /// Records one discovered document and emits the resulting running observation.
     pub(super) fn document_discovered(&mut self) {
         self.discovered += 1;
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DiscoveringDocuments {
-                    scope: self.scope,
-                    discovered: self.discovered,
-                });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: self.scope,
+                discovered: self.discovered,
+            },
+        );
     }
 }
 
@@ -259,14 +289,15 @@ impl EpubFilteringProgress<'_> {
     /// The phase supplies its own purpose, so a filtering call site cannot report
     /// a deduplication purpose.
     pub(super) fn declarations_unreadable(&mut self, path: PathBuf, detail: String) {
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::UnreadableEpubDeclarations {
-                    path,
-                    purpose: EpubDeclarationPurpose::Filtering,
-                    detail,
-                });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::UnreadableEpubDeclarations {
+                path,
+                purpose: EpubDeclarationPurpose::Filtering,
+                detail,
+            },
+        );
     }
 
     /// Records one filtering outcome and derives the next monotonic observation.
@@ -280,16 +311,17 @@ impl EpubFilteringProgress<'_> {
             self.matching += 1;
         }
 
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::FilteringEpubs {
-                    title: self.filter.title.clone(),
-                    author: self.filter.author.clone(),
-                    checked: self.checked,
-                    total: self.total,
-                    matching: self.matching,
-                });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::FilteringEpubs {
+                title: self.filter.title.clone(),
+                author: self.filter.author.clone(),
+                checked: self.checked,
+                total: self.total,
+                matching: self.matching,
+            },
+        );
     }
 }
 
@@ -309,14 +341,15 @@ impl EpubDeduplicationProgress<'_> {
     /// The phase supplies its own purpose, so a deduplication call site cannot
     /// report a filtering purpose.
     pub(super) fn declarations_unreadable(&mut self, path: PathBuf, detail: String) {
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::UnreadableEpubDeclarations {
-                    path,
-                    purpose: EpubDeclarationPurpose::Deduplication,
-                    detail,
-                });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::UnreadableEpubDeclarations {
+                path,
+                purpose: EpubDeclarationPurpose::Deduplication,
+                detail,
+            },
+        );
     }
 
     /// Records one deduplication outcome and derives the next monotonic observation.
@@ -331,14 +364,15 @@ impl EpubDeduplicationProgress<'_> {
             EpubDeduplicationCheck::Duplicate => self.duplicates_found += 1,
         }
 
-        if self.active {
-            self.observer
-                .on_observation(ExtractionRunObservation::DeduplicatingEpubs {
-                    checked: self.checked,
-                    total: self.total,
-                    duplicates_found: self.duplicates_found,
-                    unique_remaining: self.unique_remaining,
-                });
-        }
+        emit_when(
+            self.observer,
+            self.active,
+            ExtractionRunObservation::DeduplicatingEpubs {
+                checked: self.checked,
+                total: self.total,
+                duplicates_found: self.duplicates_found,
+                unique_remaining: self.unique_remaining,
+            },
+        );
     }
 }

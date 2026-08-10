@@ -38,10 +38,15 @@ L325); they stop constructing observations.
 ## 3. One silence gate
 
 Add a crate-private `fn emit_when(observer: &mut dyn ExtractionRunObserver, active: bool,
-observation: ExtractionRunObservation)` to `progress.rs` and route all twelve gated emission
-points through it: the initial and final observation in each of `discovering`, `filtering` and
-`deduplicating`; the three gated per-fact methods; `document_discovered`; and both
-`record_check` bodies. The two ungated lifecycle methods do not use it.
+observation: ExtractionRunObservation)` to `progress.rs` and route ten of the twelve gated
+emission points through it: the initial observation of `discovering`, `filtering` and
+`deduplicating`; discovery's final observation; the three gated per-fact methods;
+`document_discovered`; and both `record_check` bodies.
+
+The final observations of filtering and deduplication stay inline. Each is preceded by a
+completeness assertion sharing the same `if active` guard, and an inactive phase asserts
+nothing today, so splitting them would test the flag twice and separate the assertion from the
+emission it justifies. The two ungated lifecycle methods do not use the gate either.
 
 ## Out of scope
 
