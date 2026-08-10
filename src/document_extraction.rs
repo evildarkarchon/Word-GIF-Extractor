@@ -74,8 +74,14 @@ impl DocumentExtraction {
     pub(crate) fn extract(&self, document: SelectedDocument) -> DocumentExtractionOutcome {
         let result = match document {
             SelectedDocument::Docx(document) => {
-                let (path, output_dir, base_name) = document.into_extraction_parts();
-                docx::process_file(&path, &output_dir, &base_name, &self.image_write_pipeline)
+                let target = document.into_extraction_inputs();
+                let placement = target.get_placement();
+                docx::process_file(
+                    target.get_source(),
+                    placement.get_dir(),
+                    placement.get_base_name(),
+                    &self.image_write_pipeline,
+                )
             }
             SelectedDocument::Epub(document) => {
                 epub::extract(document, self.policy, &self.image_write_pipeline)

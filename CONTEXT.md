@@ -68,6 +68,14 @@ _Avoid_: Filesystem, file system adapter, VFS, path provider
 The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, display identity, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
 _Avoid_: Extraction work item, selected file, document task
 
+**Source identity**:
+The path a Selected document was found at, fixed by Document selection and unchanged by anything Document extraction later learns. It is distinct from output placement even when output placement is derived from it.
+_Avoid_: Input path, file path, source file
+
+**Output placement**:
+Where one selected document's emitted files go and what they are named — the output directory together with the output filename stem, decided by Document selection before extraction begins. Deriving the directory from the source identity does not make them one fact. It excludes collision handling and per-image naming, which belong to Image file emission.
+_Avoid_: Output dir, output path, base name
+
 **Document selection progress**:
 The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. Discovery has no denominator until it has finished finding, so it reports only a growing count, while filtering and deduplication run against a known candidate set every member of which must be accounted for before their finished status is meaningful. It excludes per-document extraction status and terminal presentation details.
 _Avoid_: Run events, selection UI events, progress callbacks

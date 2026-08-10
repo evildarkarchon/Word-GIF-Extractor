@@ -43,6 +43,64 @@ impl EpubFilter {
     }
 }
 
+/// Where one selected document's emitted files go and what they are named.
+///
+/// The output directory and the output filename stem are one value because they
+/// are one decision: Document selection fixes both before extraction begins, and
+/// no consumer wants one without the other.
+#[derive(Debug)]
+pub(crate) struct OutputPlacement {
+    dir: PathBuf,
+    base_name: String,
+}
+
+impl OutputPlacement {
+    /// Records where one document's output goes and what its files are named.
+    fn new(dir: PathBuf, base_name: String) -> Self {
+        Self { dir, base_name }
+    }
+
+    /// Returns the directory that receives this document's emitted files.
+    pub(crate) fn get_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Returns the output filename stem shared by this document's emitted files.
+    pub(crate) fn get_base_name(&self) -> &str {
+        &self.base_name
+    }
+}
+
+/// The kind-independent facts Document extraction needs about one selected document.
+///
+/// Source identity and output placement are separate types rather than two
+/// same-typed paths, because the default placement is derived from the source —
+/// they share a prefix, so a swapped pair reads as plausible. Nesting the output
+/// facts leaves one path in the value, which is what makes the swap a compile
+/// error rather than an I/O error three modules away.
+#[derive(Debug)]
+pub(crate) struct ExtractionTarget {
+    source: PathBuf,
+    placement: OutputPlacement,
+}
+
+impl ExtractionTarget {
+    /// Pairs a selected document's source identity with its output placement.
+    fn new(source: PathBuf, placement: OutputPlacement) -> Self {
+        Self { source, placement }
+    }
+
+    /// Returns the path this document was selected at.
+    pub(crate) fn get_source(&self) -> &Path {
+        &self.source
+    }
+
+    /// Returns where this document's output goes and what it is named.
+    pub(crate) fn get_placement(&self) -> &OutputPlacement {
+        &self.placement
+    }
+}
+
 /// Immutable handoff produced by Document selection for one eligible document.
 ///
 /// The authoritative variant is consumed by Document extraction exactly once.
@@ -55,20 +113,20 @@ pub(crate) enum SelectedDocument {
 }
 
 /// Opaque DOCX payload whose fields and construction belong to Document selection.
+///
+/// `display_name` stays outside the target because Document extraction never sees
+/// it: the Extraction run reads it before handoff. Sharing it to dedupe a fourth
+/// field would cost the target its meaning.
 #[derive(Debug)]
 pub(crate) struct SelectedDocx {
-    path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    target: ExtractionTarget,
     display_name: String,
 }
 
 /// Opaque EPUB payload whose fields and construction belong to Document selection.
 #[derive(Debug)]
 pub(crate) struct SelectedEpub {
-    path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    target: ExtractionTarget,
     display_name: String,
     epub_declarations: Option<EpubDeclarations>,
 }
@@ -77,8 +135,8 @@ impl SelectedDocument {
     /// Returns the source path visible to the Extraction run before handoff.
     pub(crate) fn get_path(&self) -> &Path {
         match self {
-            Self::Docx(document) => &document.path,
-            Self::Epub(document) => &document.path,
+            Self::Docx(document) => document.target.get_source(),
+            Self::Epub(document) => document.target.get_source(),
         }
     }
 
@@ -93,34 +151,28 @@ impl SelectedDocument {
 
 impl SelectedDocx {
     /// Creates a DOCX handoff after selection has established eligibility.
-    fn new(path: PathBuf, output_dir: PathBuf, base_name: String, display_name: String) -> Self {
+    fn new(target: ExtractionTarget, display_name: String) -> Self {
         Self {
-            path,
-            output_dir,
-            base_name,
+            target,
             display_name,
         }
     }
 
     /// Consumes the DOCX payload into the facts owned by Document extraction.
-    pub(crate) fn into_extraction_parts(self) -> (PathBuf, PathBuf, String) {
-        (self.path, self.output_dir, self.base_name)
+    pub(crate) fn into_extraction_inputs(self) -> ExtractionTarget {
+        self.target
     }
 }
 
 impl SelectedEpub {
     /// Creates an EPUB handoff after selection has established eligibility.
     fn new(
-        path: PathBuf,
-        output_dir: PathBuf,
-        base_name: String,
+        target: ExtractionTarget,
         display_name: String,
         epub_declarations: Option<EpubDeclarations>,
     ) -> Self {
         Self {
-            path,
-            output_dir,
-            base_name,
+            target,
             display_name,
             epub_declarations,
         }
@@ -130,15 +182,8 @@ impl SelectedEpub {
     ///
     /// The selected identity and output placement remain fixed even when extraction must
     /// reacquire declarations because selection retained none.
-    pub(crate) fn into_extraction_parts(
-        self,
-    ) -> (PathBuf, PathBuf, String, Option<EpubDeclarations>) {
-        (
-            self.path,
-            self.output_dir,
-            self.base_name,
-            self.epub_declarations,
-        )
+    pub(crate) fn into_extraction_inputs(self) -> (ExtractionTarget, Option<EpubDeclarations>) {
+        (self.target, self.epub_declarations)
     }
 }
 
@@ -399,7 +444,10 @@ fn selected_document_from_candidate(
             let output_dir = resolve_output_dir(&path, global_output);
             let base_name = fallback_base_name(&path);
             let display_name = fallback_display_name(&path);
-            SelectedDocument::Docx(SelectedDocx::new(path, output_dir, base_name, display_name))
+            SelectedDocument::Docx(SelectedDocx::new(
+                ExtractionTarget::new(path, OutputPlacement::new(output_dir, base_name)),
+                display_name,
+            ))
         }
         DocumentCandidate::Epub {
             path,
@@ -432,9 +480,7 @@ fn selected_document_from_candidate(
             };
 
             SelectedDocument::Epub(SelectedEpub::new(
-                path,
-                output_dir,
-                base_name,
+                ExtractionTarget::new(path, OutputPlacement::new(output_dir, base_name)),
                 display_name,
                 epub_declarations,
             ))
