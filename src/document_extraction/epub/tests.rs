@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::document_extraction::DocumentExtractionPolicy;
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{
     DocumentSelectionOptions, EpubFilter, SelectedDocument, SelectedEpub, select_documents,
 };
@@ -27,6 +28,7 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
             output: Some(output_dir),
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     )
     .into_iter()

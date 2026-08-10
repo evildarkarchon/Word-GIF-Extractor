@@ -1,6 +1,7 @@
 //! Tests for Document selection.
 
 use super::*;
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::extraction_run_observation::DocumentDiscoveryScope;
 use crate::test_support::{
     RecordingRunObserver, create_directory_link, create_file_symlink, remove_directory_link,
@@ -57,6 +58,7 @@ fn select_documents_reports_scanning_through_its_public_interface() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -104,6 +106,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
             output: None,
             epub_filter: &filter,
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -210,6 +213,7 @@ fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -248,6 +252,7 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -304,6 +309,7 @@ fn select_documents_reports_broken_nested_link_before_later_supported_input() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -349,6 +355,7 @@ fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() 
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -391,6 +398,7 @@ fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -428,6 +436,7 @@ fn select_documents_reports_directory_open_failure_and_continues_to_supported_in
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -467,6 +476,7 @@ fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -517,6 +527,7 @@ fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -571,6 +582,7 @@ fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -625,6 +637,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -669,6 +682,7 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -715,6 +729,7 @@ fn select_documents_follows_requested_directory_link_during_recursive_scanning()
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -764,6 +779,7 @@ fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -798,6 +814,7 @@ fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -825,6 +842,7 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
             output: None,
             epub_filter: &filter,
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -887,6 +905,7 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
             output: None,
             epub_filter: &filter,
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -1013,6 +1032,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
     assert_eq!(non_recursive.len(), 1);
@@ -1025,6 +1045,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
     assert_eq!(recursive.len(), 2);
@@ -1066,6 +1087,7 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
             output: None,
             epub_filter: &filter,
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -1103,6 +1125,7 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -1142,6 +1165,7 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 
@@ -1189,6 +1213,7 @@ fn select_documents_uses_declaration_derived_display_name() {
             output: None,
             epub_filter: &EpubFilter::default(),
         },
+        &FilesystemSearchSurface,
         &mut observer,
     );
 

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use crate::document_extraction::{
     DocumentExtraction, DocumentExtractionOutcome, DocumentExtractionPolicy,
 };
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter};
 use crate::extraction_run_observation::{
     ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
@@ -89,6 +90,7 @@ pub fn run(
             output: output.as_deref(),
             epub_filter: &epub_filter,
         },
+        &FilesystemSearchSurface,
         &mut *observer,
     );
 

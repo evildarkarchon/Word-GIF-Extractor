@@ -6,6 +6,7 @@ mod progress;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::document_search_surface::DocumentSearchSurface;
 use crate::epub_declarations::EpubDeclarations;
 use crate::extraction_run_observation::{
     EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
@@ -198,14 +199,20 @@ impl DocumentCandidate {
 /// Selection reports into the Extraction run observation stream directly. The
 /// observer is informational: callbacks cannot cancel selection or alter which
 /// documents are returned.
+///
+/// Every observation of the world is made through `surface`, which ADR-0008
+/// keeps a separate parameter rather than a field on
+/// [`DocumentSelectionOptions`]: those are the per-run policy choices, and a way
+/// of seeing the world is not one of them.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
+    surface: &dyn DocumentSearchSurface,
     observer: &mut impl ExtractionRunObserver,
 ) -> Vec<SelectedDocument> {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
 
     let candidates =
-        discovery::discover_documents(options.inputs, options.recursive, &mut lifecycle);
+        discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
     let filtered = if !options.epub_filter.is_empty() {
         filter_epub_files(candidates, options.epub_filter, &mut lifecycle)
     } else {
