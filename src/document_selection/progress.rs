@@ -3,11 +3,19 @@
 //! Document selection reports into the Extraction run observation stream
 //! directly. This module owns the phase lifecycle — which phases are active,
 //! their counters, and the guarantee that an active phase emits one initial
-//! running observation and exactly one finished observation — but it owns no
-//! vocabulary of its own.
+//! running observation and exactly one finished observation.
+//!
+//! It defines no observation types; the Extraction run observation module owns
+//! every type a fact is carried in. It does name each fact it emits, one method
+//! per fact rather than one method taking any observation, so that neither a
+//! non-diagnostic nor a mismatched EPUB declaration purpose can reach the stream
+//! from here (ADR-0009, superseding ADR-0004's deliberate ignorance of which
+//! diagnostic was being emitted).
+
+use std::path::PathBuf;
 
 use crate::extraction_run_observation::{
-    DocumentDiscoveryScope, ExtractionRunObservation, ExtractionRunObserver,
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
 
 use super::EpubFilter;
@@ -35,12 +43,24 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         Self { observer }
     }
 
-    /// Emits one selection-level diagnostic outside an active phase.
+    /// Emits one absent requested input, outside any phase and never silenced.
     ///
-    /// Callers pass one of the non-fatal diagnostic variants; the lifecycle does
-    /// not inspect which, because its only job is where the fact is emitted.
-    pub(super) fn diagnostic(&mut self, diagnostic: ExtractionRunObservation) {
-        self.observer.on_observation(diagnostic);
+    /// Requested-input classification runs before the discovery phase opens, so
+    /// this fact has no phase to be gated by; `DocumentSelectionLifecycle` holds
+    /// no active flag, which is what keeps it that way.
+    pub(super) fn missing_input(&mut self, path: PathBuf) {
+        self.observer
+            .on_observation(ExtractionRunObservation::MissingInput { path });
+    }
+
+    /// Emits one requested-input inspection failure, outside any phase and never silenced.
+    ///
+    /// Shares its name with the `DocumentDiscoveryProgress` method reporting the
+    /// same fact: which type holds the method is the statement about where the
+    /// fact lands, before the phase opens or at its encounter position within it.
+    pub(super) fn discovery_failed(&mut self, path: PathBuf, detail: String) {
+        self.observer
+            .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed { path, detail });
     }
 
     /// Runs the discovery body with structurally managed lifecycle observations.
@@ -202,10 +222,11 @@ pub(super) struct DocumentDiscoveryProgress<'observer> {
 }
 
 impl DocumentDiscoveryProgress<'_> {
-    /// Emits one diagnostic at its encounter position inside active discovery.
-    pub(super) fn diagnostic(&mut self, diagnostic: ExtractionRunObservation) {
+    /// Emits one inspection failure at its encounter position inside active discovery.
+    pub(super) fn discovery_failed(&mut self, path: PathBuf, detail: String) {
         if self.active {
-            self.observer.on_observation(diagnostic);
+            self.observer
+                .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed { path, detail });
         }
     }
 
@@ -233,10 +254,18 @@ pub(super) struct EpubFilteringProgress<'phase> {
 }
 
 impl EpubFilteringProgress<'_> {
-    /// Emits one diagnostic in its existing position within filtering progress.
-    pub(super) fn diagnostic(&mut self, diagnostic: ExtractionRunObservation) {
+    /// Emits one unreadable-declarations fact in its position within filtering progress.
+    ///
+    /// The phase supplies its own purpose, so a filtering call site cannot report
+    /// a deduplication purpose.
+    pub(super) fn declarations_unreadable(&mut self, path: PathBuf, detail: String) {
         if self.active {
-            self.observer.on_observation(diagnostic);
+            self.observer
+                .on_observation(ExtractionRunObservation::UnreadableEpubDeclarations {
+                    path,
+                    purpose: EpubDeclarationPurpose::Filtering,
+                    detail,
+                });
         }
     }
 
@@ -275,10 +304,18 @@ pub(super) struct EpubDeduplicationProgress<'observer> {
 }
 
 impl EpubDeduplicationProgress<'_> {
-    /// Emits one diagnostic in its existing position within deduplication progress.
-    pub(super) fn diagnostic(&mut self, diagnostic: ExtractionRunObservation) {
+    /// Emits one unreadable-declarations fact in its position within deduplication progress.
+    ///
+    /// The phase supplies its own purpose, so a deduplication call site cannot
+    /// report a filtering purpose.
+    pub(super) fn declarations_unreadable(&mut self, path: PathBuf, detail: String) {
         if self.active {
-            self.observer.on_observation(diagnostic);
+            self.observer
+                .on_observation(ExtractionRunObservation::UnreadableEpubDeclarations {
+                    path,
+                    purpose: EpubDeclarationPurpose::Deduplication,
+                    detail,
+                });
         }
     }
 

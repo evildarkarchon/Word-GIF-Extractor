@@ -13,7 +13,9 @@
 
 use super::*;
 use crate::document_search_surface::InspectedKind;
-use crate::extraction_run_observation::DocumentDiscoveryScope;
+use crate::extraction_run_observation::{
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionRunObservation,
+};
 use crate::test_support::{DeclaredEpubDeclarations, InMemorySearchSurface, RecordingRunObserver};
 
 /// Selects against a declared surface with default options and records the run.

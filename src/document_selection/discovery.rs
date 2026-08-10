@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::{DocumentSearchSurface, InspectedKind};
-use crate::extraction_run_observation::{DocumentDiscoveryScope, ExtractionRunObservation};
+use crate::extraction_run_observation::DocumentDiscoveryScope;
 
 use super::{DocumentCandidate, DocumentDiscoveryProgress, DocumentSelectionLifecycle};
 
@@ -75,15 +75,10 @@ pub(super) fn discover_documents(
             Ok(Some(input)) => requested_inputs.push(input),
             Ok(None) => {}
             Err(RequestedInputFailure::Missing) => {
-                lifecycle.diagnostic(ExtractionRunObservation::MissingInput {
-                    path: input_path.clone(),
-                });
+                lifecycle.missing_input(input_path.clone());
             }
             Err(RequestedInputFailure::Inspection(error)) => {
-                lifecycle.diagnostic(ExtractionRunObservation::DocumentDiscoveryFailed {
-                    path: input_path.clone(),
-                    detail: error.to_string(),
-                });
+                lifecycle.discovery_failed(input_path.clone(), error.to_string());
             }
         }
     }
@@ -152,12 +147,7 @@ pub(super) fn discover_documents(
                                             // second failure while opening the same directory.
                                             traversal.skip_current_dir();
                                         }
-                                        progress.diagnostic(
-                                            ExtractionRunObservation::DocumentDiscoveryFailed {
-                                                path: entry_path,
-                                                detail: error.to_string(),
-                                            },
-                                        );
+                                        progress.discovery_failed(entry_path, error.to_string());
                                     }
                                 }
                             }
@@ -172,12 +162,8 @@ pub(super) fn discover_documents(
                                     },
                                     Path::to_path_buf,
                                 );
-                                progress.diagnostic(
-                                    ExtractionRunObservation::DocumentDiscoveryFailed {
-                                        path: failure_path,
-                                        detail: failure.error().to_string(),
-                                    },
-                                );
+                                progress
+                                    .discovery_failed(failure_path, failure.error().to_string());
                             }
                         }
                     }
@@ -200,33 +186,21 @@ pub(super) fn discover_documents(
                                             }
                                             Ok(_) => {}
                                             Err(error) => {
-                                                progress.diagnostic(
-                                                    ExtractionRunObservation::DocumentDiscoveryFailed {
-                                                        path: entry_path,
-                                                        detail: error.to_string(),
-                                                    },
+                                                progress.discovery_failed(
+                                                    entry_path,
+                                                    error.to_string(),
                                                 );
                                             }
                                         }
                                     }
                                     Err(error) => {
-                                        progress.diagnostic(
-                                            ExtractionRunObservation::DocumentDiscoveryFailed {
-                                                path: path.clone(),
-                                                detail: error.to_string(),
-                                            },
-                                        );
+                                        progress.discovery_failed(path.clone(), error.to_string());
                                     }
                                 }
                             }
                         }
                         Err(error) => {
-                            progress.diagnostic(
-                                ExtractionRunObservation::DocumentDiscoveryFailed {
-                                    path,
-                                    detail: error.to_string(),
-                                },
-                            );
+                            progress.discovery_failed(path, error.to_string());
                         }
                     }
                 }

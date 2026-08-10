@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::DocumentSearchSurface;
 use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
-use crate::extraction_run_observation::{
-    EpubDeclarationPurpose, ExtractionRunObservation, ExtractionRunObserver,
-};
+use crate::extraction_run_observation::ExtractionRunObserver;
 
 use self::progress::{
     DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
@@ -271,11 +269,7 @@ fn filter_epub_files(
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
                     // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    progress.diagnostic(ExtractionRunObservation::UnreadableEpubDeclarations {
-                        path,
-                        purpose: EpubDeclarationPurpose::Filtering,
-                        detail: error.to_string(),
-                    });
+                    progress.declarations_unreadable(path, error.to_string());
                     EpubFilterCheck::Rejected
                 }
             };
@@ -321,13 +315,7 @@ fn deduplicate_epubs_by_declarations(
             if epub_declarations.is_none() {
                 match declarations.acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
-                    Err(error) => {
-                        progress.diagnostic(ExtractionRunObservation::UnreadableEpubDeclarations {
-                            path: path.clone(),
-                            purpose: EpubDeclarationPurpose::Deduplication,
-                            detail: error.to_string(),
-                        })
-                    }
+                    Err(error) => progress.declarations_unreadable(path.clone(), error.to_string()),
                 }
             }
 
