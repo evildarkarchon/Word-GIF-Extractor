@@ -52,6 +52,31 @@ fn select_declared(
             recursive,
             output: None,
             epub_filter: filter,
+            epub_only: false,
+        },
+        surface,
+        declarations,
+        &mut observer,
+    );
+    (selected, observer)
+}
+
+/// Selects against a declared surface for a run in which only EPUBs are eligible.
+fn select_epub_only(
+    surface: &InMemorySearchSurface,
+    declarations: &DeclaredEpubDeclarations,
+    inputs: &[&str],
+    recursive: bool,
+) -> (Vec<SelectedDocument>, RecordingRunObserver) {
+    let inputs: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
+    let mut observer = RecordingRunObserver::default();
+    let selected = select_documents(
+        DocumentSelectionOptions {
+            inputs: &inputs,
+            recursive,
+            output: None,
+            epub_filter: &EpubFilter::default(),
+            epub_only: true,
         },
         surface,
         declarations,
@@ -593,6 +618,49 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
                 }
             ))
     );
+}
+
+#[test]
+fn epub_only_selection_diagnoses_a_requested_docx() {
+    let surface = InMemorySearchSurface::new().with_file("doc.docx");
+
+    let (selected, observer) = select_epub_only(
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &["doc.docx"],
+        false,
+    );
+
+    assert!(selected.is_empty());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: PathBuf::from("doc.docx")
+        }]
+    );
+}
+
+#[test]
+fn epub_only_selection_drops_a_traversed_docx_in_silence() {
+    // The user named a directory, not the DOCX inside it. Diagnosing every
+    // non-EPUB a traversal turns up would make a recursive run over a documents
+    // folder unreadable, so a traversed candidate is dropped the way a
+    // filter-rejected EPUB is: accounted for by the discovery count, and silent.
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/book.epub")
+        .with_file("root/document.docx");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "root/book.epub",
+        Some("Test Author"),
+        Some("Magic Book"),
+    );
+
+    let (selected, observer) = select_epub_only(&surface, &declarations, &["root"], true);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].get_display_name(), "Test Author - Magic Book");
+    assert!(observer.selection_diagnostics().is_empty());
 }
 
 #[test]

@@ -53,7 +53,7 @@ The per-run choice to extract a required EPUB cover instead of normal document i
 _Avoid_: Document extraction policy, cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A selected document's display identity is stable across EPUB cover policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A run may restrict eligibility to EPUB documents alone; selection is told that eligibility is restricted, never why, and reports each document it skips for that reason as a Document selection diagnostic. A selected document's display identity is stable across EPUB cover policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:

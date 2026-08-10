@@ -197,6 +197,12 @@ pub struct DocumentSelectionOptions<'a> {
     pub output: Option<&'a Path>,
     /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
+    /// Whether only EPUB documents are eligible for this run.
+    ///
+    /// Selection is told that eligibility is restricted, not why: the reason is
+    /// Document extraction's business, and a plain flag keeps selection's imports
+    /// answering what it depends on — the same rule ADR-0005 applies one level down.
+    pub epub_only: bool,
 }
 
 /// Private pre-eligibility representation used during filtering and deduplication.
@@ -262,15 +268,15 @@ pub fn select_documents(
 
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
-    let filtered = if !options.epub_filter.is_empty() {
-        filter_epub_files(
-            candidates,
-            options.epub_filter,
-            declarations,
-            &mut lifecycle,
-        )
+    let eligible = if options.epub_only {
+        retain_epub_candidates(candidates, options.inputs, &mut lifecycle)
     } else {
         candidates
+    };
+    let filtered = if !options.epub_filter.is_empty() {
+        filter_epub_files(eligible, options.epub_filter, declarations, &mut lifecycle)
+    } else {
+        eligible
     };
     let deduplicated = deduplicate_epubs_by_declarations(filtered, declarations, &mut lifecycle);
 
@@ -283,6 +289,37 @@ pub fn select_documents(
 /// Checks if a candidate is an EPUB file.
 fn is_epub(candidate: &DocumentCandidate) -> bool {
     matches!(candidate, DocumentCandidate::Epub { .. })
+}
+
+/// Drops every non-EPUB candidate for a run in which only EPUBs are eligible.
+///
+/// Eligibility is decided here rather than inside Document discovery, which
+/// yields supported candidates and owns no filter. Discovery therefore still
+/// counts a document it found and this stage removes it, which is what keeps the
+/// discovery count a fact about the search rather than about the run's policy.
+///
+/// Only inputs the user named are diagnosed. A path swept up by directory
+/// traversal is dropped in silence, matching how an EPUB rejected by
+/// [`EpubFilter`] is dropped: reporting one line per traversal hit would make a
+/// recursive run over a large tree unreadable. Requested file inputs reach
+/// discovery verbatim, so comparing against them is exact rather than heuristic.
+fn retain_epub_candidates(
+    candidates: Vec<DocumentCandidate>,
+    requested_inputs: &[PathBuf],
+    lifecycle: &mut DocumentSelectionLifecycle<'_>,
+) -> Vec<DocumentCandidate> {
+    let (epub_candidates, skipped): (Vec<_>, Vec<_>) = candidates.into_iter().partition(is_epub);
+
+    for candidate in skipped {
+        let DocumentCandidate::Docx { path } = candidate else {
+            continue;
+        };
+        if requested_inputs.contains(&path) {
+            lifecycle.skipped_non_epub_input(path);
+        }
+    }
+
+    epub_candidates
 }
 
 /// Filters EPUB files by title and creator declarations while passing non-EPUB files through.

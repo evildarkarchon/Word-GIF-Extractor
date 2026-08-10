@@ -85,6 +85,7 @@ pub fn run(
             recursive,
             output: output.as_deref(),
             epub_filter: &epub_filter,
+            epub_only: cover_only,
         },
         &FilesystemSearchSurface,
         &EpubFileDeclarations,

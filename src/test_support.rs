@@ -624,6 +624,7 @@ fn observation_kind(observation: &ExtractionRunObservation) -> ObservationKind {
             ObservationKind::SelectionProgress
         }
         ExtractionRunObservation::MissingInput { .. }
+        | ExtractionRunObservation::SkippedNonEpubInput { .. }
         | ExtractionRunObservation::DocumentDiscoveryFailed { .. }
         | ExtractionRunObservation::UnreadableEpubDeclarations { .. } => {
             ObservationKind::SelectionDiagnostic

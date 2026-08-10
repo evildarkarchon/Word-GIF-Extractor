@@ -1,5 +1,11 @@
 # Let the absence of a cover policy be the absence of a value
 
+> **Superseded in part by ADR-0011.** The decision recorded here — cover intent as
+> `Option<EpubCoverPolicy>`, reaching only the EPUB arm — stands. The fifth paragraph
+> below is wrong: it treats "a cover-only run still emits a DOCX's normal images" as
+> intended behaviour worth re-pinning, when that was the bug the option shape existed
+> to make fixable. `--cover-only` now selects EPUB documents only.
+
 `DocumentExtractionPolicy` had two variants, `NormalImages` and `EpubCover { fallback_to_normal_images }`, and one of them named an absence. A run that wanted normal images was not a run without a cover decision; it was a run carrying a value that said "no cover decision", and that value was as handable as any other. It got handed: `DocumentExtraction` stored it as a field and the dispatch passed it only to the EPUB arm, so the DOCX arm dropped a per-run user choice on the floor with no warning and no diagnostic. Nothing in the type objected, because there was always something to drop. The type is replaced by `EpubCoverPolicy` with variants `CoverOnly` and `CoverThenNormalImages`, carried as `Option<EpubCoverPolicy>`. `None` is the request for normal images. The DOCX arm cannot drop a cover policy because in a normal-images run there is no value, and in a cover run the value never travels down that arm.
 
 The three-variant alternative — keep one enum, add no `Option`, and simply not pass it to DOCX — was rejected, and it is worth being precise about why, because it is what the code did. It is the same runtime behaviour. What it cannot do is make the omission visible: a reader of the dispatch sees a value in scope and one arm that ignores it, and has to know that ignoring it is correct. Under the `Option`, the EPUB arm's exclusive access to cover intent is the only shape the code can take. This follows ADR-0007's rule one level up: a value should mean one thing, and a variant that means "this value does not apply" means the value applies everywhere and matters somewhere.

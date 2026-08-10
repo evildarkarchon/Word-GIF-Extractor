@@ -406,6 +406,13 @@ pub enum ExtractionRunObservation {
     },
     /// A requested input path does not exist and was skipped.
     MissingInput { path: PathBuf },
+    /// A requested input was skipped because only EPUB documents are eligible.
+    ///
+    /// The fact names what was skipped, never why eligibility was restricted:
+    /// Document selection is not told the reason. Only inputs the user named
+    /// reach this variant — documents dropped during directory traversal are
+    /// accounted for by the discovery counters, as filtered-out EPUBs are.
+    SkippedNonEpubInput { path: PathBuf },
     /// A Document discovery path could not be inspected; detail stays presentation-neutral.
     DocumentDiscoveryFailed { path: PathBuf, detail: String },
     /// EPUB declarations could not be read for the stated selection purpose.

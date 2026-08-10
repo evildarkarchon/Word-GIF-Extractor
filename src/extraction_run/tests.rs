@@ -373,14 +373,13 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 }
 
 #[test]
-fn docx_in_a_cover_only_run_still_emits_its_normal_images() {
-    // Cover intent no longer reaches the DOCX arm at all — a cover policy is a
-    // value only the EPUB arm receives. That is a structural fact and needs no
-    // test. What still needs one is the user-visible consequence: a cover-only
-    // run over mixed kinds must not silence the kind that has no covers. This
-    // replaces the deleted `docx_uses_normal_images_when_policy_requests_an_epub_cover`,
-    // which could only ask the question of a single document.
-    let temp_dir = temp_test_dir("run", "cover-only-mixed-kinds");
+fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
+    // --cover-only extracts EPUB covers, and a DOCX has no cover to extract, so
+    // it is not eligible work for the run at all. Selection drops it before the
+    // run counts documents, which is why `total` is 1 rather than 2 and the DOCX
+    // never reaches extraction. Naming the DOCX on the command line is what earns
+    // the diagnostic; a DOCX swept up by traversal is dropped silently.
+    let temp_dir = temp_test_dir("run", "cover-only-skips-docx");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let docx_path = temp_dir.join("sample.docx");
     let epub_path = temp_dir.join("book.epub");
@@ -409,13 +408,17 @@ fn docx_in_a_cover_only_run_still_emits_its_normal_images() {
     let outcome = run(request, &mut observer);
     let output = produced(&outcome);
 
-    assert_eq!(output.emitted_images(), 2);
-    assert_eq!(output.documents_with_output(), 2);
-    assert!(output_dir.join("sample.png").exists());
+    assert_eq!(output.output_kind(), ExtractionOutputKind::Covers);
+    assert_eq!(output.emitted_images(), 1);
+    assert_eq!(output.documents_with_output(), 1);
     assert!(output_dir.join("Test Creator - Covered.jpg").exists());
-    // One normal image anywhere in the run means the run did not produce covers
-    // only, so a mixed cover-only run classifies as Images.
-    assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
+    assert!(!output_dir.join("sample.png").exists());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: docx_path.clone()
+        }]
+    );
     assert_single_terminal_observation(&observer, &outcome);
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");

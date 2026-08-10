@@ -80,6 +80,17 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
             .on_observation(ExtractionRunObservation::MissingInput { path });
     }
 
+    /// Emits one requested input skipped for ineligibility, outside any phase.
+    ///
+    /// Eligibility is decided after discovery has closed and before filtering
+    /// opens, so like the two facts around it this one has no phase to be gated
+    /// by. It is the only diagnostic in this module that reports a decision
+    /// rather than a failure to observe; see ADR-0011.
+    pub(super) fn skipped_non_epub_input(&mut self, path: PathBuf) {
+        self.observer
+            .on_observation(ExtractionRunObservation::SkippedNonEpubInput { path });
+    }
+
     /// Emits one requested-input inspection failure, outside any phase and never silenced.
     ///
     /// Shares its name with the `DocumentDiscoveryProgress` method reporting the

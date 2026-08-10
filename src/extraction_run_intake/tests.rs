@@ -3,9 +3,7 @@
 
 use super::*;
 use crate::extraction_run::run;
-use crate::extraction_run_observation::{
-    ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput,
-};
+use crate::extraction_run_observation::{ExtractionRunOutcome, ProducedOutput};
 use crate::test_support::{SilentExtractionRunObserver, temp_test_dir, write_docx};
 use clap::Parser;
 use image::DynamicImage;
@@ -216,10 +214,11 @@ fn builds_validated_epub_cover_extraction_policy() {
         &["--cover-only", "--cover-fallback"],
     );
 
-    assert_eq!(
-        execute(prepared),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
-    );
+    // The only input is a DOCX, which a cover run does not consider eligible, so
+    // nothing survives selection and the run reports no documents rather than no
+    // output. The assertion is about intake having built a cover policy at all:
+    // without one the same DOCX would have been selected and extracted.
+    assert_eq!(execute(prepared), ExtractionRunOutcome::NoDocuments);
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
