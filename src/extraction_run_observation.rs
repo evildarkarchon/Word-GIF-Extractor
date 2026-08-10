@@ -45,12 +45,12 @@ pub enum DocumentDiscoveryScope {
     RecursiveDirectories,
 }
 
-/// Document selection use that could not read EPUB metadata.
+/// Document selection use that could not read EPUB declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EpubMetadataPurpose {
-    /// Metadata was needed to apply a requested EPUB filter.
+pub enum EpubDeclarationPurpose {
+    /// Declarations were needed to apply a requested EPUB filter.
     Filtering,
-    /// Metadata was needed to deduplicate EPUBs before filename fallback.
+    /// Declarations were needed to deduplicate EPUBs before filename fallback.
     Deduplication,
 }
 
@@ -408,10 +408,10 @@ pub enum ExtractionRunObservation {
     MissingInput { path: PathBuf },
     /// A Document discovery path could not be inspected; detail stays presentation-neutral.
     DocumentDiscoveryFailed { path: PathBuf, detail: String },
-    /// EPUB metadata could not be read for the stated selection purpose.
-    UnreadableEpubMetadata {
+    /// EPUB declarations could not be read for the stated selection purpose.
+    UnreadableEpubDeclarations {
         path: PathBuf,
-        purpose: EpubMetadataPurpose,
+        purpose: EpubDeclarationPurpose,
         detail: String,
     },
     /// Document extraction has started.

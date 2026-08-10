@@ -734,7 +734,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
 }
 
 #[test]
-fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication() {
+fn select_documents_reports_filtering_declaration_failure_and_skips_deduplication() {
     let surface = InMemorySearchSurface::new().with_file("invalid.epub");
     let declarations = DeclaredEpubDeclarations::new().with_unreadable("invalid.epub");
     let filter = EpubFilter {
@@ -748,9 +748,9 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
     assert!(selected.is_empty());
     assert!(matches!(
         observer.selection_diagnostics().as_slice(),
-        [ExtractionRunObservation::UnreadableEpubMetadata {
+        [ExtractionRunObservation::UnreadableEpubDeclarations {
             path,
-            purpose: EpubMetadataPurpose::Filtering,
+            purpose: EpubDeclarationPurpose::Filtering,
             detail,
         }] if path == Path::new("invalid.epub") && !detail.is_empty()
     ));
@@ -806,8 +806,8 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
                 fact,
                 ExtractionRunObservation::FilteringEpubs { .. }
                     | ExtractionRunObservation::EpubFilteringFinished { .. }
-                    | ExtractionRunObservation::UnreadableEpubMetadata {
-                        purpose: EpubMetadataPurpose::Filtering,
+                    | ExtractionRunObservation::UnreadableEpubDeclarations {
+                        purpose: EpubDeclarationPurpose::Filtering,
                         ..
                     }
             )
@@ -825,9 +825,9 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
     ));
     assert!(matches!(
         filtering_facts[1],
-        ExtractionRunObservation::UnreadableEpubMetadata {
+        ExtractionRunObservation::UnreadableEpubDeclarations {
                 path,
-                purpose: EpubMetadataPurpose::Filtering,
+                purpose: EpubDeclarationPurpose::Filtering,
                 ..
             } if path == Path::new("invalid.epub")
     ));
@@ -962,8 +962,8 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
             .iter()
             .filter(|diagnostic| matches!(
                 diagnostic,
-                ExtractionRunObservation::UnreadableEpubMetadata {
-                    purpose: EpubMetadataPurpose::Deduplication,
+                ExtractionRunObservation::UnreadableEpubDeclarations {
+                    purpose: EpubDeclarationPurpose::Deduplication,
                     ..
                 }
             ))

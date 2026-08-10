@@ -12,13 +12,13 @@ use crate::extraction_run_observation::{
 
 use super::EpubFilter;
 
-/// Semantic result of checking one EPUB against a metadata filter.
+/// Semantic result of checking one EPUB against an EPUB filter.
 pub(super) enum EpubFilterCheck {
     Matched,
     Rejected,
 }
 
-/// Semantic result of checking one EPUB during metadata deduplication.
+/// Semantic result of checking one EPUB during declaration deduplication.
 pub(super) enum EpubDeduplicationCheck {
     Unique,
     Duplicate,

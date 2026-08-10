@@ -33,7 +33,7 @@ use crate::extraction_run_intake::{
     Args, ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun,
 };
 use crate::extraction_run_observation::{
-    DocumentDiscoveryScope, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunObservation,
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionOutputKind, ExtractionRunObservation,
     ExtractionRunObserver, ExtractionRunOutcome,
 };
 
@@ -575,18 +575,18 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     ),
                 );
             }
-            ExtractionRunObservation::UnreadableEpubMetadata {
+            ExtractionRunObservation::UnreadableEpubDeclarations {
                 path,
                 purpose,
                 detail,
             } => match purpose {
-                EpubMetadataPurpose::Filtering => {
+                EpubDeclarationPurpose::Filtering => {
                     self.print_error_suspended(
                         self.epub_filter_pb.as_ref(),
                         &format!("Warning: Could not read {}: {}", path.display(), detail),
                     );
                 }
-                EpubMetadataPurpose::Deduplication => {
+                EpubDeclarationPurpose::Deduplication => {
                     self.print_error_suspended(
                         self.epub_dedup_pb.as_ref(),
                         &format!(

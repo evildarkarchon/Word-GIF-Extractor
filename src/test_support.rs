@@ -625,7 +625,7 @@ fn observation_kind(observation: &ExtractionRunObservation) -> ObservationKind {
         }
         ExtractionRunObservation::MissingInput { .. }
         | ExtractionRunObservation::DocumentDiscoveryFailed { .. }
-        | ExtractionRunObservation::UnreadableEpubMetadata { .. } => {
+        | ExtractionRunObservation::UnreadableEpubDeclarations { .. } => {
             ObservationKind::SelectionDiagnostic
         }
         ExtractionRunObservation::ExtractionStarted { .. }
