@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
-use super::DocumentExtractionPolicy;
+use super::EpubCoverPolicy;
 use crate::document_selection::SelectedEpub;
 use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
@@ -21,7 +21,10 @@ use self::resource_archive::{
     ResourceKey,
 };
 
-/// Consumes one authoritative Selected EPUB and applies its Document extraction policy.
+/// Consumes one authoritative Selected EPUB and applies any EPUB cover policy.
+///
+/// No cover policy means normal images, which is why this is the only document
+/// kind that receives the value at all.
 ///
 /// Retained declarations remain authoritative; when selection retained none, extraction
 /// retries declaration acquisition without revising the selected output placement or base
@@ -34,46 +37,50 @@ use self::resource_archive::{
 /// be opened, or collision-safe output emission cannot create or complete a file.
 pub(super) fn extract(
     document: SelectedEpub,
-    policy: DocumentExtractionPolicy,
+    cover_policy: Option<EpubCoverPolicy>,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
-    let (input_path, output_dir, base_name, retained_declarations) =
-        document.into_extraction_parts();
+    let (target, retained_declarations) = document.into_extraction_inputs();
+    let input_path = target.get_source();
+    let output_dir = target.get_placement().get_dir();
+    let base_name = target.get_placement().get_base_name();
     let acquired_declarations;
     let declarations = match retained_declarations.as_ref() {
         Some(declarations) => declarations,
         None => {
             acquired_declarations =
-                EpubDeclarations::acquire(&input_path).map_err(anyhow::Error::new)?;
+                EpubDeclarations::acquire(input_path).map_err(anyhow::Error::new)?;
             &acquired_declarations
         }
     };
     // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
     // even when declaration facts were retained earlier by Document selection.
-    EpubResourceArchive::open(&input_path, declarations.resources(), |mut archive| {
+    EpubResourceArchive::open(input_path, declarations.resources(), |mut archive| {
         let plan = archive
             .resources()
             .iter()
             .map(EpubImagePlan::from_catalog)
             .collect::<Vec<_>>();
-        match policy {
-            DocumentExtractionPolicy::NormalImages => extract_all_images(
+        match cover_policy {
+            None => extract_all_images(
                 &mut archive,
                 &plan,
                 &HashSet::new(),
-                &output_dir,
-                &base_name,
+                output_dir,
+                base_name,
                 pipeline,
             ),
-            DocumentExtractionPolicy::EpubCover {
-                fallback_to_normal_images,
-            } => {
+            Some(cover_policy) => {
+                // ADR-0005 keeps cover extraction taking a plain bool rather than a
+                // Document extraction type, so the fallback decision is flattened here.
+                let fallback_to_normal_images =
+                    matches!(cover_policy, EpubCoverPolicy::CoverThenNormalImages);
                 let candidates = cover_candidates(&plan);
                 let mut attempts = EpubCoverAttempts {
                     archive: &mut archive,
                     plan: &plan,
-                    output_base_dir: &output_dir,
-                    base_name: &base_name,
+                    output_base_dir: output_dir,
+                    base_name,
                     pipeline,
                 };
                 cover_extraction::extract_required_cover(

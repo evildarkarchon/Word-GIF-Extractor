@@ -51,6 +51,14 @@ word-image-extractor book.epub -f png,jpg
 | `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
+| `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
+| `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when it has no cover |
+
+## EPUB Covers
+
+`--cover-only` extracts one cover image per EPUB. It applies to EPUB files alone: `.docx` inputs are not eligible for a cover run and are skipped before extraction begins. A `.docx` you name on the command line is reported as skipped; one found while searching a directory is dropped without a message, the same way an EPUB that fails a title or author filter is.
+
+`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring `.docx` files back into a cover run.
 
 ## Conversion
 

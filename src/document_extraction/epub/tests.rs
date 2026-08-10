@@ -1,10 +1,12 @@
 //! Tests for EPUB file processing.
 
 use super::*;
-use crate::document_extraction::DocumentExtractionPolicy;
+use crate::document_extraction::EpubCoverPolicy;
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{
     DocumentSelectionOptions, EpubFilter, SelectedDocument, SelectedEpub, select_documents,
 };
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
 use crate::test_support::{
@@ -26,7 +28,10 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
             recursive: false,
             output: Some(output_dir),
             epub_filter: &EpubFilter::default(),
+            epub_only: false,
         },
+        &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     )
     .into_iter()
@@ -104,14 +109,8 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(
-        selected,
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
-        &pipeline,
-    )
-    .expect("a declared cover should be acquired and emitted");
+    let result = extract(selected, Some(EpubCoverPolicy::CoverOnly), &pipeline)
+        .expect("a declared cover should be acquired and emitted");
 
     assert_eq!(result.counts.extracted, 1);
     assert!(!result.has_normal_image_output());
@@ -152,8 +151,7 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("EPUB extraction should succeed");
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
@@ -184,8 +182,7 @@ fn extracts_epub_resource_by_magic_without_declared_image_hints() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("EPUB extraction should succeed");
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
@@ -214,8 +211,8 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("a missing resource should not abort the EPUB");
+    let result =
+        extract(selected, None, &pipeline).expect("a missing resource should not abort the EPUB");
 
     assert_eq!(result.counts.extracted, 1);
     assert!(matches!(
@@ -262,8 +259,7 @@ fn epub_batch_output_uses_resolved_path_order() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("EPUB extraction should succeed");
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
     assert_eq!(result.counts.extracted, 2);
     assert_eq!(
@@ -306,8 +302,7 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("EPUB extraction should succeed");
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
     assert_eq!(result.counts.extracted, 2);
     assert_eq!(
@@ -340,7 +335,7 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
+    let result = extract(selected, None, &pipeline)
         .expect("percent-decoded lookup should preserve EPUB crate behavior");
 
     assert_eq!(result.counts.extracted, 1);
@@ -377,8 +372,8 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
     ));
     let selected = select_epub(&input_path, &output_dir);
 
-    let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect("exact ZIP lookup should take precedence");
+    let result =
+        extract(selected, None, &pipeline).expect("exact ZIP lookup should take precedence");
 
     assert_eq!(result.counts.extracted, 1);
     assert_eq!(
@@ -404,8 +399,8 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
         None,
     ));
 
-    let failure = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect_err("archive-open failure should be fatal");
+    let failure =
+        extract(selected, None, &pipeline).expect_err("archive-open failure should be fatal");
 
     assert!(
         failure
@@ -434,8 +429,8 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
         None,
     ));
 
-    let failure = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
-        .expect_err("archive-parse failure should be fatal");
+    let failure =
+        extract(selected, None, &pipeline).expect_err("archive-parse failure should be fatal");
 
     assert!(
         failure
@@ -490,9 +485,7 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
 
     let result = extract(
         selected,
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: true,
-        },
+        Some(EpubCoverPolicy::CoverThenNormalImages),
         &pipeline,
     )
     .expect("one failed resolved cover should allow batch fallback");

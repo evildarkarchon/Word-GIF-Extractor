@@ -9,46 +9,41 @@ use std::path::{Path, PathBuf};
 use crate::document_selection::SelectedDocument;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
 
-/// Valid per-run choices for normal images versus EPUB cover extraction.
+/// The per-run choice to extract a required EPUB cover, and its fallback.
+///
+/// There is no variant for "extract normal images": that is the absence of a
+/// cover policy, so a run seeking no covers carries no value here at all. See
+/// ADR-0010 — the alternative three-way enum is what let cover intent reach a
+/// document kind that has no covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DocumentExtractionPolicy {
-    /// Extract normal document images.
-    NormalImages,
-    /// Extract one required EPUB cover, optionally falling back to normal images.
-    EpubCover {
-        /// Whether an EPUB without a usable cover should emit normal images.
-        fallback_to_normal_images: bool,
-    },
-}
-
-impl DocumentExtractionPolicy {
-    /// Returns whether EPUB documents should use required-cover extraction.
-    fn is_epub_cover_only(self) -> bool {
-        matches!(self, Self::EpubCover { .. })
-    }
+pub(crate) enum EpubCoverPolicy {
+    /// Extract one required cover and emit nothing when there is none.
+    CoverOnly,
+    /// Extract one required cover, falling back to normal images when there is none.
+    CoverThenNormalImages,
 }
 
 /// Immutable Document extraction module configured for one Extraction run.
 pub(crate) struct DocumentExtraction {
-    policy: DocumentExtractionPolicy,
+    cover_policy: Option<EpubCoverPolicy>,
     image_write_pipeline: ImageWritePipeline,
 }
 
 impl DocumentExtraction {
     /// Binds Document extraction and Image write policy for every selected document.
     pub(crate) fn new(
-        policy: DocumentExtractionPolicy,
+        cover_policy: Option<EpubCoverPolicy>,
         image_write_pipeline: ImageWritePipeline,
     ) -> Self {
         Self {
-            policy,
+            cover_policy,
             image_write_pipeline,
         }
     }
 
     /// Returns whether this module is configured to extract EPUB covers.
     pub(crate) fn is_epub_cover_extraction_configured(&self) -> bool {
-        self.policy.is_epub_cover_only()
+        self.cover_policy.is_some()
     }
 
     /// Reports which optional outcome fact groups the bound workflow permits.
@@ -74,11 +69,17 @@ impl DocumentExtraction {
     pub(crate) fn extract(&self, document: SelectedDocument) -> DocumentExtractionOutcome {
         let result = match document {
             SelectedDocument::Docx(document) => {
-                let (path, output_dir, base_name) = document.into_extraction_parts();
-                docx::process_file(&path, &output_dir, &base_name, &self.image_write_pipeline)
+                let target = document.into_extraction_inputs();
+                let placement = target.get_placement();
+                docx::process_file(
+                    target.get_source(),
+                    placement.get_dir(),
+                    placement.get_base_name(),
+                    &self.image_write_pipeline,
+                )
             }
             SelectedDocument::Epub(document) => {
-                epub::extract(document, self.policy, &self.image_write_pipeline)
+                epub::extract(document, self.cover_policy, &self.image_write_pipeline)
             }
         };
 

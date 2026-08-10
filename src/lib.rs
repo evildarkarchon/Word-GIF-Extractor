@@ -34,6 +34,7 @@
 
 mod conversion;
 mod document_extraction;
+mod document_search_surface;
 mod document_selection;
 mod epub_declarations;
 mod extraction_run;

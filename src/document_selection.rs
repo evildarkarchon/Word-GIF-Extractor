@@ -6,10 +6,9 @@ mod progress;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::epub_declarations::EpubDeclarations;
-use crate::extraction_run_observation::{
-    EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
-};
+use crate::document_search_surface::DocumentSearchSurface;
+use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
+use crate::extraction_run_observation::ExtractionRunObserver;
 
 use self::progress::{
     DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
@@ -44,6 +43,64 @@ impl EpubFilter {
     }
 }
 
+/// Where one selected document's emitted files go and what they are named.
+///
+/// The output directory and the output filename stem are one value because they
+/// are one decision: Document selection fixes both before extraction begins, and
+/// no consumer wants one without the other.
+#[derive(Debug)]
+pub(crate) struct OutputPlacement {
+    dir: PathBuf,
+    base_name: String,
+}
+
+impl OutputPlacement {
+    /// Records where one document's output goes and what its files are named.
+    fn new(dir: PathBuf, base_name: String) -> Self {
+        Self { dir, base_name }
+    }
+
+    /// Returns the directory that receives this document's emitted files.
+    pub(crate) fn get_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Returns the output filename stem shared by this document's emitted files.
+    pub(crate) fn get_base_name(&self) -> &str {
+        &self.base_name
+    }
+}
+
+/// The kind-independent facts Document extraction needs about one selected document.
+///
+/// Source identity and output placement are separate types rather than two
+/// same-typed paths, because the default placement is derived from the source —
+/// they share a prefix, so a swapped pair reads as plausible. Nesting the output
+/// facts leaves one path in the value, which is what makes the swap a compile
+/// error rather than an I/O error three modules away.
+#[derive(Debug)]
+pub(crate) struct ExtractionTarget {
+    source: PathBuf,
+    placement: OutputPlacement,
+}
+
+impl ExtractionTarget {
+    /// Pairs a selected document's source identity with its output placement.
+    fn new(source: PathBuf, placement: OutputPlacement) -> Self {
+        Self { source, placement }
+    }
+
+    /// Returns the path this document was selected at.
+    pub(crate) fn get_source(&self) -> &Path {
+        &self.source
+    }
+
+    /// Returns where this document's output goes and what it is named.
+    pub(crate) fn get_placement(&self) -> &OutputPlacement {
+        &self.placement
+    }
+}
+
 /// Immutable handoff produced by Document selection for one eligible document.
 ///
 /// The authoritative variant is consumed by Document extraction exactly once.
@@ -56,20 +113,20 @@ pub(crate) enum SelectedDocument {
 }
 
 /// Opaque DOCX payload whose fields and construction belong to Document selection.
+///
+/// `display_name` stays outside the target because Document extraction never sees
+/// it: the Extraction run reads it before handoff. Sharing it to dedupe a fourth
+/// field would cost the target its meaning.
 #[derive(Debug)]
 pub(crate) struct SelectedDocx {
-    path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    target: ExtractionTarget,
     display_name: String,
 }
 
 /// Opaque EPUB payload whose fields and construction belong to Document selection.
 #[derive(Debug)]
 pub(crate) struct SelectedEpub {
-    path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    target: ExtractionTarget,
     display_name: String,
     epub_declarations: Option<EpubDeclarations>,
 }
@@ -78,8 +135,8 @@ impl SelectedDocument {
     /// Returns the source path visible to the Extraction run before handoff.
     pub(crate) fn get_path(&self) -> &Path {
         match self {
-            Self::Docx(document) => &document.path,
-            Self::Epub(document) => &document.path,
+            Self::Docx(document) => document.target.get_source(),
+            Self::Epub(document) => document.target.get_source(),
         }
     }
 
@@ -94,34 +151,28 @@ impl SelectedDocument {
 
 impl SelectedDocx {
     /// Creates a DOCX handoff after selection has established eligibility.
-    fn new(path: PathBuf, output_dir: PathBuf, base_name: String, display_name: String) -> Self {
+    fn new(target: ExtractionTarget, display_name: String) -> Self {
         Self {
-            path,
-            output_dir,
-            base_name,
+            target,
             display_name,
         }
     }
 
     /// Consumes the DOCX payload into the facts owned by Document extraction.
-    pub(crate) fn into_extraction_parts(self) -> (PathBuf, PathBuf, String) {
-        (self.path, self.output_dir, self.base_name)
+    pub(crate) fn into_extraction_inputs(self) -> ExtractionTarget {
+        self.target
     }
 }
 
 impl SelectedEpub {
     /// Creates an EPUB handoff after selection has established eligibility.
     fn new(
-        path: PathBuf,
-        output_dir: PathBuf,
-        base_name: String,
+        target: ExtractionTarget,
         display_name: String,
         epub_declarations: Option<EpubDeclarations>,
     ) -> Self {
         Self {
-            path,
-            output_dir,
-            base_name,
+            target,
             display_name,
             epub_declarations,
         }
@@ -131,15 +182,8 @@ impl SelectedEpub {
     ///
     /// The selected identity and output placement remain fixed even when extraction must
     /// reacquire declarations because selection retained none.
-    pub(crate) fn into_extraction_parts(
-        self,
-    ) -> (PathBuf, PathBuf, String, Option<EpubDeclarations>) {
-        (
-            self.path,
-            self.output_dir,
-            self.base_name,
-            self.epub_declarations,
-        )
+    pub(crate) fn into_extraction_inputs(self) -> (ExtractionTarget, Option<EpubDeclarations>) {
+        (self.target, self.epub_declarations)
     }
 }
 
@@ -153,6 +197,26 @@ pub struct DocumentSelectionOptions<'a> {
     pub output: Option<&'a Path>,
     /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
+    /// Whether only EPUB documents are eligible for this run.
+    ///
+    /// Selection is told that eligibility is restricted, not why: the reason is
+    /// Document extraction's business, and a plain flag keeps selection's imports
+    /// answering what it depends on — the same rule ADR-0005 applies one level down.
+    pub epub_only: bool,
+}
+
+/// How one candidate reached Document discovery's output.
+///
+/// Discovery is the only stage that knows this, so it records it rather than
+/// leaving later stages to infer it. Path equality cannot answer the question:
+/// naming a directory and a file inside it discovers that file twice, and the two
+/// candidates are equal as paths while only one of them was named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateOrigin {
+    /// The user named this exact path as an input.
+    Requested,
+    /// A directory search turned the path up.
+    Traversed,
 }
 
 /// Private pre-eligibility representation used during filtering and deduplication.
@@ -160,25 +224,28 @@ pub struct DocumentSelectionOptions<'a> {
 enum DocumentCandidate {
     Docx {
         path: PathBuf,
+        origin: CandidateOrigin,
     },
     Epub {
         path: PathBuf,
+        origin: CandidateOrigin,
         epub_declarations: Option<EpubDeclarations>,
     },
 }
 
 impl DocumentCandidate {
     /// Classifies a supported path into its private pre-eligibility variant.
-    fn from_path(path: PathBuf) -> Option<Self> {
+    fn from_path(path: PathBuf, origin: CandidateOrigin) -> Option<Self> {
         match path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_lowercase)
             .as_deref()
         {
-            Some("docx") => Some(Self::Docx { path }),
+            Some("docx") => Some(Self::Docx { path, origin }),
             Some("epub") => Some(Self::Epub {
                 path,
+                origin,
                 epub_declarations: None,
             }),
             _ => None,
@@ -198,20 +265,37 @@ impl DocumentCandidate {
 /// Selection reports into the Extraction run observation stream directly. The
 /// observer is informational: callbacks cannot cancel selection or alter which
 /// documents are returned.
+///
+/// Every observation of the world is made through `surface` and every EPUB
+/// declaration through `declarations`. ADR-0008 keeps both as separate
+/// parameters rather than fields on [`DocumentSelectionOptions`]: those are the
+/// per-run policy choices, and neither a way of seeing the world nor a way of
+/// reading declarations is one of them.
+///
+/// Substituting `declarations` cannot change ADR-0002's retention rule. This
+/// function decides when a declaration is acquired and when a retained one is
+/// reused; the source only answers.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
+    surface: &dyn DocumentSearchSurface,
+    declarations: &dyn EpubDeclarationSource,
     observer: &mut impl ExtractionRunObserver,
 ) -> Vec<SelectedDocument> {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
 
     let candidates =
-        discovery::discover_documents(options.inputs, options.recursive, &mut lifecycle);
-    let filtered = if !options.epub_filter.is_empty() {
-        filter_epub_files(candidates, options.epub_filter, &mut lifecycle)
+        discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
+    let eligible = if options.epub_only {
+        retain_epub_candidates(candidates, &mut lifecycle)
     } else {
         candidates
     };
-    let deduplicated = deduplicate_epubs_by_declarations(filtered, &mut lifecycle);
+    let filtered = if !options.epub_filter.is_empty() {
+        filter_epub_files(eligible, options.epub_filter, declarations, &mut lifecycle)
+    } else {
+        eligible
+    };
+    let deduplicated = deduplicate_epubs_by_declarations(filtered, declarations, &mut lifecycle);
 
     deduplicated
         .into_iter()
@@ -224,10 +308,43 @@ fn is_epub(candidate: &DocumentCandidate) -> bool {
     matches!(candidate, DocumentCandidate::Epub { .. })
 }
 
+/// Drops every non-EPUB candidate for a run in which only EPUBs are eligible.
+///
+/// Eligibility is decided here rather than inside Document discovery, which
+/// yields supported candidates and owns no filter. Discovery therefore still
+/// counts a document it found and this stage removes it, which is what keeps the
+/// discovery count a fact about the search rather than about the run's policy.
+///
+/// Only inputs the user named are diagnosed. A path swept up by directory
+/// traversal is dropped in silence, matching how an EPUB rejected by
+/// [`EpubFilter`] is dropped: reporting one line per traversal hit would make a
+/// recursive run over a large tree unreadable. Which candidate was named is read
+/// off the candidate's own [`CandidateOrigin`] rather than recovered by comparing
+/// paths against the requested inputs: a run naming both a directory and a file
+/// inside it discovers that file twice, and both copies match the named path.
+fn retain_epub_candidates(
+    candidates: Vec<DocumentCandidate>,
+    lifecycle: &mut DocumentSelectionLifecycle<'_>,
+) -> Vec<DocumentCandidate> {
+    let (epub_candidates, skipped): (Vec<_>, Vec<_>) = candidates.into_iter().partition(is_epub);
+
+    for candidate in skipped {
+        let DocumentCandidate::Docx { path, origin } = candidate else {
+            continue;
+        };
+        if origin == CandidateOrigin::Requested {
+            lifecycle.skipped_non_epub_input(path);
+        }
+    }
+
+    epub_candidates
+}
+
 /// Filters EPUB files by title and creator declarations while passing non-EPUB files through.
 fn filter_epub_files(
     files: Vec<DocumentCandidate>,
     filter: &EpubFilter,
+    declarations: &dyn EpubDeclarationSource,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     // Separate EPUB files from other document types.
@@ -238,13 +355,14 @@ fn filter_epub_files(
         let mut matching_epubs = Vec::new();
 
         for candidate in epub_files {
-            let DocumentCandidate::Epub { path, .. } = candidate else {
+            let DocumentCandidate::Epub { path, origin, .. } = candidate else {
                 continue;
             };
-            let outcome = match EpubDeclarations::acquire(&path) {
+            let outcome = match declarations.acquire(&path) {
                 Ok(declarations) if matches_filter(&declarations, filter) => {
                     matching_epubs.push(DocumentCandidate::Epub {
                         path,
+                        origin,
                         epub_declarations: Some(declarations),
                     });
                     EpubFilterCheck::Matched
@@ -252,11 +370,7 @@ fn filter_epub_files(
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
                     // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
-                        path,
-                        purpose: EpubMetadataPurpose::Filtering,
-                        detail: error.to_string(),
-                    });
+                    progress.declarations_unreadable(path, error.to_string());
                     EpubFilterCheck::Rejected
                 }
             };
@@ -277,6 +391,7 @@ fn filter_epub_files(
 /// deduplicated by filename.
 fn deduplicate_epubs_by_declarations(
     files: Vec<DocumentCandidate>,
+    declarations: &dyn EpubDeclarationSource,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
@@ -291,21 +406,18 @@ fn deduplicate_epubs_by_declarations(
         for candidate in epub_files {
             let DocumentCandidate::Epub {
                 path,
+                origin,
                 mut epub_declarations,
             } = candidate
             else {
                 continue;
             };
+            // ADR-0002: declarations retained by filtering are authoritative for the
+            // run, so deduplication asks the source only when it has none.
             if epub_declarations.is_none() {
-                match EpubDeclarations::acquire(&path) {
+                match declarations.acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
-                    Err(error) => {
-                        progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
-                            path: path.clone(),
-                            purpose: EpubMetadataPurpose::Deduplication,
-                            detail: error.to_string(),
-                        })
-                    }
+                    Err(error) => progress.declarations_unreadable(path.clone(), error.to_string()),
                 }
             }
 
@@ -324,6 +436,7 @@ fn deduplicate_epubs_by_declarations(
                 entry.insert(path.clone());
                 unique_epubs.push(DocumentCandidate::Epub {
                     path,
+                    origin,
                     epub_declarations,
                 });
                 EpubDeduplicationCheck::Unique
@@ -385,15 +498,19 @@ fn selected_document_from_candidate(
     global_output: Option<&Path>,
 ) -> SelectedDocument {
     match candidate {
-        DocumentCandidate::Docx { path } => {
+        DocumentCandidate::Docx { path, .. } => {
             let output_dir = resolve_output_dir(&path, global_output);
             let base_name = fallback_base_name(&path);
             let display_name = fallback_display_name(&path);
-            SelectedDocument::Docx(SelectedDocx::new(path, output_dir, base_name, display_name))
+            SelectedDocument::Docx(SelectedDocx::new(
+                ExtractionTarget::new(path, OutputPlacement::new(output_dir, base_name)),
+                display_name,
+            ))
         }
         DocumentCandidate::Epub {
             path,
             epub_declarations,
+            ..
         } => {
             let output_dir = resolve_output_dir(&path, global_output);
             let fallback_base_name = fallback_base_name(&path);
@@ -422,9 +539,7 @@ fn selected_document_from_candidate(
             };
 
             SelectedDocument::Epub(SelectedEpub::new(
-                path,
-                output_dir,
-                base_name,
+                ExtractionTarget::new(path, OutputPlacement::new(output_dir, base_name)),
                 display_name,
                 epub_declarations,
             ))

@@ -373,6 +373,58 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 }
 
 #[test]
+fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
+    // --cover-only extracts EPUB covers, and a DOCX has no cover to extract, so
+    // it is not eligible work for the run at all. Selection drops it before the
+    // run counts documents, which is why `total` is 1 rather than 2 and the DOCX
+    // never reaches extraction. Naming the DOCX on the command line is what earns
+    // the diagnostic; a DOCX swept up by traversal is dropped silently.
+    let temp_dir = temp_test_dir("run", "cover-only-skips-docx");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let docx_path = temp_dir.join("sample.docx");
+    let epub_path = temp_dir.join("book.epub");
+    let output_dir = temp_dir.join("output");
+    write_docx(
+        &docx_path,
+        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
+    );
+    write_epub_document(
+        &epub_path,
+        "Test Creator",
+        "Covered",
+        Some(("cover.jpg", b"\xFF\xD8\xFFcover", true)),
+    );
+
+    let request = prepare_request(vec![
+        "test".to_string(),
+        docx_path.to_string_lossy().into_owned(),
+        epub_path.to_string_lossy().into_owned(),
+        "--output".to_string(),
+        output_dir.to_string_lossy().into_owned(),
+        "--cover-only".to_string(),
+    ]);
+    let mut observer = RecordingRunObserver::default();
+
+    let outcome = run(request, &mut observer);
+    let output = produced(&outcome);
+
+    assert_eq!(output.output_kind(), ExtractionOutputKind::Covers);
+    assert_eq!(output.emitted_images(), 1);
+    assert_eq!(output.documents_with_output(), 1);
+    assert!(output_dir.join("Test Creator - Covered.jpg").exists());
+    assert!(!output_dir.join("sample.png").exists());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: docx_path.clone()
+        }]
+    );
+    assert_single_terminal_observation(&observer, &outcome);
+
+    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+}
+
+#[test]
 fn normal_document_output_returns_produced_images() {
     let temp_dir = temp_test_dir("run", "normal-output");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");

@@ -33,7 +33,7 @@ use crate::extraction_run_intake::{
     Args, ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun,
 };
 use crate::extraction_run_observation::{
-    DocumentDiscoveryScope, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunObservation,
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionOutputKind, ExtractionRunObservation,
     ExtractionRunObserver, ExtractionRunOutcome,
 };
 
@@ -552,14 +552,26 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     }
                 }
             }
-            // The three arms below render structured Document selection
+            // The four arms below render structured Document selection
             // diagnostics with terminal wording. Each suspends the progress bar
             // belonging to the phase that produced it, because a diagnostic can
             // arrive while that bar is live and the next redraw would otherwise
-            // corrupt or overwrite the line.
+            // corrupt or overwrite the line. The two that report on requested
+            // inputs are the exceptions: neither has a phase, so neither has a
+            // bar to suspend.
             ExtractionRunObservation::MissingInput { path } => {
                 self.output.print_error(&format!(
                     "Warning: Input path does not exist: {}",
+                    path.display()
+                ));
+            }
+            ExtractionRunObservation::SkippedNonEpubInput { path } => {
+                // Wording names the eligibility rule rather than the flag that
+                // caused it: selection reports that only EPUBs were eligible and
+                // does not know why, so naming --cover-only here would put a fact
+                // in the sentence that no part of the run actually asserted.
+                self.output.print_error(&format!(
+                    "Warning: Skipped {}: this run extracts EPUB documents only",
                     path.display()
                 ));
             }
@@ -575,18 +587,18 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     ),
                 );
             }
-            ExtractionRunObservation::UnreadableEpubMetadata {
+            ExtractionRunObservation::UnreadableEpubDeclarations {
                 path,
                 purpose,
                 detail,
             } => match purpose {
-                EpubMetadataPurpose::Filtering => {
+                EpubDeclarationPurpose::Filtering => {
                     self.print_error_suspended(
                         self.epub_filter_pb.as_ref(),
                         &format!("Warning: Could not read {}: {}", path.display(), detail),
                     );
                 }
-                EpubMetadataPurpose::Deduplication => {
+                EpubDeclarationPurpose::Deduplication => {
                     self.print_error_suspended(
                         self.epub_dedup_pb.as_ref(),
                         &format!(

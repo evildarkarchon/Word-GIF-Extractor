@@ -16,7 +16,7 @@ use clap::{Parser, ValueEnum};
 use crate::conversion::{
     ConversionPolicy, ConversionPolicyError, ConversionRequest, ConversionTarget,
 };
-use crate::document_extraction::DocumentExtractionPolicy;
+use crate::document_extraction::EpubCoverPolicy;
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
@@ -209,12 +209,13 @@ pub fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeE
     };
 
     let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
-    let document_extraction_policy = if cover_only {
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: cover_fallback,
-        }
-    } else {
-        DocumentExtractionPolicy::NormalImages
+    // A run that seeks no covers carries no cover policy: the absence is the
+    // request for normal images, so there is no value to hand a document kind
+    // that has no covers. See ADR-0010.
+    let epub_cover_policy = match (cover_only, cover_fallback) {
+        (false, _) => None,
+        (true, false) => Some(EpubCoverPolicy::CoverOnly),
+        (true, true) => Some(EpubCoverPolicy::CoverThenNormalImages),
     };
 
     // Intake selects all three Image write policy ingredients, so it assembles the
@@ -227,7 +228,7 @@ pub fn prepare(args: Args) -> Result<PreparedExtractionRun, ExtractionRunIntakeE
         recursive,
         output,
         EpubFilter { title, author },
-        document_extraction_policy,
+        epub_cover_policy,
         image_write_policy,
     );
     let mut notices = Vec::new();

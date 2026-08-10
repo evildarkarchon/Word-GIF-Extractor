@@ -56,6 +56,39 @@ impl EpubDeclarations {
     pub(crate) fn resources(&self) -> &[EpubResourceDeclaration] {
         &self.resources
     }
+
+    /// Builds declarations directly, for tests whose subject never reads an archive.
+    #[cfg(test)]
+    pub(crate) fn declared(creator: Option<&str>, title: Option<&str>) -> Self {
+        Self {
+            title: title.map(str::to_string),
+            creator: creator.map(str::to_string),
+            cover_id: None,
+            resources: Vec::new(),
+        }
+    }
+}
+
+/// Where Document selection acquires payload-free EPUB declarations from.
+///
+/// ADR-0008 makes this its own seam rather than part of the Document search
+/// surface: acquiring declarations is an EPUB parse and not an observation of
+/// the world, and ADR-0001 keeps it separate from payload reads. Substituting it
+/// changes *how* declarations are acquired and never *when* or *how often* —
+/// ADR-0002's retention rule is a property of Document selection, not of the
+/// source it asks.
+pub(crate) trait EpubDeclarationSource {
+    /// Acquires all declaration facts for one EPUB.
+    fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError>;
+}
+
+/// The declaration source that reads real EPUB files.
+pub(crate) struct EpubFileDeclarations;
+
+impl EpubDeclarationSource for EpubFileDeclarations {
+    fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError> {
+        EpubDeclarations::acquire(path)
+    }
 }
 
 /// Payload-free declaration of one EPUB manifest resource.
@@ -106,6 +139,12 @@ impl EpubDeclarationError {
     /// Preserves the EPUB parser failure for workflow-specific translation.
     fn new(source: DocError) -> Self {
         Self { source }
+    }
+
+    /// Builds the failure a declaration source reports for an unreadable EPUB.
+    #[cfg(test)]
+    pub(crate) fn unreadable() -> Self {
+        Self::new(DocError::InvalidEpub)
     }
 }
 
