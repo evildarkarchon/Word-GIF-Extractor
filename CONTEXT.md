@@ -69,7 +69,7 @@ The immutable handoff produced by Document selection for one eligible document, 
 _Avoid_: Extraction work item, selected file, document task
 
 **Document selection progress**:
-The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. It excludes per-document extraction status and terminal presentation details.
+The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. Discovery has no denominator until it has finished finding, so it reports only a growing count, while filtering and deduplication run against a known candidate set every member of which must be accounted for before their finished status is meaningful. It excludes per-document extraction status and terminal presentation details.
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:
