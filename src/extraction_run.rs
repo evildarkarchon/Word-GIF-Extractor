@@ -12,6 +12,7 @@ use crate::document_extraction::{
 };
 use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter};
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::extraction_run_observation::{
     ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
     ExtractionRunOutcomeAccumulator,
@@ -91,6 +92,7 @@ pub fn run(
             epub_filter: &epub_filter,
         },
         &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut *observer,
     );
 

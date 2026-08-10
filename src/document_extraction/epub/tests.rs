@@ -6,6 +6,7 @@ use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{
     DocumentSelectionOptions, EpubFilter, SelectedDocument, SelectedEpub, select_documents,
 };
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
 use crate::test_support::{
@@ -29,6 +30,7 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
             epub_filter: &EpubFilter::default(),
         },
         &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     )
     .into_iter()

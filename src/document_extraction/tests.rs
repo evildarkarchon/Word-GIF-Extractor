@@ -4,6 +4,7 @@ use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
@@ -45,6 +46,7 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
             epub_filter: &EpubFilter::default(),
         },
         &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     )
     .into_iter()
@@ -563,6 +565,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
             epub_filter: &EpubFilter::default(),
         },
         &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     );
     assert_eq!(selected.len(), 1);
@@ -615,6 +618,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
             epub_filter: &EpubFilter::default(),
         },
         &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     );
     assert_eq!(selected.len(), 1);

@@ -7,21 +7,38 @@
 //! the operating system does is a separate question, answered by the conformance
 //! tests beside `FilesystemSearchSurface` itself.
 //!
-//! The tests that still stage disk are the ones whose subject is EPUB
-//! declarations, which reach the world through their own acquisition path.
+//! EPUB declarations reach the world through their own seam, so the filtering,
+//! deduplication and identity tests declare what each EPUB says rather than
+//! building a ZIP to say it. Nothing in this file touches disk.
 
 use super::*;
-use crate::document_search_surface::{FilesystemSearchSurface, InspectedKind};
+use crate::document_search_surface::InspectedKind;
 use crate::extraction_run_observation::DocumentDiscoveryScope;
-use crate::test_support::{
-    InMemorySearchSurface, RecordingRunObserver, temp_test_dir,
-    write_epub_with_descriptive_declarations,
-};
-use std::fs;
+use crate::test_support::{DeclaredEpubDeclarations, InMemorySearchSurface, RecordingRunObserver};
 
 /// Selects against a declared surface with default options and records the run.
+///
+/// Every EPUB is unreadable to the default declaration source, which is correct
+/// for the discovery tests: none of them declares an EPUB it expects to be read.
 fn select_against(
     surface: &InMemorySearchSurface,
+    inputs: &[&str],
+    recursive: bool,
+) -> (Vec<SelectedDocument>, RecordingRunObserver) {
+    select_declared(
+        surface,
+        &DeclaredEpubDeclarations::new(),
+        &EpubFilter::default(),
+        inputs,
+        recursive,
+    )
+}
+
+/// Selects against a declared surface and declaration source under one filter.
+fn select_declared(
+    surface: &InMemorySearchSurface,
+    declarations: &DeclaredEpubDeclarations,
+    filter: &EpubFilter,
     inputs: &[&str],
     recursive: bool,
 ) -> (Vec<SelectedDocument>, RecordingRunObserver) {
@@ -32,12 +49,30 @@ fn select_against(
             inputs: &inputs,
             recursive,
             output: None,
-            epub_filter: &EpubFilter::default(),
+            epub_filter: filter,
         },
         surface,
+        declarations,
         &mut observer,
     );
     (selected, observer)
+}
+
+/// Selects against declared declarations with no EPUB filter, so only deduplication acquires.
+fn select_against_declared(
+    surface: &InMemorySearchSurface,
+    declarations: &DeclaredEpubDeclarations,
+    inputs: &[&str],
+) -> (Vec<SelectedDocument>, RecordingRunObserver) {
+    select_declared(surface, declarations, &EpubFilter::default(), inputs, false)
+}
+
+/// Returns the title filter the EPUB fixtures below are written against.
+fn magic_title_filter() -> EpubFilter {
+    EpubFilter {
+        title: Some("magic".to_string()),
+        author: None,
+    }
 }
 
 #[test]
@@ -565,18 +600,13 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
         title: Some("needle".to_string()),
         author: None,
     };
-    let inputs = vec![PathBuf::from("doc.docx")];
-    let mut observer = RecordingRunObserver::default();
 
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &inputs,
-            recursive: false,
-            output: None,
-            epub_filter: &filter,
-        },
+    let (selected, observer) = select_declared(
         &surface,
-        &mut observer,
+        &DeclaredEpubDeclarations::new(),
+        &filter,
+        &["doc.docx"],
+        false,
     );
 
     assert_eq!(selected.len(), 1);
@@ -596,27 +626,22 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
 
 #[test]
 fn select_documents_reports_ordered_monotonic_phase_snapshots() {
-    let temp_dir = temp_test_dir("document-selection", "ordered-phase-snapshots");
-    let epub_path = temp_dir.join("book.epub");
-    let docx_path = temp_dir.join("document.docx");
-    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
-    write_epub_with_descriptive_declarations(&epub_path, "Test Author", "Magic Book");
-    fs::write(docx_path, []).expect("test DOCX should be writable");
-    let filter = EpubFilter {
-        title: Some("magic".to_string()),
-        author: None,
-    };
-    let mut observer = RecordingRunObserver::default();
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/book.epub")
+        .with_file("root/document.docx");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "root/book.epub",
+        Some("Test Author"),
+        Some("Magic Book"),
+    );
 
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&temp_dir),
-            recursive: false,
-            output: None,
-            epub_filter: &filter,
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &magic_title_filter(),
+        &["root"],
+        false,
     );
 
     assert_eq!(selected.len(), 2);
@@ -706,32 +731,19 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
     assert!(last_scan < first_filter);
     assert!(last_filter < first_dedup);
     assert!(observer.selection_diagnostics().is_empty());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication() {
-    let temp_dir = temp_test_dir("document-selection", "filter-metadata-failure");
-    let epub_path = temp_dir.join("invalid.epub");
-    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
-    fs::write(&epub_path, b"not an epub").expect("invalid EPUB should be writable");
+    let surface = InMemorySearchSurface::new().with_file("invalid.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_unreadable("invalid.epub");
     let filter = EpubFilter {
         title: Some("needle".to_string()),
         author: None,
     };
-    let mut observer = RecordingRunObserver::default();
 
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&epub_path),
-            recursive: false,
-            output: None,
-            epub_filter: &filter,
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
-    );
+    let (selected, observer) =
+        select_declared(&surface, &declarations, &filter, &["invalid.epub"], false);
 
     assert!(selected.is_empty());
     assert!(matches!(
@@ -740,7 +752,7 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
             path,
             purpose: EpubMetadataPurpose::Filtering,
             detail,
-        }] if path == &epub_path && !detail.is_empty()
+        }] if path == Path::new("invalid.epub") && !detail.is_empty()
     ));
     assert!(
         observer
@@ -766,34 +778,23 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
                     | ExtractionRunObservation::EpubDeduplicationFinished { .. }
             ))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish() {
-    let temp_dir = temp_test_dir("document-selection", "filter-diagnostic-order");
-    let invalid_epub = temp_dir.join("invalid.epub");
-    let valid_epub = temp_dir.join("valid.epub");
-    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
-    fs::write(&invalid_epub, b"not an epub").expect("invalid EPUB should be writable");
-    write_epub_with_descriptive_declarations(&valid_epub, "Test Author", "Magic Book");
-    let inputs = vec![invalid_epub.clone(), valid_epub];
-    let filter = EpubFilter {
-        title: Some("magic".to_string()),
-        author: None,
-    };
-    let mut observer = RecordingRunObserver::default();
+    let surface = InMemorySearchSurface::new()
+        .with_file("invalid.epub")
+        .with_file("valid.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_unreadable("invalid.epub")
+        .with_declarations("valid.epub", Some("Test Author"), Some("Magic Book"));
 
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &inputs,
-            recursive: false,
-            output: None,
-            epub_filter: &filter,
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &magic_title_filter(),
+        &["invalid.epub", "valid.epub"],
+        false,
     );
 
     assert_eq!(selected.len(), 1);
@@ -828,7 +829,7 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
                 path,
                 purpose: EpubMetadataPurpose::Filtering,
                 ..
-            } if path == &invalid_epub
+            } if path == Path::new("invalid.epub")
     ));
     assert!(matches!(
         filtering_facts[2],
@@ -872,8 +873,6 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
         })
         .expect("deduplication should start for the matching EPUB");
     assert!(filter_finished < dedup_started);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -904,27 +903,18 @@ fn resolves_output_dir_absolute_input() {
 
 #[test]
 fn select_documents_deduplicates_matching_readable_epub_declarations() {
-    let temp_dir = temp_test_dir("document-selection", "declaration-dedupe");
-    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
-    let first = temp_dir.join("first.epub");
-    let second = temp_dir.join("second.epub");
-    write_epub_with_descriptive_declarations(&first, "Shared Creator", "Shared Title");
-    write_epub_with_descriptive_declarations(&second, "Shared Creator", "Shared Title");
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("Shared Creator"), Some("Shared Title"))
+        .with_declarations("second.epub", Some("Shared Creator"), Some("Shared Title"));
 
-    let mut observer = RecordingRunObserver::default();
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &[first.clone(), second],
-            recursive: false,
-            output: None,
-            epub_filter: &EpubFilter::default(),
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
-    );
+    let (selected, observer) =
+        select_against_declared(&surface, &declarations, &["first.epub", "second.epub"]);
 
     assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].get_path(), first);
+    assert_eq!(selected[0].get_path(), Path::new("first.epub"));
     assert!(observer.selection_progress().iter().any(|progress| {
         matches!(
             progress,
@@ -935,36 +925,27 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             }
         )
     }));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read() {
-    let temp_dir = temp_test_dir("document-selection", "dedupe-fallback");
-    let first_dir = temp_dir.join("first");
-    let second_dir = temp_dir.join("second");
-    fs::create_dir_all(&first_dir).expect("first test directory should be creatable");
-    fs::create_dir_all(&second_dir).expect("second test directory should be creatable");
-    let first = first_dir.join("book.epub");
-    let second = second_dir.join("book.epub");
-    fs::write(&first, b"not an epub").expect("first invalid epub should be writable");
-    fs::write(&second, b"not an epub").expect("second invalid epub should be writable");
+    let surface = InMemorySearchSurface::new()
+        .with_directory("first")
+        .with_directory("second")
+        .with_file("first/book.epub")
+        .with_file("second/book.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_unreadable("first/book.epub")
+        .with_unreadable("second/book.epub");
 
-    let mut observer = RecordingRunObserver::default();
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &[first.clone(), second],
-            recursive: false,
-            output: None,
-            epub_filter: &EpubFilter::default(),
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
+    let (selected, observer) = select_against_declared(
+        &surface,
+        &declarations,
+        &["first/book.epub", "second/book.epub"],
     );
 
     assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].get_path(), first);
+    assert_eq!(selected[0].get_path(), Path::new("first/book.epub"));
     assert!(observer.selection_progress().iter().any(|progress| {
         matches!(
             progress,
@@ -989,32 +970,68 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
             .count(),
         2
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn select_documents_uses_declaration_derived_display_name() {
-    let temp_dir = temp_test_dir("document-selection", "selected-epub-identity");
-    let epub_path = temp_dir.join("sample.epub");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    write_epub_with_descriptive_declarations(&epub_path, "Tester", "Magic Test");
-    let mut observer = RecordingRunObserver::default();
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&epub_path),
-            recursive: false,
-            output: None,
-            epub_filter: &EpubFilter::default(),
-        },
-        &FilesystemSearchSurface,
-        &mut observer,
+    let surface = InMemorySearchSurface::new().with_file("sample.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "sample.epub",
+        Some("Tester"),
+        Some("Magic Test"),
     );
+
+    let (selected, _) = select_against_declared(&surface, &declarations, &["sample.epub"]);
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_display_name(), "Tester - Magic Test");
+}
 
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+/// Verifies ADR-0002's retention rule: what filtering retained is not acquired again.
+#[test]
+fn deduplication_reuses_the_declarations_filtering_retained() {
+    let surface = InMemorySearchSurface::new().with_file("book.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "book.epub",
+        Some("Test Author"),
+        Some("Magic Book"),
+    );
+
+    let (selected, _) = select_declared(
+        &surface,
+        &declarations,
+        &magic_title_filter(),
+        &["book.epub"],
+        false,
+    );
+
+    // Both phases ran and both needed the declarations, but only filtering asked
+    // for them. Before this seam existed the reuse was invisible to any assertion.
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        declarations.acquisitions(),
+        vec![PathBuf::from("book.epub")]
+    );
+}
+
+/// Verifies deduplication acquires exactly once per candidate when no filter ran.
+#[test]
+fn deduplication_acquires_each_candidate_once_when_no_filter_ran() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("First Creator"), Some("First Title"))
+        .with_declarations("second.epub", Some("Second Creator"), Some("Second Title"));
+
+    let (selected, _) =
+        select_against_declared(&surface, &declarations, &["first.epub", "second.epub"]);
+
+    assert_eq!(selected.len(), 2);
+    assert_eq!(
+        declarations.acquisitions(),
+        vec![PathBuf::from("first.epub"), PathBuf::from("second.epub")]
+    );
 }
 
 #[test]

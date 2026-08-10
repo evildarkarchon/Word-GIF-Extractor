@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::DocumentSearchSurface;
-use crate::epub_declarations::EpubDeclarations;
+use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{
     EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
@@ -200,13 +200,19 @@ impl DocumentCandidate {
 /// observer is informational: callbacks cannot cancel selection or alter which
 /// documents are returned.
 ///
-/// Every observation of the world is made through `surface`, which ADR-0008
-/// keeps a separate parameter rather than a field on
-/// [`DocumentSelectionOptions`]: those are the per-run policy choices, and a way
-/// of seeing the world is not one of them.
+/// Every observation of the world is made through `surface` and every EPUB
+/// declaration through `declarations`. ADR-0008 keeps both as separate
+/// parameters rather than fields on [`DocumentSelectionOptions`]: those are the
+/// per-run policy choices, and neither a way of seeing the world nor a way of
+/// reading declarations is one of them.
+///
+/// Substituting `declarations` cannot change ADR-0002's retention rule. This
+/// function decides when a declaration is acquired and when a retained one is
+/// reused; the source only answers.
 pub fn select_documents(
     options: DocumentSelectionOptions<'_>,
     surface: &dyn DocumentSearchSurface,
+    declarations: &dyn EpubDeclarationSource,
     observer: &mut impl ExtractionRunObserver,
 ) -> Vec<SelectedDocument> {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
@@ -214,11 +220,16 @@ pub fn select_documents(
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
     let filtered = if !options.epub_filter.is_empty() {
-        filter_epub_files(candidates, options.epub_filter, &mut lifecycle)
+        filter_epub_files(
+            candidates,
+            options.epub_filter,
+            declarations,
+            &mut lifecycle,
+        )
     } else {
         candidates
     };
-    let deduplicated = deduplicate_epubs_by_declarations(filtered, &mut lifecycle);
+    let deduplicated = deduplicate_epubs_by_declarations(filtered, declarations, &mut lifecycle);
 
     deduplicated
         .into_iter()
@@ -235,6 +246,7 @@ fn is_epub(candidate: &DocumentCandidate) -> bool {
 fn filter_epub_files(
     files: Vec<DocumentCandidate>,
     filter: &EpubFilter,
+    declarations: &dyn EpubDeclarationSource,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     // Separate EPUB files from other document types.
@@ -248,7 +260,7 @@ fn filter_epub_files(
             let DocumentCandidate::Epub { path, .. } = candidate else {
                 continue;
             };
-            let outcome = match EpubDeclarations::acquire(&path) {
+            let outcome = match declarations.acquire(&path) {
                 Ok(declarations) if matches_filter(&declarations, filter) => {
                     matching_epubs.push(DocumentCandidate::Epub {
                         path,
@@ -284,6 +296,7 @@ fn filter_epub_files(
 /// deduplicated by filename.
 fn deduplicate_epubs_by_declarations(
     files: Vec<DocumentCandidate>,
+    declarations: &dyn EpubDeclarationSource,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
@@ -303,8 +316,10 @@ fn deduplicate_epubs_by_declarations(
             else {
                 continue;
             };
+            // ADR-0002: declarations retained by filtering are authoritative for the
+            // run, so deduplication asks the source only when it has none.
             if epub_declarations.is_none() {
-                match EpubDeclarations::acquire(&path) {
+                match declarations.acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
                     Err(error) => {
                         progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {

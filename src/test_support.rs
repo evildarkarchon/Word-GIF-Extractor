@@ -27,6 +27,7 @@
 //! If either trade-off changes — the repository gains a second package, or the
 //! overlap grows past a few helpers — the workspace crate becomes the better option.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
@@ -37,6 +38,7 @@ use zip::write::SimpleFileOptions;
 use crate::document_search_surface::{
     DocumentSearchSurface, DocumentSearchTraversal, InspectedKind, TraversalFailure, TraversedEntry,
 };
+use crate::epub_declarations::{EpubDeclarationError, EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
 
 /// One node in a declared Document search surface.
@@ -323,6 +325,79 @@ impl DocumentSearchSurface for InMemorySearchSurface {
             pending: self.traversal_items(root).into(),
             last_directory: None,
         })
+    }
+}
+
+/// A declaration source that answers from declared facts and records what it was asked.
+///
+/// The recording is what makes ADR-0002's retention rule assertable: the rule is
+/// that filtering acquires once and deduplication reuses what filtering retained,
+/// and until this existed the reuse was invisible to every test.
+pub(crate) struct DeclaredEpubDeclarations {
+    declarations: BTreeMap<PathBuf, DeclaredEpub>,
+    acquisitions: RefCell<Vec<PathBuf>>,
+}
+
+/// What one declared EPUB reports when its declarations are acquired.
+enum DeclaredEpub {
+    Readable {
+        creator: Option<String>,
+        title: Option<String>,
+    },
+    Unreadable,
+}
+
+impl DeclaredEpubDeclarations {
+    /// Creates a source that reports every EPUB as unreadable.
+    pub(crate) fn new() -> Self {
+        Self {
+            declarations: BTreeMap::new(),
+            acquisitions: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Declares the creator and title one EPUB reports.
+    pub(crate) fn with_declarations(
+        mut self,
+        path: impl Into<PathBuf>,
+        creator: Option<&str>,
+        title: Option<&str>,
+    ) -> Self {
+        self.declarations.insert(
+            path.into(),
+            DeclaredEpub::Readable {
+                creator: creator.map(str::to_string),
+                title: title.map(str::to_string),
+            },
+        );
+        self
+    }
+
+    /// Declares one EPUB whose declarations cannot be read.
+    pub(crate) fn with_unreadable(mut self, path: impl Into<PathBuf>) -> Self {
+        self.declarations
+            .insert(path.into(), DeclaredEpub::Unreadable);
+        self
+    }
+
+    /// Returns every path this source was asked about, in the order it was asked.
+    pub(crate) fn acquisitions(&self) -> Vec<PathBuf> {
+        self.acquisitions.borrow().clone()
+    }
+}
+
+impl EpubDeclarationSource for DeclaredEpubDeclarations {
+    fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError> {
+        self.acquisitions.borrow_mut().push(path.to_path_buf());
+        match self.declarations.get(path) {
+            Some(DeclaredEpub::Readable { creator, title }) => Ok(EpubDeclarations::declared(
+                creator.as_deref(),
+                title.as_deref(),
+            )),
+            // An undeclared path reads as an EPUB that will not parse, which is
+            // what an unreadable file on disk produces.
+            _ => Err(EpubDeclarationError::unreadable()),
+        }
     }
 }
 
@@ -730,15 +805,6 @@ fn write_epub_archive(
 /// packages a higher-level builder would not produce.
 pub(crate) fn write_epub_package(path: &Path, package: &[u8], resources: &[(&str, &[u8])]) {
     write_epub_archive(path, SimpleFileOptions::default(), package, resources);
-}
-
-/// Writes a readable EPUB whose only declarations are its descriptive ones.
-pub(crate) fn write_epub_with_descriptive_declarations(path: &Path, author: &str, title: &str) {
-    write_epub_package(
-        path,
-        epub_package(title, Some(author), EpubNavigation::Absent, "").as_bytes(),
-        &[],
-    );
 }
 
 /// Writes a navigable EPUB declaring one image resource, with its payload present.
