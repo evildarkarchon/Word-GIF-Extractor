@@ -211,12 +211,31 @@ struct AcceptedImage {
     format: ImageFormat,
 }
 
-struct PreparedImage {
+/// The role one image takes as the Image write pipeline emits it.
+///
+/// Exactly one role applies per emitted image, which is what keeps the
+/// converted, conversion-skipped and GIF-routed counts from together exceeding
+/// the emitted count. `RoutedGif` carries the destination read from the Image
+/// write policy at the moment routing was decided, so a routed image and the
+/// destination that justifies it cannot be decided apart.
+#[derive(Debug, Clone, Copy)]
+enum EmittedImageRole<'policy> {
+    /// A GIF the Image write policy sends to its own destination, unconverted.
+    RoutedGif(&'policy Path),
+    /// An image the Conversion policy re-encoded to its target.
+    Converted,
+    /// An image conversion could not take, emitted in its original bytes.
+    ConversionSkipped,
+    /// An image emitted as extracted, because no Conversion policy was
+    /// requested or because conversion preserved an already-matching source.
+    /// Neither is counted, and the applicable warning fact carries which.
+    Preserved,
+}
+
+struct PreparedImage<'policy> {
     data: Vec<u8>,
     format: ImageFormat,
-    routed_gif: bool,
-    converted: bool,
-    skipped_conversion: bool,
+    role: EmittedImageRole<'policy>,
 }
 
 /// Document-specific facts for one Image write pipeline invocation.
@@ -388,7 +407,6 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
         };
         let mut emission = ImageFileEmission::new(self.request.base_name, false);
         emit_prepared_image(
-            self.policy,
             self.request.output_dir,
             &mut emission,
             prepared,
@@ -457,7 +475,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
     normal_image_output: NormalImageOutput,
-    pending_first: Option<PreparedImage>,
+    pending_first: Option<PreparedImage<'policy>>,
     multiple_emission: Option<ImageFileEmission<'request>>,
 }
 
@@ -530,7 +548,7 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     /// Holds the first prepared image until singular versus multiple naming is known.
     ///
     /// Returns an error if switching to multiple naming cannot emit either prepared image.
-    fn stage_prepared(&mut self, prepared: PreparedImage) -> Result<()> {
+    fn stage_prepared(&mut self, prepared: PreparedImage<'policy>) -> Result<()> {
         if let Some(mut emission) = self.multiple_emission.take() {
             self.emit_prepared(&mut emission, prepared)?;
             self.multiple_emission = Some(emission);
@@ -555,15 +573,9 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     fn emit_prepared(
         &mut self,
         emission: &mut ImageFileEmission<'_>,
-        prepared: PreparedImage,
+        prepared: PreparedImage<'policy>,
     ) -> Result<()> {
-        emit_prepared_image(
-            self.policy,
-            self.output_dir,
-            emission,
-            prepared,
-            &mut self.counts,
-        )?;
+        emit_prepared_image(self.output_dir, emission, prepared, &mut self.counts)?;
         self.normal_image_output = NormalImageOutput::Present;
         Ok(())
     }
@@ -607,23 +619,27 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
 ///
 /// Conversion warning facts are appended in accepted-source order. `None` is
 /// returned only when required-cover conversion completes without emission.
-fn prepare_image_for_write<P: ImageWritePurpose>(
+fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
     image: AcceptedImage,
     base_name: &str,
-    policy: &ImageWritePolicy,
+    policy: &'policy ImageWritePolicy,
     purpose: &P,
     warnings: &mut Vec<ImageWriteWarning>,
-) -> Option<PreparedImage> {
-    let is_routed_gif = image.format == ImageFormat::Gif && policy.gif_output.is_some();
+) -> Option<PreparedImage<'policy>> {
+    // Routing is decided together with the destination it needs, so emission
+    // never has to ask the policy a second question it could answer differently.
+    let routed_destination = if image.format == ImageFormat::Gif {
+        policy.gif_destination()
+    } else {
+        None
+    };
 
     if let Some(conversion) = &policy.conversion {
-        if is_routed_gif {
+        if let Some(destination) = routed_destination {
             return Some(PreparedImage {
                 data: image.data,
                 format: image.format,
-                routed_gif: true,
-                converted: false,
-                skipped_conversion: false,
+                role: EmittedImageRole::RoutedGif(destination),
             });
         }
 
@@ -632,18 +648,14 @@ fn prepare_image_for_write<P: ImageWritePurpose>(
                 return Some(PreparedImage {
                     data: converted_bytes,
                     format,
-                    routed_gif: false,
-                    converted: true,
-                    skipped_conversion: false,
+                    role: EmittedImageRole::Converted,
                 });
             }
             Ok(ConversionOutcome::PreservedMatchingSource) => {
                 return Some(PreparedImage {
                     data: image.data,
                     format: image.format,
-                    routed_gif: false,
-                    converted: false,
-                    skipped_conversion: false,
+                    role: EmittedImageRole::Preserved,
                 });
             }
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => (
@@ -660,9 +672,7 @@ fn prepare_image_for_write<P: ImageWritePurpose>(
             ConversionAction::PreserveOriginal => Some(PreparedImage {
                 data: image.data,
                 format: original_format,
-                routed_gif: false,
-                converted: false,
-                skipped_conversion: true,
+                role: EmittedImageRole::ConversionSkipped,
             }),
             ConversionAction::CompleteWithoutEmission => None,
         }
@@ -670,41 +680,38 @@ fn prepare_image_for_write<P: ImageWritePurpose>(
         Some(PreparedImage {
             data: image.data,
             format: image.format,
-            routed_gif: is_routed_gif,
-            converted: false,
-            skipped_conversion: false,
+            role: match routed_destination {
+                Some(destination) => EmittedImageRole::RoutedGif(destination),
+                None => EmittedImageRole::Preserved,
+            },
         })
     }
 }
 
 /// Emits one prepared image using shared destination routing and count semantics.
 fn emit_prepared_image(
-    policy: &ImageWritePolicy,
     output_dir: &Path,
     emission: &mut ImageFileEmission<'_>,
-    prepared: PreparedImage,
+    prepared: PreparedImage<'_>,
     counts: &mut ImageWriteCounts,
 ) -> Result<()> {
-    let destination = if prepared.routed_gif {
-        // Preparation only marks routing when the immutable policy has a destination.
-        policy
-            .gif_output
-            .as_deref()
-            .expect("routed GIF should have a configured destination")
-    } else {
-        output_dir
+    // Both matches stay exhaustive so a new Emitted image role fails to compile
+    // here rather than silently defaulting to the document's output directory
+    // or to no count at all.
+    let destination = match prepared.role {
+        EmittedImageRole::RoutedGif(destination) => destination,
+        EmittedImageRole::Converted
+        | EmittedImageRole::ConversionSkipped
+        | EmittedImageRole::Preserved => output_dir,
     };
     emission.emit(destination, prepared.format, &prepared.data)?;
 
     counts.extracted += 1;
-    if prepared.routed_gif {
-        counts.gifs_routed += 1;
-    }
-    if prepared.converted {
-        counts.converted += 1;
-    }
-    if prepared.skipped_conversion {
-        counts.skipped += 1;
+    match prepared.role {
+        EmittedImageRole::RoutedGif(_) => counts.gifs_routed += 1,
+        EmittedImageRole::Converted => counts.converted += 1,
+        EmittedImageRole::ConversionSkipped => counts.skipped += 1,
+        EmittedImageRole::Preserved => {}
     }
 
     Ok(())

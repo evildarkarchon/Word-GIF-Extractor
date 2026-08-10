@@ -92,6 +92,10 @@ _Avoid_: Extraction config, writer options
 The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It distinguishes cover-specific outcomes from per-run Image write policy.
 _Avoid_: Write mode, archive image purpose, extraction kind
 
+**Emitted image role**:
+The closed four-way role one image takes as the Image write pipeline emits it: GIF-routed, converted, conversion-skipped, or preserved. Exactly one role applies to each emitted image, which is what keeps the converted, conversion-skipped and GIF-routed counts from together exceeding the emitted count. A GIF-routed role carries the destination that routing sends it to, so a routed image and its destination cannot be decided apart. Preserved covers both an unrequested conversion and a conversion that kept a matching source, because neither is counted and the applicable warning fact carries the difference. It excludes Image write purpose, output naming, and the counts it is folded into.
+_Avoid_: Conversion flags, emission booleans, write mode
+
 **EPUB cover extraction**:
 The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
 _Avoid_: Cover pipeline, cover selection, cover helper
