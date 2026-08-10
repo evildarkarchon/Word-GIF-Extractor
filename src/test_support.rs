@@ -27,13 +27,334 @@
 //! If either trade-off changes — the repository gains a second package, or the
 //! overlap grows past a few helpers — the workspace crate becomes the better option.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
+use crate::document_search_surface::{
+    DocumentSearchSurface, DocumentSearchTraversal, InspectedKind, TraversalFailure, TraversedEntry,
+};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
+
+/// One node in a declared Document search surface.
+#[derive(Debug, Clone)]
+enum SearchNode {
+    File,
+    Directory,
+    /// A link, whose `None` target is a link whose target is gone.
+    Link {
+        target: Option<PathBuf>,
+    },
+    /// An inspectable object that is neither a file nor a directory.
+    Other,
+}
+
+/// How one declared directory fails when something tries to open it.
+#[derive(Debug, Clone)]
+struct ListingFailure {
+    kind: io::ErrorKind,
+    /// Whether a traversal failure names the directory or arrives without a path.
+    ///
+    /// A pathless failure is what forces Document discovery's nearest-parent
+    /// attribution, which no real-filesystem fixture has ever been able to stage.
+    reports_path: bool,
+}
+
+/// A Document search surface backed by a declared tree rather than the filesystem.
+///
+/// Every case Document discovery branches on is a value here: a link whose target
+/// is gone, a directory that cannot be opened, and an entry that enumerated as a
+/// directory but no longer inspects as one. Nothing touches disk, so no test using
+/// this surface needs a temporary directory, a symlink, or a teardown.
+pub(crate) struct InMemorySearchSurface {
+    nodes: BTreeMap<PathBuf, SearchNode>,
+    listing_failures: BTreeMap<PathBuf, ListingFailure>,
+    inspection_overrides: BTreeMap<PathBuf, Result<InspectedKind, io::ErrorKind>>,
+}
+
+impl InMemorySearchSurface {
+    /// Creates a surface on which nothing exists.
+    pub(crate) fn new() -> Self {
+        Self {
+            nodes: BTreeMap::new(),
+            listing_failures: BTreeMap::new(),
+            inspection_overrides: BTreeMap::new(),
+        }
+    }
+
+    /// Declares one regular file.
+    pub(crate) fn with_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::File);
+        self
+    }
+
+    /// Declares one directory.
+    pub(crate) fn with_directory(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::Directory);
+        self
+    }
+
+    /// Declares one link, or a link whose target is gone when `target` is `None`.
+    pub(crate) fn with_link(mut self, path: impl Into<PathBuf>, target: Option<&str>) -> Self {
+        self.nodes.insert(
+            path.into(),
+            SearchNode::Link {
+                target: target.map(PathBuf::from),
+            },
+        );
+        self
+    }
+
+    /// Declares one inspectable object that is neither a file nor a directory.
+    pub(crate) fn with_other(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::Other);
+        self
+    }
+
+    /// Declares a directory that classifies normally but cannot be opened.
+    ///
+    /// This is the shape a directory removed between classification and opening
+    /// leaves behind, which the deleted observer-as-filesystem hook used to stage
+    /// by removing a real directory from inside a progress callback.
+    pub(crate) fn with_listing_failure(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.listing_failures.insert(
+            path,
+            ListingFailure {
+                kind: io::ErrorKind::NotFound,
+                reports_path: true,
+            },
+        );
+        self
+    }
+
+    /// Declares a directory whose traversal failure arrives without a path.
+    pub(crate) fn with_pathless_listing_failure(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.listing_failures.insert(
+            path,
+            ListingFailure {
+                kind: io::ErrorKind::PermissionDenied,
+                reports_path: false,
+            },
+        );
+        self
+    }
+
+    /// Declares a directory that a traversal enumerates but inspection reports as `kind`.
+    pub(crate) fn with_stale_directory(
+        mut self,
+        path: impl Into<PathBuf>,
+        kind: InspectedKind,
+    ) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.inspection_overrides.insert(path, Ok(kind));
+        self
+    }
+
+    /// Declares a directory that a traversal enumerates but inspection fails on.
+    pub(crate) fn with_stale_directory_inspection_failure(
+        mut self,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.inspection_overrides
+            .insert(path, Err(io::ErrorKind::PermissionDenied));
+        self
+    }
+
+    /// Builds one failure with a non-empty message, as a real inspection would carry.
+    fn failure(kind: io::ErrorKind, path: &Path) -> io::Error {
+        io::Error::new(kind, format!("declared {kind:?} for {}", path.display()))
+    }
+
+    /// Resolves one path through any links, returning the node it names.
+    ///
+    /// Links are followed wherever they appear, not only in the last position, so
+    /// a path below a link resolves the way it would on a filesystem. The bound
+    /// stops a link cycle from recursing forever; a cycle resolves to a link node,
+    /// which every caller reads as a path that is not usable.
+    fn resolve(&self, path: &Path) -> Option<(PathBuf, SearchNode)> {
+        let mut resolved = PathBuf::new();
+        for component in path.components() {
+            resolved.push(component);
+            for _ in 0..8 {
+                match self.nodes.get(&resolved) {
+                    Some(SearchNode::Link { target }) => resolved = target.clone()?,
+                    _ => break,
+                }
+            }
+        }
+        self.nodes
+            .get(&resolved)
+            .cloned()
+            .map(|node| (resolved, node))
+    }
+
+    /// Returns the direct children of one directory, in a stable order.
+    ///
+    /// Entries are named under `display_root` rather than under the resolved
+    /// directory, which is what listing a link reports: the link's own path with
+    /// the target's entry names below it.
+    fn children(&self, resolved_root: &Path, display_root: &Path) -> Vec<(PathBuf, SearchNode)> {
+        self.nodes
+            .iter()
+            .filter(|(path, _)| path.parent() == Some(resolved_root))
+            .filter_map(|(path, node)| {
+                let name = path.file_name()?;
+                Some((display_root.join(name), node.clone()))
+            })
+            .collect()
+    }
+
+    /// Flattens one recursive traversal into the items it yields, in encounter order.
+    fn traversal_items(&self, root: &Path) -> Vec<Result<TraversedEntry, TraversalFailure>> {
+        let mut items = Vec::new();
+        match self.resolve(root) {
+            Some((resolved, SearchNode::Directory)) => {
+                self.traverse_into(&resolved, root, 1, &mut items);
+            }
+            // A traversal of anything that is not a readable directory fails at its
+            // root, in the position the root itself would have occupied.
+            _ => items.push(Err(TraversalFailure::new(
+                0,
+                Some(root.to_path_buf()),
+                Self::failure(io::ErrorKind::NotFound, root),
+            ))),
+        }
+        items
+    }
+
+    /// Appends one directory's entries and their descendants to a traversal.
+    fn traverse_into(
+        &self,
+        resolved_root: &Path,
+        display_root: &Path,
+        depth: usize,
+        items: &mut Vec<Result<TraversedEntry, TraversalFailure>>,
+    ) {
+        if let Some(failure) = self.listing_failures.get(display_root) {
+            // The failure takes the directory's own depth, so truncating by it
+            // leaves the nearest confirmed parent at the top of the caller's stack.
+            items.push(Err(TraversalFailure::new(
+                depth.saturating_sub(1),
+                failure.reports_path.then(|| display_root.to_path_buf()),
+                Self::failure(failure.kind, display_root),
+            )));
+            return;
+        }
+
+        for (path, node) in self.children(resolved_root, display_root) {
+            let is_directory = matches!(node, SearchNode::Directory);
+            items.push(Ok(TraversedEntry::new(path.clone(), depth, is_directory)));
+            if is_directory {
+                // Nested links are enumerated but never descended into, so a
+                // traversal cannot widen its scope through one. A directory below
+                // an already-followed root still resolves, which is why the
+                // descent takes the resolved path and the display path separately.
+                let resolved_child = self
+                    .resolve(&path)
+                    .map_or_else(|| path.clone(), |(resolved, _)| resolved);
+                self.traverse_into(&resolved_child, &path, depth + 1, items);
+            }
+        }
+    }
+}
+
+impl DocumentSearchSurface for InMemorySearchSurface {
+    fn inspect(&self, path: &Path) -> io::Result<InspectedKind> {
+        if let Some(override_result) = self.inspection_overrides.get(path) {
+            return (*override_result).map_err(|kind| Self::failure(kind, path));
+        }
+
+        match self.resolve(path) {
+            Some((_, SearchNode::File)) => Ok(InspectedKind::File),
+            Some((_, SearchNode::Directory)) => Ok(InspectedKind::Directory),
+            Some((_, SearchNode::Other)) => Ok(InspectedKind::Other),
+            // A resolved link is never itself a node; an unresolvable one reads as absent.
+            _ => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn inspect_without_following(&self, path: &Path) -> io::Result<InspectedKind> {
+        match self.nodes.get(path) {
+            Some(SearchNode::File) => Ok(InspectedKind::File),
+            Some(SearchNode::Directory) => Ok(InspectedKind::Directory),
+            // A link is neither a file nor a directory until it is followed.
+            Some(SearchNode::Link { .. }) | Some(SearchNode::Other) => Ok(InspectedKind::Other),
+            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn read_directory<'surface>(
+        &'surface self,
+        path: &Path,
+    ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
+        if let Some(failure) = self.listing_failures.get(path) {
+            return Err(Self::failure(failure.kind, path));
+        }
+
+        match self.resolve(path) {
+            Some((resolved, SearchNode::Directory)) => {
+                let entries: Vec<_> = self
+                    .children(&resolved, path)
+                    .into_iter()
+                    .map(|(child, _)| Ok(child))
+                    .collect();
+                Ok(Box::new(entries.into_iter()))
+            }
+            Some(_) => Err(Self::failure(io::ErrorKind::InvalidInput, path)),
+            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn traverse<'surface>(
+        &'surface self,
+        root: &Path,
+    ) -> Box<dyn DocumentSearchTraversal + 'surface> {
+        Box::new(DeclaredTraversal {
+            pending: self.traversal_items(root).into(),
+            last_directory: None,
+        })
+    }
+}
+
+/// One traversal of a declared tree, flattened ahead of time.
+struct DeclaredTraversal {
+    pending: std::collections::VecDeque<Result<TraversedEntry, TraversalFailure>>,
+    last_directory: Option<PathBuf>,
+}
+
+impl DocumentSearchTraversal for DeclaredTraversal {
+    fn next_entry(&mut self) -> Option<Result<TraversedEntry, TraversalFailure>> {
+        let item = self.pending.pop_front()?;
+        self.last_directory = match &item {
+            Ok(entry) if entry.is_directory() => Some(entry.path().to_path_buf()),
+            _ => None,
+        };
+        Some(item)
+    }
+
+    fn skip_current_dir(&mut self) {
+        let Some(directory) = self.last_directory.take() else {
+            return;
+        };
+        self.pending.retain(|item| {
+            let path = match item {
+                Ok(entry) => Some(entry.path()),
+                Err(failure) => failure.path(),
+            };
+            path.is_none_or(|path| !path.starts_with(&directory))
+        });
+    }
+}
 
 /// Returns an unused temporary directory path for one test.
 ///

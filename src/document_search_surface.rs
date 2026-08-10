@@ -223,3 +223,6 @@ impl DocumentSearchTraversal for WalkDirTraversal {
         self.traversal.skip_current_dir();
     }
 }
+
+#[cfg(test)]
+mod tests;
