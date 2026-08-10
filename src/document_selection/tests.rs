@@ -296,6 +296,47 @@ fn select_documents_reports_directory_open_failure_and_continues_to_supported_in
     ));
 }
 
+/// Verifies an unopenable directory reached through a link fails against the link.
+#[test]
+fn select_documents_reports_open_failure_of_a_linked_unopenable_directory() {
+    // The directory that will not open is the link's target, so the failure only
+    // surfaces if the request resolves before it is applied. Discovery names the
+    // path it asked for, which is the link.
+    let surface = InMemorySearchSurface::new()
+        .with_listing_failure("target")
+        .with_link("requested", Some("target"))
+        .with_file("readable.docx");
+
+    let (selected, observer) = select_against(&surface, &["requested", "readable.docx"], false);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].get_path(), Path::new("readable.docx"));
+    assert!(matches!(
+        observer.selection_diagnostics().as_slice(),
+        [ExtractionRunObservation::DocumentDiscoveryFailed { path, detail }]
+            if path == Path::new("requested") && !detail.is_empty()
+    ));
+}
+
+/// Verifies recursive traversal of a link to an unopenable directory fails against the link.
+#[test]
+fn select_documents_reports_recursive_traversal_failure_of_a_linked_unopenable_directory() {
+    let surface = InMemorySearchSurface::new()
+        .with_listing_failure("target")
+        .with_link("requested", Some("target"))
+        .with_file("readable.docx");
+
+    let (selected, observer) = select_against(&surface, &["requested", "readable.docx"], true);
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].get_path(), Path::new("readable.docx"));
+    assert!(matches!(
+        observer.selection_diagnostics().as_slice(),
+        [ExtractionRunObservation::DocumentDiscoveryFailed { path, detail }]
+            if path == Path::new("requested") && !detail.is_empty()
+    ));
+}
+
 /// Verifies recursive traversal reports an unopenable root and continues to a later input.
 #[test]
 fn select_documents_reports_recursive_root_traversal_failure_and_continues() {

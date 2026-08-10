@@ -265,7 +265,11 @@ impl InMemorySearchSurface {
         depth: usize,
         items: &mut Vec<PendingItem>,
     ) {
-        if let Some(failure) = self.listing_failures.get(display_root) {
+        // Keyed on the resolved directory, because that is what a filesystem
+        // opens: a listing declared unopenable still fails when it is reached
+        // through a link. The failure itself is reported against the display
+        // path, which is the path the traversal actually tried to open.
+        if let Some(failure) = self.listing_failures.get(resolved_root) {
             // The failure takes the directory's own depth, so truncating by it
             // leaves the nearest confirmed parent at the top of the caller's stack.
             items.push(PendingItem {
@@ -328,18 +332,22 @@ impl DocumentSearchSurface for InMemorySearchSurface {
         &'surface self,
         path: &Path,
     ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
-        if let Some(failure) = self.listing_failures.get(path) {
-            return Err(Self::failure(failure.kind, path));
-        }
-
         match self.resolve(path) {
             Some((resolved, SearchNode::Directory)) => {
+                // Both declarations key on the resolved directory rather than on
+                // the requested path, so a request arriving through a link fails
+                // the way the filesystem would: opening the target is what fails,
+                // not naming the link.
+                if let Some(failure) = self.listing_failures.get(&resolved) {
+                    return Err(Self::failure(failure.kind, path));
+                }
+
                 let mut entries: Vec<io::Result<PathBuf>> = self
                     .children(&resolved, path)
                     .into_iter()
                     .map(|(child, _)| Ok(child))
                     .collect();
-                if let Some(kind) = self.unreadable_entries.get(path) {
+                if let Some(kind) = self.unreadable_entries.get(&resolved) {
                     // Placed ahead of the entries that did materialise, so that a
                     // test asserting the listing continued past it has something
                     // left to find. A failing entry has no name to order it by.
