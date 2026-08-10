@@ -214,13 +214,14 @@ impl DocumentExtractionFacts {
     /// counts cross into Document extraction; see the comment on it. The
     /// translation itself is infallible.
     fn from_image_write_result(result: ImageWriteResult) -> Self {
-        // Tripwire for an Image write pipeline regression, not a runtime
-        // condition. Each emitted image takes at most one of the three roles
-        // only because the pipeline returns early for routed GIFs before
-        // conversion runs, which is what keeps routed and converted disjoint —
-        // and nothing in the pipeline states that. Stating it here, at the
-        // boundary the counts cross, is what makes a conversion change trip
-        // next to the edit instead of three modules away.
+        // Tripwire for a fabricated Image write result, not a runtime condition.
+        // The pipeline itself can no longer violate this: `EmittedImageRole`
+        // gives each emitted image exactly one role, so the counts it folds
+        // satisfy the rule by construction. What remains reachable is
+        // `ImageWriteResult::new`, which assembles a complete outcome from
+        // already-produced facts and validates none of them. Checking here, at
+        // the boundary those counts cross into Document extraction, is what
+        // makes such a result trip on arrival rather than three modules away.
         //
         // Nothing reachable through Document extraction's interface can produce
         // a violating result, so there is deliberately no test for it. Firing it
