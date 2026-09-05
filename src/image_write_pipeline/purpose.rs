@@ -1,10 +1,14 @@
 //! Purpose-specific semantic decisions for the Image write pipeline.
 
-use std::fmt;
+use anyhow::Error;
 
+use crate::conversion::ConversionOutcome;
 use crate::image_format::ImageFormat;
 
-use super::{ArchiveImageSource, ImageWriteWarning};
+use super::{
+    AcceptedImage, ArchiveImageSource, EmittedImageRole, ImageWritePolicy, ImageWriteWarning,
+    PreparedImage,
+};
 
 /// Whether Archive image discovery may inspect one source.
 pub(super) enum SourceEligibility {
@@ -23,19 +27,16 @@ pub(super) enum FilteredFormatAction {
     CompleteWithoutEmission,
 }
 
-/// Purpose-selected continuation after conversion cannot produce requested bytes.
-pub(super) enum ConversionAction {
-    PreserveOriginal,
-    CompleteWithoutEmission,
-}
-
 /// One typed purpose action and its optional existing warning fact.
 pub(super) struct PurposeDecision<Action> {
     pub(super) action: Action,
     pub(super) warning: Option<ImageWriteWarning>,
 }
 
-/// Private semantic boundary implemented by each real Image write purpose.
+/// Discovery decisions implemented by each real Image write purpose.
+///
+/// Preparation lives on the concrete purposes because only normal images
+/// guarantee a prepared image; discovery does not need that distinction.
 pub(super) trait ImageWritePurpose {
     /// Decides whether discovery may touch the source reader.
     fn source_eligibility(&self, source: &ArchiveImageSource) -> SourceEligibility;
@@ -48,20 +49,6 @@ pub(super) trait ImageWritePurpose {
 
     /// Decides how discovery completes when the identified format is filtered out.
     fn filtered_format(&self, format: ImageFormat) -> PurposeDecision<FilteredFormatAction>;
-
-    /// Decides whether an unsupported conversion source may be emitted unchanged.
-    fn unsupported_conversion(
-        &self,
-        base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction>;
-
-    /// Decides whether bytes from a failed conversion may be emitted unchanged.
-    fn failed_conversion(
-        &self,
-        base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction>;
 }
 
 /// Statically selected purpose for plural normal-image traversal.
@@ -96,34 +83,47 @@ impl ImageWritePurpose for NormalImages {
             warning: None,
         }
     }
+}
 
-    /// Preserves unsupported normal-image bytes and records a skipped conversion.
-    fn unsupported_conversion(
+impl NormalImages {
+    /// Prepares an accepted normal image, preserving its bytes when conversion cannot finish.
+    ///
+    /// Appends any conversion warning to the caller's conversion-warning buffer,
+    /// keeping discovery warnings separate. The returned image owns its bytes
+    /// and borrows only a routed GIF destination from `policy`; emission may still fail.
+    pub(super) fn prepare<'policy>(
         &self,
+        image: AcceptedImage,
         base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::PreserveOriginal,
-            warning: Some(ImageWriteWarning::ConversionSkipped {
-                base_name: base_name.to_string(),
-                format,
-            }),
-        }
-    }
-
-    /// Preserves normal-image bytes after a failed conversion and records the failure.
-    fn failed_conversion(
-        &self,
-        base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::PreserveOriginal,
-            warning: Some(ImageWriteWarning::ConversionFailed {
-                base_name: base_name.to_string(),
-                detail: error.to_string(),
-            }),
+        policy: &'policy ImageWritePolicy,
+        warnings: &mut Vec<ImageWriteWarning>,
+    ) -> PreparedImage<'policy> {
+        match prepare_shared(image, policy) {
+            Ok(prepared) => prepared,
+            Err(unprepared) => {
+                let (format, warning) = match unprepared.problem {
+                    ConversionProblem::Unsupported(format) => (
+                        format,
+                        ImageWriteWarning::ConversionSkipped {
+                            base_name: base_name.to_string(),
+                            format,
+                        },
+                    ),
+                    ConversionProblem::Failed(error) => (
+                        unprepared.original.format,
+                        ImageWriteWarning::ConversionFailed {
+                            base_name: base_name.to_string(),
+                            detail: error.to_string(),
+                        },
+                    ),
+                };
+                warnings.push(warning);
+                PreparedImage {
+                    data: unprepared.original.data,
+                    format,
+                    role: EmittedImageRole::ConversionSkipped,
+                }
+            }
         }
     }
 }
@@ -158,31 +158,100 @@ impl ImageWritePurpose for RequiredCover {
             warning: Some(ImageWriteWarning::UnsupportedCoverFormat { format }),
         }
     }
+}
 
-    /// Completes unsupported required-cover conversion without emitting original bytes.
-    fn unsupported_conversion(
+impl RequiredCover {
+    /// Prepares an accepted cover or completes without an image when conversion cannot finish.
+    ///
+    /// Appends any conversion warning in attempt order. `None` is terminal cover
+    /// completion, never an acquisition retry. Returned bytes are owned and only
+    /// a routed GIF destination borrows `policy`; emission may still fail.
+    pub(super) fn prepare<'policy>(
         &self,
-        _base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::CompleteWithoutEmission,
-            warning: Some(ImageWriteWarning::CoverConversionSkipped { format }),
+        image: AcceptedImage,
+        policy: &'policy ImageWritePolicy,
+        warnings: &mut Vec<ImageWriteWarning>,
+    ) -> Option<PreparedImage<'policy>> {
+        match prepare_shared(image, policy) {
+            Ok(prepared) => Some(prepared),
+            Err(unprepared) => {
+                warnings.push(match unprepared.problem {
+                    ConversionProblem::Unsupported(format) => {
+                        ImageWriteWarning::CoverConversionSkipped { format }
+                    }
+                    ConversionProblem::Failed(error) => ImageWriteWarning::CoverConversionFailed {
+                        detail: error.to_string(),
+                    },
+                });
+                None
+            }
         }
     }
+}
 
-    /// Completes failed required-cover conversion without emitting original bytes.
-    fn failed_conversion(
-        &self,
-        _base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::CompleteWithoutEmission,
-            warning: Some(ImageWriteWarning::CoverConversionFailed {
-                detail: error.to_string(),
-            }),
-        }
+/// Why conversion could not prepare an image, before its purpose decides what to emit.
+enum ConversionProblem {
+    Unsupported(ImageFormat),
+    Failed(Error),
+}
+
+/// Original bytes retained for a purpose-specific conversion decision without cloning them.
+struct UnpreparedImage {
+    original: AcceptedImage,
+    problem: ConversionProblem,
+}
+
+/// Applies shared routing and conversion while leaving fallback and warnings to the purpose.
+///
+/// Returns owned prepared bytes borrowing only a GIF destination from `policy`,
+/// or the original bytes with the conversion problem. The error is a preparation
+/// fact for the purpose to resolve, not a document failure or acquisition retry.
+fn prepare_shared<'policy>(
+    image: AcceptedImage,
+    policy: &'policy ImageWritePolicy,
+) -> Result<PreparedImage<'policy>, UnpreparedImage> {
+    // Routing is decided together with the destination it needs, so emission
+    // never has to ask the policy a second question it could answer differently.
+    let routed_destination = if image.format == ImageFormat::Gif {
+        policy.gif_destination()
+    } else {
+        None
+    };
+    if let Some(destination) = routed_destination {
+        return Ok(PreparedImage {
+            data: image.data,
+            format: image.format,
+            role: EmittedImageRole::RoutedGif(destination),
+        });
+    }
+
+    let Some(conversion) = &policy.conversion else {
+        return Ok(PreparedImage {
+            data: image.data,
+            format: image.format,
+            role: EmittedImageRole::Preserved,
+        });
+    };
+
+    match conversion.convert(&image.data, image.format) {
+        Ok(ConversionOutcome::Converted(data, format)) => Ok(PreparedImage {
+            data,
+            format,
+            role: EmittedImageRole::Converted,
+        }),
+        Ok(ConversionOutcome::PreservedMatchingSource) => Ok(PreparedImage {
+            data: image.data,
+            format: image.format,
+            role: EmittedImageRole::Preserved,
+        }),
+        Ok(ConversionOutcome::UnsupportedSource(format)) => Err(UnpreparedImage {
+            original: image,
+            problem: ConversionProblem::Unsupported(format),
+        }),
+        Err(error) => Err(UnpreparedImage {
+            original: image,
+            problem: ConversionProblem::Failed(error),
+        }),
     }
 }
 

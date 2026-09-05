@@ -1,22 +1,21 @@
 //! Tests for the archive path safety rule behind Image write purpose.
 //!
 //! The scope here is deliberately narrow: the path safety rule, and the source
-//! eligibility that is built from it. `is_safe_archive_path` is the one decision
-//! in this module that can be wrong — it has several rejection conditions and it
-//! guards against traversal and alternate-data-stream syntax, so a branch lost
-//! there is a real defect rather than a style regression — and
+//! eligibility that is built from it. `is_safe_archive_path` has several rejection
+//! conditions and guards against traversal and alternate-data-stream syntax,
+//! so a branch lost there is a real defect rather than a style regression — and
 //! `source_eligibility` is the trait method through which discovery observes it,
 //! so the two are asserted together. Required-cover eligibility is asserted only
 //! as that rule's counterpart, because a required cover's path is diagnostic
 //! identity rather than evidence.
 //!
 //! Every other method on the Image write purpose trait returns an unconditional
-//! literal, so asserting one would mirror the source line above it. Those hooks
-//! are exercised where they are consumed instead — the unidentified-format and
-//! filtered-format hooks by Archive image discovery's tests, and the two
-//! conversion hooks by the Image write pipeline's tests, which is the only place
-//! both purposes' conversion paths run and the contrast between them is
-//! observable.
+//! literal, so asserting one would mirror the source line above it. The
+//! unidentified-format and filtered-format hooks are exercised where they are
+//! consumed, by Archive image discovery's tests. The concrete preparation methods
+//! are exercised by the Image write pipeline's tests, which retain the contrast
+//! between normal-image preservation and required-cover non-emission through
+//! real conversion and the resulting emitted files, counts, and warnings.
 //!
 //! Nothing here needs a comparison derive: the safety rule returns a boolean and
 //! source eligibility is pattern-matched.

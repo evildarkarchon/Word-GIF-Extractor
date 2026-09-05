@@ -10,15 +10,13 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::conversion::{ConversionOutcome, ConversionPolicy};
+use crate::conversion::ConversionPolicy;
 use crate::image_format::ImageFormat;
 
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::ImageFileEmission;
-use self::purpose::{
-    ConversionAction, ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility,
-};
+use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -395,13 +393,10 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
             }
         };
 
-        let Some(prepared) = prepare_image_for_write(
-            image,
-            self.request.base_name,
-            self.policy,
-            &self.purpose,
-            &mut self.result.warnings,
-        ) else {
+        let Some(prepared) = self
+            .purpose
+            .prepare(image, self.policy, &mut self.result.warnings)
+        else {
             self.disposition = Some(RequiredCoverWriteDisposition::Completed);
             return Ok(());
         };
@@ -516,15 +511,12 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
-        let Some(prepared) = prepare_image_for_write(
+        let prepared = self.purpose.prepare(
             image,
             self.base_name,
             self.policy,
-            &self.purpose,
             &mut self.conversion_warnings,
-        ) else {
-            unreachable!("normal-image preparation always preserves accepted bytes");
-        };
+        );
 
         self.stage_prepared(prepared)
     }
@@ -612,79 +604,6 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
             partial: self.into_result(),
             error,
         }
-    }
-}
-
-/// Applies one statically selected purpose's conversion decision before a file write.
-///
-/// Conversion warning facts are appended in accepted-source order. `None` is
-/// returned only when required-cover conversion completes without emission.
-fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
-    image: AcceptedImage,
-    base_name: &str,
-    policy: &'policy ImageWritePolicy,
-    purpose: &P,
-    warnings: &mut Vec<ImageWriteWarning>,
-) -> Option<PreparedImage<'policy>> {
-    // Routing is decided together with the destination it needs, so emission
-    // never has to ask the policy a second question it could answer differently.
-    let routed_destination = if image.format == ImageFormat::Gif {
-        policy.gif_destination()
-    } else {
-        None
-    };
-
-    if let Some(conversion) = &policy.conversion {
-        if let Some(destination) = routed_destination {
-            return Some(PreparedImage {
-                data: image.data,
-                format: image.format,
-                role: EmittedImageRole::RoutedGif(destination),
-            });
-        }
-
-        let (original_format, decision) = match conversion.convert(&image.data, image.format) {
-            Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                return Some(PreparedImage {
-                    data: converted_bytes,
-                    format,
-                    role: EmittedImageRole::Converted,
-                });
-            }
-            Ok(ConversionOutcome::PreservedMatchingSource) => {
-                return Some(PreparedImage {
-                    data: image.data,
-                    format: image.format,
-                    role: EmittedImageRole::Preserved,
-                });
-            }
-            Ok(ConversionOutcome::UnsupportedSource(original_format)) => (
-                original_format,
-                purpose.unsupported_conversion(base_name, original_format),
-            ),
-            Err(error) => (image.format, purpose.failed_conversion(base_name, &error)),
-        };
-
-        if let Some(warning) = decision.warning {
-            warnings.push(warning);
-        }
-        match decision.action {
-            ConversionAction::PreserveOriginal => Some(PreparedImage {
-                data: image.data,
-                format: original_format,
-                role: EmittedImageRole::ConversionSkipped,
-            }),
-            ConversionAction::CompleteWithoutEmission => None,
-        }
-    } else {
-        Some(PreparedImage {
-            data: image.data,
-            format: image.format,
-            role: match routed_destination {
-                Some(destination) => EmittedImageRole::RoutedGif(destination),
-                None => EmittedImageRole::Preserved,
-            },
-        })
     }
 }
 
