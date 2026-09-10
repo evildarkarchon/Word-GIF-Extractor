@@ -7,8 +7,8 @@
 //! those types could never be implemented by anything but the real filesystem.
 //!
 //! ADR-0012 uses one `search` operation for immediate children and recursive
-//! discovery, backed by direct listing and WalkDir respectively. Discovery keeps
-//! separate consumption loops until ticket 03.
+//! discovery, backed by direct listing and WalkDir respectively. Discovery consumes
+//! both scopes in one loop using descent and failure-position facts.
 
 use std::io;
 use std::path::{Path, PathBuf};

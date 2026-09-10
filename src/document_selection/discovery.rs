@@ -62,6 +62,8 @@ impl RequestedInput {
 /// precede the initial snapshot and independently readable inputs still continue.
 /// Recursive failures retain their traversal position and nearest available path.
 /// Requested directory links are followed, while nested directory links are not.
+/// Both search scopes share entry handling; only entries with pending descent
+/// can invalidate a branch when followed inspection disagrees with enumeration.
 ///
 /// Every observation of the world is made through `surface`; this function makes
 /// no assumption that the world is a filesystem.
@@ -116,12 +118,17 @@ pub(super) fn discover_documents(
                 RequestedInput::File(path) => {
                     record_supported(path, CandidateOrigin::Requested, &mut candidates, progress);
                 }
-                RequestedInput::Directory(path) if recursive => {
+                RequestedInput::Directory(path) => {
                     // Index each known directory by traversal depth so truncation leaves
                     // the nearest confirmed parent available when a failure has no path.
                     let mut known_directories = vec![path.clone()];
-                    let mut traversal = surface.search(&path, SearchScope::Recursive);
-                    while let Some(entry_result) = traversal.next_entry() {
+                    let search_scope = if recursive {
+                        SearchScope::Recursive
+                    } else {
+                        SearchScope::ImmediateChildren
+                    };
+                    let mut search = surface.search(&path, search_scope);
+                    while let Some(entry_result) = search.next_entry() {
                         match entry_result {
                             Ok(entry) => {
                                 known_directories.truncate(entry.depth());
@@ -131,12 +138,14 @@ pub(super) fn discover_documents(
                                 }
 
                                 let entry_path = entry.into_path();
+                                // Follow nested file links as before, while retaining
+                                // the inspection error for broken links.
                                 match surface.inspect(&entry_path) {
                                     Ok(InspectedKind::File) => {
                                         if was_directory {
                                             // The entry changed after enumeration; do not descend
                                             // using its now-stale directory classification.
-                                            traversal.skip_current_dir();
+                                            search.skip_current_dir();
                                         }
                                         record_supported(
                                             entry_path,
@@ -149,14 +158,14 @@ pub(super) fn discover_documents(
                                         if was_directory && kind != InspectedKind::Directory {
                                             // The stale directory entry no longer names a
                                             // directory, so its old traversal branch is invalid.
-                                            traversal.skip_current_dir();
+                                            search.skip_current_dir();
                                         }
                                     }
                                     Err(error) => {
                                         if was_directory {
                                             // One failed inspection should not be followed by a
                                             // second failure while opening the same directory.
-                                            traversal.skip_current_dir();
+                                            search.skip_current_dir();
                                         }
                                         progress.discovery_failed(entry_path, error.to_string());
                                     }
@@ -173,37 +182,6 @@ pub(super) fn discover_documents(
                                     },
                                     Path::to_path_buf,
                                 );
-                                progress
-                                    .discovery_failed(failure_path, failure.error().to_string());
-                            }
-                        }
-                    }
-                }
-                RequestedInput::Directory(path) => {
-                    let mut search = surface.search(&path, SearchScope::ImmediateChildren);
-                    while let Some(entry_result) = search.next_entry() {
-                        match entry_result {
-                            Ok(entry) => {
-                                let entry_path = entry.into_path();
-                                // Follow nested file links as before, while retaining
-                                // the inspection error for broken links.
-                                match surface.inspect(&entry_path) {
-                                    Ok(InspectedKind::File) => {
-                                        record_supported(
-                                            entry_path,
-                                            CandidateOrigin::Traversed,
-                                            &mut candidates,
-                                            progress,
-                                        );
-                                    }
-                                    Ok(_) => {}
-                                    Err(error) => {
-                                        progress.discovery_failed(entry_path, error.to_string());
-                                    }
-                                }
-                            }
-                            Err(failure) => {
-                                let failure_path = failure.path().unwrap_or(&path).to_path_buf();
                                 progress
                                     .discovery_failed(failure_path, failure.error().to_string());
                             }

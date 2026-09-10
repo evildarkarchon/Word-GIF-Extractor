@@ -884,6 +884,98 @@ fn select_documents_orders_immediate_children_and_failures_under_requested_link(
     ));
 }
 
+/// Verifies classification diagnostics precede discovery and search failures precede later progress.
+#[test]
+fn select_documents_orders_classification_and_search_observations_in_both_scopes() {
+    for recursive in [false, true] {
+        let surface = InMemorySearchSurface::new()
+            .with_link("broken", None)
+            .with_file("direct.docx")
+            .with_directory("root")
+            .with_file("root/a-first.docx")
+            .with_link("root/b-broken", None)
+            .with_file("root/c-last.docx")
+            .with_file("root/notes.txt");
+
+        let (selected, observer) = select_against(
+            &surface,
+            &["direct.docx", "missing", "root", "broken"],
+            recursive,
+        );
+
+        assert_eq!(
+            selected
+                .iter()
+                .map(SelectedDocument::get_path)
+                .collect::<Vec<_>>(),
+            vec![
+                Path::new("direct.docx"),
+                Path::new("root/a-first.docx"),
+                Path::new("root/c-last.docx")
+            ]
+        );
+        assert!(matches!(
+            observer.observations.as_slice(),
+            [
+                ExtractionRunObservation::MissingInput { path: missing },
+                ExtractionRunObservation::DocumentDiscoveryFailed { path: broken, detail: root_detail },
+                ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+                ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+                ExtractionRunObservation::DiscoveringDocuments { discovered: 2, .. },
+                ExtractionRunObservation::DocumentDiscoveryFailed { path: nested, detail: entry_detail },
+                ExtractionRunObservation::DiscoveringDocuments { discovered: 3, .. },
+                ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 3, .. },
+            ] if missing == Path::new("missing") && broken == Path::new("broken")
+                && nested == Path::new("root/b-broken")
+                && !root_detail.is_empty() && !entry_detail.is_empty()
+        ));
+    }
+}
+
+/// Verifies immediate-child encounter order decides the first EPUB retained across requested roots.
+#[test]
+fn select_documents_preserves_immediate_encounter_order_and_first_epub_winner() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("z-first")
+        .with_file("z-first/a-winner.epub")
+        .with_file("z-first/b-next.docx")
+        .with_directory("a-second")
+        .with_file("a-second/a-duplicate.epub")
+        .with_file("a-second/b-last.docx");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("z-first/a-winner.epub", Some("Creator"), Some("Title"))
+        .with_declarations("a-second/a-duplicate.epub", Some("Creator"), Some("Title"));
+
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &EpubFilter::default(),
+        &["z-first", "a-second"],
+        false,
+    );
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(SelectedDocument::get_path)
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("z-first/a-winner.epub"),
+            Path::new("z-first/b-next.docx"),
+            Path::new("a-second/b-last.docx")
+        ]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+    assert!(matches!(
+        observer.observations.last(),
+        Some(ExtractionRunObservation::EpubDeduplicationFinished {
+            duplicates_found: 1,
+            unique_remaining: 1,
+            ..
+        })
+    ));
+}
+
 /// Verifies candidate origin survives immediate-child search before EPUB-only selection.
 #[test]
 fn epub_only_selection_distinguishes_immediate_child_from_requested_document() {
