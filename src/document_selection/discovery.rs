@@ -3,7 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::document_search_surface::{DocumentSearchSurface, InspectedKind};
+use crate::document_search_surface::{DocumentSearchSurface, InspectedKind, SearchScope};
 use crate::extraction_run_observation::DocumentDiscoveryScope;
 
 use super::{
@@ -125,7 +125,7 @@ pub(super) fn discover_documents(
                         match entry_result {
                             Ok(entry) => {
                                 known_directories.truncate(entry.depth());
-                                let was_directory = entry.is_directory();
+                                let was_directory = entry.may_descend();
                                 if was_directory {
                                     known_directories.push(entry.path().to_path_buf());
                                 }
@@ -180,39 +180,33 @@ pub(super) fn discover_documents(
                     }
                 }
                 RequestedInput::Directory(path) => {
-                    match surface.read_directory(&path) {
-                        Ok(entries) => {
-                            for entry_result in entries {
-                                match entry_result {
-                                    Ok(entry_path) => {
-                                        // Follow nested file links as before, while retaining
-                                        // the inspection error for broken links.
-                                        match surface.inspect(&entry_path) {
-                                            Ok(InspectedKind::File) => {
-                                                record_supported(
-                                                    entry_path,
-                                                    CandidateOrigin::Traversed,
-                                                    &mut candidates,
-                                                    progress,
-                                                );
-                                            }
-                                            Ok(_) => {}
-                                            Err(error) => {
-                                                progress.discovery_failed(
-                                                    entry_path,
-                                                    error.to_string(),
-                                                );
-                                            }
-                                        }
+                    let mut search = surface.search(&path, SearchScope::ImmediateChildren);
+                    while let Some(entry_result) = search.next_entry() {
+                        match entry_result {
+                            Ok(entry) => {
+                                let entry_path = entry.into_path();
+                                // Follow nested file links as before, while retaining
+                                // the inspection error for broken links.
+                                match surface.inspect(&entry_path) {
+                                    Ok(InspectedKind::File) => {
+                                        record_supported(
+                                            entry_path,
+                                            CandidateOrigin::Traversed,
+                                            &mut candidates,
+                                            progress,
+                                        );
                                     }
+                                    Ok(_) => {}
                                     Err(error) => {
-                                        progress.discovery_failed(path.clone(), error.to_string());
+                                        progress.discovery_failed(entry_path, error.to_string());
                                     }
                                 }
                             }
-                        }
-                        Err(error) => {
-                            progress.discovery_failed(path, error.to_string());
+                            Err(failure) => {
+                                let failure_path = failure.path().unwrap_or(&path).to_path_buf();
+                                progress
+                                    .discovery_failed(failure_path, failure.error().to_string());
+                            }
                         }
                     }
                 }

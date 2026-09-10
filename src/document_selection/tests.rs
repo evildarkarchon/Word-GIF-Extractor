@@ -656,6 +656,85 @@ fn select_documents_reports_an_unreadable_directory_entry_and_keeps_listing() {
     ));
 }
 
+/// Verifies linked-root failures and candidates retain their encounter positions and counts.
+#[test]
+fn select_documents_orders_immediate_children_and_failures_under_requested_link() {
+    let surface = InMemorySearchSurface::new()
+        .with_unreadable_entry("target")
+        .with_file("target/a-first.docx")
+        .with_link("target/b-broken.docx", None)
+        .with_file("target/c-second.docx")
+        .with_directory("target/nested")
+        .with_file("target/nested/hidden.docx")
+        .with_file("target/notes.txt")
+        .with_link("requested", Some("target"))
+        .with_file("independent.docx");
+
+    let (selected, observer) = select_against(&surface, &["requested", "independent.docx"], false);
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(|document| document.get_path())
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("requested/a-first.docx"),
+            Path::new("requested/c-second.docx"),
+            Path::new("independent.docx"),
+        ]
+    );
+    assert!(matches!(
+        observer.observations.as_slice(),
+        [
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs, discovered: 0,
+            },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path: entry_path, detail: entry_detail },
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs, discovered: 1,
+            },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path: link_path, detail: link_detail },
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs, discovered: 2,
+            },
+            ExtractionRunObservation::DiscoveringDocuments {
+                scope: DocumentDiscoveryScope::RequestedInputs, discovered: 3,
+            },
+            ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope: DocumentDiscoveryScope::RequestedInputs, discovered: 3,
+            },
+        ] if entry_path == Path::new("requested") && !entry_detail.is_empty()
+            && link_path == Path::new("requested/b-broken.docx") && !link_detail.is_empty()
+    ));
+}
+
+/// Verifies candidate origin survives immediate-child search before EPUB-only selection.
+#[test]
+fn epub_only_selection_distinguishes_immediate_child_from_requested_document() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/document.docx");
+
+    let (selected, observer) = select_epub_only(
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &["root", "root/document.docx"],
+        false,
+    );
+
+    assert!(selected.is_empty());
+    assert!(matches!(
+        observer.observations.as_slice(),
+        [
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 2, .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 2, .. },
+            ExtractionRunObservation::SkippedNonEpubInput { path },
+        ] if path == Path::new("root/document.docx")
+    ));
+}
+
 #[test]
 fn select_documents_keeps_scanning_silent_when_no_inputs_are_requested() {
     let surface = InMemorySearchSurface::new();

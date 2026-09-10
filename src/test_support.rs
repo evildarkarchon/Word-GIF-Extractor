@@ -36,7 +36,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
 use crate::document_search_surface::{
-    DocumentSearchSurface, DocumentSearchTraversal, InspectedKind, TraversalFailure, TraversedEntry,
+    DirectorySearch, DocumentSearchSurface, ImmediateChildren, InspectedKind, SearchEntry,
+    SearchFailure, SearchScope,
 };
 use crate::epub_declarations::{EpubDeclarationError, EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
@@ -139,8 +140,8 @@ impl InMemorySearchSurface {
     /// Declares a directory that opens but whose listing fails on one entry.
     ///
     /// Opening a directory and reading one of its entries are separate operations
-    /// that fail separately, which is why [`DocumentSearchSurface::read_directory`]
-    /// returns a fallible iterator of fallible items. Document discovery reports a
+    /// that fail separately; [`DocumentSearchSurface::search`] retains both
+    /// failures in its ordered stream. Document discovery reports a
     /// per-entry failure against the directory and keeps reading the rest; without
     /// this, only a real filesystem could produce that condition.
     ///
@@ -236,6 +237,39 @@ impl InMemorySearchSurface {
             .collect()
     }
 
+    /// Opens the declared direct listing, preserving linked paths and entry failures.
+    fn read_directory<'surface>(
+        &'surface self,
+        path: &Path,
+    ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
+        match self.resolve(path) {
+            Some((resolved, SearchNode::Directory)) => {
+                // Both declarations key on the resolved directory rather than on
+                // the requested path, so a request arriving through a link fails
+                // the way the filesystem would: opening the target is what fails,
+                // not naming the link.
+                if let Some(failure) = self.listing_failures.get(&resolved) {
+                    return Err(Self::failure(failure.kind, path));
+                }
+
+                let mut entries: Vec<io::Result<PathBuf>> = self
+                    .children(&resolved, path)
+                    .into_iter()
+                    .map(|(child, _)| Ok(child))
+                    .collect();
+                if let Some(kind) = self.unreadable_entries.get(&resolved) {
+                    // Placed ahead of the entries that did materialise, so that a
+                    // test asserting the listing continued past it has something
+                    // left to find. A failing entry has no name to order it by.
+                    entries.insert(0, Err(Self::failure(*kind, path)));
+                }
+                Ok(Box::new(entries.into_iter()))
+            }
+            Some(_) => Err(Self::failure(io::ErrorKind::InvalidInput, path)),
+            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
     /// Flattens one recursive traversal into the items it yields, in encounter order.
     fn traversal_items(&self, root: &Path) -> Vec<PendingItem> {
         let mut items = Vec::new();
@@ -247,7 +281,7 @@ impl InMemorySearchSurface {
             // root, in the position the root itself would have occupied.
             _ => items.push(PendingItem {
                 listed_directory: root.to_path_buf(),
-                item: Err(TraversalFailure::new(
+                item: Err(SearchFailure::new(
                     0,
                     Some(root.to_path_buf()),
                     Self::failure(io::ErrorKind::NotFound, root),
@@ -274,7 +308,7 @@ impl InMemorySearchSurface {
             // leaves the nearest confirmed parent at the top of the caller's stack.
             items.push(PendingItem {
                 listed_directory: display_root.to_path_buf(),
-                item: Err(TraversalFailure::new(
+                item: Err(SearchFailure::new(
                     depth.saturating_sub(1),
                     failure.reports_path.then(|| display_root.to_path_buf()),
                     Self::failure(failure.kind, display_root),
@@ -287,7 +321,7 @@ impl InMemorySearchSurface {
             let is_directory = matches!(node, SearchNode::Directory);
             items.push(PendingItem {
                 listed_directory: display_root.to_path_buf(),
-                item: Ok(TraversedEntry::new(path.clone(), depth, is_directory)),
+                item: Ok(SearchEntry::new(path.clone(), depth, is_directory)),
             });
             if is_directory {
                 // Nested links are enumerated but never descended into, so a
@@ -328,42 +362,21 @@ impl DocumentSearchSurface for InMemorySearchSurface {
         }
     }
 
-    fn read_directory<'surface>(
+    /// Wraps declared direct listings in the shared search stream; recursive fixtures stay intact.
+    fn search<'surface>(
         &'surface self,
-        path: &Path,
-    ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
-        match self.resolve(path) {
-            Some((resolved, SearchNode::Directory)) => {
-                // Both declarations key on the resolved directory rather than on
-                // the requested path, so a request arriving through a link fails
-                // the way the filesystem would: opening the target is what fails,
-                // not naming the link.
-                if let Some(failure) = self.listing_failures.get(&resolved) {
-                    return Err(Self::failure(failure.kind, path));
-                }
-
-                let mut entries: Vec<io::Result<PathBuf>> = self
-                    .children(&resolved, path)
-                    .into_iter()
-                    .map(|(child, _)| Ok(child))
-                    .collect();
-                if let Some(kind) = self.unreadable_entries.get(&resolved) {
-                    // Placed ahead of the entries that did materialise, so that a
-                    // test asserting the listing continued past it has something
-                    // left to find. A failing entry has no name to order it by.
-                    entries.insert(0, Err(Self::failure(*kind, path)));
-                }
-                Ok(Box::new(entries.into_iter()))
+        root: &Path,
+        scope: SearchScope,
+    ) -> Box<dyn DirectorySearch + 'surface> {
+        match scope {
+            SearchScope::ImmediateChildren => {
+                Box::new(ImmediateChildren::new(root, self.read_directory(root)))
             }
-            Some(_) => Err(Self::failure(io::ErrorKind::InvalidInput, path)),
-            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+            SearchScope::Recursive => self.traverse(root),
         }
     }
 
-    fn traverse<'surface>(
-        &'surface self,
-        root: &Path,
-    ) -> Box<dyn DocumentSearchTraversal + 'surface> {
+    fn traverse<'surface>(&'surface self, root: &Path) -> Box<dyn DirectorySearch + 'surface> {
         Box::new(DeclaredTraversal {
             pending: self.traversal_items(root).into(),
             last_directory: None,
@@ -453,7 +466,7 @@ impl EpubDeclarationSource for DeclaredEpubDeclarations {
 /// listing whether or not it can name itself, which is the fact worth recording.
 struct PendingItem {
     listed_directory: PathBuf,
-    item: Result<TraversedEntry, TraversalFailure>,
+    item: Result<SearchEntry, SearchFailure>,
 }
 
 /// One traversal of a declared tree, flattened ahead of time.
@@ -462,11 +475,11 @@ struct DeclaredTraversal {
     last_directory: Option<PathBuf>,
 }
 
-impl DocumentSearchTraversal for DeclaredTraversal {
-    fn next_entry(&mut self) -> Option<Result<TraversedEntry, TraversalFailure>> {
+impl DirectorySearch for DeclaredTraversal {
+    fn next_entry(&mut self) -> Option<Result<SearchEntry, SearchFailure>> {
         let pending = self.pending.pop_front()?;
         self.last_directory = match &pending.item {
-            Ok(entry) if entry.is_directory() => Some(entry.path().to_path_buf()),
+            Ok(entry) if entry.may_descend() => Some(entry.path().to_path_buf()),
             _ => None,
         };
         Some(pending.item)
