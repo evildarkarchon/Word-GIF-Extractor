@@ -617,6 +617,182 @@ fn select_documents_abandons_a_recursive_branch_whose_inspection_failed() {
     ));
 }
 
+/// Verifies a supported replacement file is accepted while its stale branch is discarded.
+#[test]
+fn select_documents_keeps_a_supported_replacement_and_prunes_stale_descendants() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_stale_directory("root/a-replaced.docx", InspectedKind::File)
+        .with_file("root/a-replaced.docx/hidden.docx")
+        .with_pathless_listing_failure("root/a-replaced.docx/unopenable")
+        .with_file("root/b-sibling.docx");
+
+    let (selected, observer) = select_against(&surface, &["root"], true);
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(SelectedDocument::get_path)
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("root/a-replaced.docx"),
+            Path::new("root/b-sibling.docx")
+        ]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+    assert!(matches!(
+        observer.observations.as_slice(),
+        [
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 2, .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 2, .. },
+        ]
+    ));
+}
+
+/// Verifies non-directory replacements and failed inspection prune without losing siblings.
+#[test]
+fn select_documents_prunes_other_and_failed_branches_without_duplicate_failures() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_stale_directory("root/a-other.docx", InspectedKind::Other)
+        .with_file("root/a-other.docx/hidden.docx")
+        .with_pathless_listing_failure("root/a-other.docx/unopenable")
+        .with_stale_directory_inspection_failure("root/b-failed")
+        .with_file("root/b-failed/hidden.docx")
+        .with_pathless_listing_failure("root/b-failed/unopenable")
+        .with_file("root/c-sibling.docx")
+        .with_file("independent.docx");
+
+    let (selected, observer) = select_against(&surface, &["root", "independent.docx"], true);
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(SelectedDocument::get_path)
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("root/c-sibling.docx"),
+            Path::new("independent.docx")
+        ]
+    );
+    assert!(matches!(
+        observer.observations.as_slice(),
+        [
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 2, .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 2, .. },
+        ] if path == Path::new("root/b-failed") && !detail.is_empty()
+    ));
+}
+
+/// Verifies pathless failures retain root fallback, nearest-directory attribution and order.
+#[test]
+fn select_documents_orders_pathless_recursive_failures_and_continues() {
+    let surface = InMemorySearchSurface::new()
+        .with_pathless_listing_failure("unopenable")
+        .with_directory("root")
+        .with_file("root/a-first.docx")
+        .with_directory("root/b-branch")
+        .with_pathless_listing_failure("root/b-branch/deep")
+        .with_file("root/c-sibling.docx")
+        .with_file("independent.docx");
+
+    let (selected, observer) =
+        select_against(&surface, &["unopenable", "root", "independent.docx"], true);
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(SelectedDocument::get_path)
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("root/a-first.docx"),
+            Path::new("root/c-sibling.docx"),
+            Path::new("independent.docx")
+        ]
+    );
+    assert!(matches!(
+        observer.observations.as_slice(),
+        [
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path: root, detail: root_detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
+            ExtractionRunObservation::DocumentDiscoveryFailed { path: branch, detail: branch_detail },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 2, .. },
+            ExtractionRunObservation::DiscoveringDocuments { discovered: 3, .. },
+            ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 3, .. },
+        ] if root == Path::new("unopenable") && !root_detail.is_empty()
+            && branch == Path::new("root/b-branch") && !branch_detail.is_empty()
+    ));
+}
+
+/// Verifies recursive encounters retain order across requested roots and EPUB deduplication.
+#[test]
+fn select_documents_preserves_recursive_encounter_order_and_first_epub_winner() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("z-first")
+        .with_directory("z-first/a-branch")
+        .with_file("z-first/a-branch/winner.epub")
+        .with_file("z-first/b-next.docx")
+        .with_directory("a-second")
+        .with_file("a-second/a-duplicate.epub")
+        .with_file("a-second/b-last.docx");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations(
+            "z-first/a-branch/winner.epub",
+            Some("Creator"),
+            Some("Title"),
+        )
+        .with_declarations("a-second/a-duplicate.epub", Some("Creator"), Some("Title"));
+
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &EpubFilter::default(),
+        &["z-first", "a-second"],
+        true,
+    );
+
+    assert_eq!(
+        selected
+            .iter()
+            .map(SelectedDocument::get_path)
+            .collect::<Vec<_>>(),
+        vec![
+            Path::new("z-first/a-branch/winner.epub"),
+            Path::new("z-first/b-next.docx"),
+            Path::new("a-second/b-last.docx")
+        ]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+    assert!(
+        observer
+            .selection_progress()
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 4, .. }
+            ))
+    );
+    assert!(
+        observer
+            .selection_progress()
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                ExtractionRunObservation::EpubDeduplicationFinished {
+                    duplicates_found: 1,
+                    unique_remaining: 1,
+                    ..
+                }
+            ))
+    );
+}
+
 /// Verifies a traversal failure with no path is attributed to the nearest known directory.
 #[test]
 fn select_documents_attributes_a_pathless_failure_to_the_nearest_known_directory() {

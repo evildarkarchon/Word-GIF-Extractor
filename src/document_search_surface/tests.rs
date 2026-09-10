@@ -46,7 +46,7 @@ fn immediate_search_reports_root_replaced_after_inspection_then_exhausts() {
 
 /// Collects one whole traversal, so a test can assert on what it did not yield.
 fn traversed_paths(surface: &FilesystemSearchSurface, root: &Path) -> Vec<PathBuf> {
-    let mut traversal = surface.traverse(root);
+    let mut traversal = surface.search(root, SearchScope::Recursive);
     let mut paths = Vec::new();
     while let Some(entry) = traversal.next_entry() {
         paths.push(
@@ -152,7 +152,8 @@ fn nested_directory_link_is_enumerated_but_not_descended_into() {
 
     // The link is yielded, its contents are not, and it does not enumerate as a
     // directory — which is what stops a traversal widening its scope through one.
-    let mut traversal = FilesystemSearchSurface.traverse(&requested_directory);
+    let mut traversal =
+        FilesystemSearchSurface.search(&requested_directory, SearchScope::Recursive);
     let entry = traversal
         .next_entry()
         .expect("the nested link should be enumerated")

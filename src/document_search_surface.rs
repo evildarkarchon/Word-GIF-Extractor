@@ -6,9 +6,9 @@
 //! and `std::fs::DirEntry` have no public constructors, so a surface speaking
 //! those types could never be implemented by anything but the real filesystem.
 //!
-//! ADR-0012's first migration uses `search` for immediate children. Recursive
-//! discovery still calls `traverse` and keeps its separate consumption loop until
-//! ticket 02; both interactions now speak the same entry and failure vocabulary.
+//! ADR-0012 uses one `search` operation for immediate children and recursive
+//! discovery, backed by direct listing and WalkDir respectively. Discovery keeps
+//! separate consumption loops until ticket 03.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -18,8 +18,6 @@ use walkdir::WalkDir;
 /// The directory-search scope, without changing either acquisition mechanism.
 pub(crate) enum SearchScope {
     ImmediateChildren,
-    // Ticket 02 moves recursive discovery to search; traverse remains operational meanwhile.
-    #[allow(dead_code)]
     Recursive,
 }
 
@@ -192,10 +190,6 @@ pub(crate) trait DocumentSearchSurface {
         root: &Path,
         scope: SearchScope,
     ) -> Box<dyn DirectorySearch + 'surface>;
-
-    /// Begins a recursive traversal of one directory, excluding the root itself.
-    /// Retained for recursive discovery until ADR-0012's second migration.
-    fn traverse<'surface>(&'surface self, root: &Path) -> Box<dyn DirectorySearch + 'surface>;
 }
 
 /// The Document search surface backed by the real filesystem.
@@ -239,14 +233,10 @@ impl DocumentSearchSurface for FilesystemSearchSurface {
                 });
                 Box::new(ImmediateChildren::new(root, entries))
             }
-            SearchScope::Recursive => self.traverse(root),
+            SearchScope::Recursive => Box::new(WalkDirTraversal {
+                traversal: WalkDir::new(root).min_depth(1).into_iter(),
+            }),
         }
-    }
-
-    fn traverse<'surface>(&'surface self, root: &Path) -> Box<dyn DirectorySearch + 'surface> {
-        Box::new(WalkDirTraversal {
-            traversal: WalkDir::new(root).min_depth(1).into_iter(),
-        })
     }
 }
 

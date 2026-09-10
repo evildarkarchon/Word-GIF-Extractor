@@ -120,7 +120,7 @@ pub(super) fn discover_documents(
                     // Index each known directory by traversal depth so truncation leaves
                     // the nearest confirmed parent available when a failure has no path.
                     let mut known_directories = vec![path.clone()];
-                    let mut traversal = surface.traverse(&path);
+                    let mut traversal = surface.search(&path, SearchScope::Recursive);
                     while let Some(entry_result) = traversal.next_entry() {
                         match entry_result {
                             Ok(entry) => {

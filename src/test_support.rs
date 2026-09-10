@@ -362,7 +362,7 @@ impl DocumentSearchSurface for InMemorySearchSurface {
         }
     }
 
-    /// Wraps declared direct listings in the shared search stream; recursive fixtures stay intact.
+    /// Starts either search scope with the declared encounter order and failure placement.
     fn search<'surface>(
         &'surface self,
         root: &Path,
@@ -372,15 +372,11 @@ impl DocumentSearchSurface for InMemorySearchSurface {
             SearchScope::ImmediateChildren => {
                 Box::new(ImmediateChildren::new(root, self.read_directory(root)))
             }
-            SearchScope::Recursive => self.traverse(root),
+            SearchScope::Recursive => Box::new(DeclaredTraversal {
+                pending: self.traversal_items(root).into(),
+                last_directory: None,
+            }),
         }
-    }
-
-    fn traverse<'surface>(&'surface self, root: &Path) -> Box<dyn DirectorySearch + 'surface> {
-        Box::new(DeclaredTraversal {
-            pending: self.traversal_items(root).into(),
-            last_directory: None,
-        })
     }
 }
 
