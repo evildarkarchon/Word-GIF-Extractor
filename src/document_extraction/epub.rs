@@ -11,8 +11,9 @@ use super::EpubCoverPolicy;
 use crate::document_selection::SelectedEpub;
 use crate::epub_declarations::EpubDeclarations;
 use crate::image_write_pipeline::{
-    ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
-    ImageWriteRequest, RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
+    ImageWriteOutcome, ImageWritePipeline, NormalImageSource, NormalImageWriteRequest,
+    NormalImageWriteVisitor, RequiredCoverSource, RequiredCoverWriteOutcome,
+    RequiredCoverWriteRequest,
 };
 
 use self::cover_extraction::{CoverAttempts, CoverCandidate};
@@ -120,13 +121,13 @@ impl<'session> EpubImagePlan<'session> {
     }
 
     /// Builds the normal-image source facts used by shared archive traversal.
-    fn normal_source(&self) -> ArchiveImageSource {
-        ArchiveImageSource::named(&self.manifest_path).with_mime(&self.mime)
+    fn normal_source(&self) -> NormalImageSource<'_> {
+        NormalImageSource::declared(&self.manifest_path, &self.mime)
     }
 
     /// Builds the required-cover source facts used by the cover Image write purpose.
-    fn required_cover_source(&self) -> ArchiveImageSource {
-        ArchiveImageSource::required_cover(&self.manifest_path, &self.mime)
+    fn required_cover_source(&self) -> RequiredCoverSource<'_> {
+        RequiredCoverSource::new(&self.manifest_path, &self.mime)
     }
 }
 
@@ -148,8 +149,8 @@ fn extract_all_images<'session>(
     base_name: &str,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
-    pipeline.write_from(
-        ImageWriteRequest::normal_images(output_base_dir, base_name),
+    pipeline.write_normal_images(
+        NormalImageWriteRequest::normal_images(output_base_dir, base_name),
         |visitor| {
             for candidate in plan {
                 if excluded_identities.contains(&candidate.identity) {
@@ -225,7 +226,7 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
             |visitor| {
                 let source = resource.required_cover_source();
                 let acquisition = archive.acquire(resource.key, |mut payload| {
-                    visitor.visit(source.clone(), &mut payload)
+                    visitor.visit(source, &mut payload)
                 })?;
                 if let ResourceAcquisition::Unavailable(error) = acquisition {
                     visitor.unreadable(source, error)?;
@@ -260,11 +261,11 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
 fn visit_resource<'session>(
     archive: &mut EpubResourceArchiveSession<'session>,
     candidate: &EpubImagePlan<'session>,
-    visitor: &mut ArchiveImageVisitor<'_, '_>,
+    visitor: &mut NormalImageWriteVisitor<'_, '_>,
 ) -> Result<()> {
     let source = candidate.normal_source();
     let acquisition = archive.acquire(candidate.key, |mut payload| {
-        visitor.visit(source.clone(), &mut payload)
+        visitor.visit(source, &mut payload)
     })?;
     if let ResourceAcquisition::Unavailable(error) = acquisition {
         visitor.unreadable(source, error);

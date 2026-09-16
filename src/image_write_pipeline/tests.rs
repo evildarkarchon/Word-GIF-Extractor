@@ -43,10 +43,10 @@ impl Read for AssertOutputBeforeTailReader {
 /// Writes buffered test fixtures through the scoped production reader seam.
 fn write_sources(
     pipeline: &ImageWritePipeline,
-    request: ImageWriteRequest<'_>,
-    sources: Vec<(ArchiveImageSource, Vec<u8>)>,
+    request: NormalImageWriteRequest<'_>,
+    sources: Vec<(NormalImageSource<'_>, Vec<u8>)>,
 ) -> ImageWriteOutcome {
-    pipeline.write_from(request, |visitor| {
+    pipeline.write_normal_images(request, |visitor| {
         for (source, data) in sources {
             visitor.visit(source, &mut Cursor::new(data))?;
         }
@@ -55,29 +55,23 @@ fn write_sources(
 }
 
 /// Creates one named buffered source for a pipeline interface test.
-fn named_source(data: impl Into<Vec<u8>>, source_name: &str) -> (ArchiveImageSource, Vec<u8>) {
-    (ArchiveImageSource::named(source_name), data.into())
+fn named_source(data: impl Into<Vec<u8>>, source_name: &str) -> (NormalImageSource<'_>, Vec<u8>) {
+    (NormalImageSource::named(source_name), data.into())
 }
 
 /// Creates one MIME-labelled buffered source for a pipeline interface test.
-fn mime_source(
+fn mime_source<'a>(
     data: impl Into<Vec<u8>>,
-    source_name: &str,
-    mime: &str,
-) -> (ArchiveImageSource, Vec<u8>) {
-    (
-        ArchiveImageSource::named(source_name).with_mime(mime),
-        data.into(),
-    )
+    source_name: &'a str,
+    mime: &'a str,
+) -> (NormalImageSource<'a>, Vec<u8>) {
+    (NormalImageSource::declared(source_name, mime), data.into())
 }
 
 /// Proves a defaulted cover is emitted under the format it was defaulted to.
 ///
-/// That the payload defaults to JPEG at all, and that the whole payload is read,
-/// are Archive image discovery's facts and are asserted as values there. What
-/// only this seam shows is the rest of the journey: the defaulting warning
-/// survives the fold into the cover outcome, and the bytes land under the
-/// defaulted format's extension rather than the `.png` in the source name.
+/// The visitor ignores the diagnostic `.png` extension, retains the defaulting
+/// warning, and acquires the complete payload before emitting it as JPEG.
 #[test]
 fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-default-jpeg");
@@ -94,7 +88,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.png", "application/octet-stream"),
+                    RequiredCoverSource::new("OPS/cover.png", "application/octet-stream"),
                     &mut reader,
                 )
             },
@@ -124,6 +118,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
             mime: "application/octet-stream".to_string(),
         }]
     );
+    assert_eq!(reader.position(), original.len() as u64);
     assert_eq!(fs::read(temp_dir.join("sample.jpg")).unwrap(), original);
     assert!(!temp_dir.join("sample.png").exists());
 
@@ -136,8 +131,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
 /// filtered, and the mapping from that report to "stop looking for a cover"
 /// belongs to the pipeline. The pair below — completed is final, a failed
 /// acquisition is retryable — is the whole contract the EPUB cover retry loop is
-/// built on, which is why it stays here after the surrounding assertions moved
-/// down to Archive image discovery's own tests.
+/// built on, so both warning facts and retry disposition are asserted here.
 #[test]
 fn required_cover_completing_without_emission_is_a_final_outcome() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-filter");
@@ -154,7 +148,7 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.jpg", "image/jpeg"),
+                    RequiredCoverSource::new("OPS/cover.jpg", "image/jpeg"),
                     &mut reader,
                 )
             },
@@ -165,6 +159,13 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
         panic!("a filtered cover should complete rather than retry");
     };
     assert_eq!(result.counts.extracted, 0);
+    assert_eq!(reader.position(), 1027);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::UnsupportedCoverFormat {
+            format: ImageFormat::Jpg
+        }]
+    );
 }
 
 /// Pins that a failed acquisition leaves the cover decision open.
@@ -187,7 +188,7 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.bin", "application/octet-stream"),
+                    RequiredCoverSource::new("OPS/cover.bin", "application/octet-stream"),
                     &mut reader,
                 )
             },
@@ -198,6 +199,18 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
         panic!("a tail read failure should permit another cover candidate");
     };
     assert_eq!(result.counts.extracted, 0);
+    assert_eq!(
+        result.warnings,
+        vec![
+            ImageWriteWarning::CoverDefaultToJpeg {
+                mime: "application/octet-stream".to_string()
+            },
+            ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "OPS/cover.bin".to_string(),
+                detail: "injected archive resource failure".to_string(),
+            },
+        ]
+    );
 }
 
 #[test]
@@ -215,7 +228,7 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.svg", "image/svg+xml"),
+                    RequiredCoverSource::new("OPS/cover.svg", "image/svg+xml"),
                     &mut reader,
                 )
             },
@@ -250,7 +263,7 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.png", "image/png"),
+                    RequiredCoverSource::new("OPS/cover.png", "image/png"),
                     &mut reader,
                 )
             },
@@ -286,7 +299,7 @@ fn required_gif_cover_routes_without_conversion() {
             RequiredCoverWriteRequest::new(&output_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.gif", "image/gif"),
+                    RequiredCoverSource::new("OPS/cover.gif", "image/gif"),
                     &mut reader,
                 )
             },
@@ -328,7 +341,7 @@ fn emitted_file_is_named_from_the_identified_format() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![named_source(payload.clone(), "word/media/image.bin")],
     )
     .expect("magic-identified image should be emitted");
@@ -352,7 +365,7 @@ fn magic_evidence_outranks_conflicting_extension_and_mime() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![mime_source(
             MINIMAL_PNG,
             "word/media/image.jpg",
@@ -394,11 +407,11 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
     let mut reader = Cursor::new(original.clone());
 
     let result = pipeline
-        .write_from(
-            ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        .write_normal_images(
+            NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::named("word/media/image.bin"),
+                    NormalImageSource::named("word/media/image.bin"),
                     &mut reader,
                 )
             },
@@ -416,9 +429,9 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
 /// Proves a discovery outcome that emits nothing contributes nothing to the run.
 ///
 /// *Why* each of these sources is non-emitting — a format outside the allow-set,
-/// a path the safety rule rejects — is decided in Archive image discovery and
-/// Image write purpose, and asserted as values there. This is the part only the
-/// fold can show: such an outcome moves no count and claims no normal output.
+/// a path the safety rule rejects — is decided in Archive image discovery.
+/// The visitor seam verifies such an outcome moves no count and claims no
+/// normal output.
 ///
 /// It is asserted from the result rather than from the absence of the output
 /// directory. The directory is absent before the pipeline runs (see
@@ -435,7 +448,7 @@ fn non_emitting_discovery_outcomes_move_no_counts() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![
             // Identified, then filtered out by the allow-set.
             named_source(b"GIF89a payload".as_slice(), "word/media/animation.gif"),
@@ -467,7 +480,7 @@ fn failed_normal_emission_does_not_report_normal_output() {
 
     let failure = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&blocked_output, "sample"),
+        NormalImageWriteRequest::normal_images(&blocked_output, "sample"),
         vec![named_source(MINIMAL_PNG, "word/media/image.png")],
     )
     .expect_err("failed Image file emission should abort the pipeline");
@@ -493,15 +506,15 @@ fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
     let mut valid_source = Cursor::new(MINIMAL_PNG);
 
     let result = pipeline
-        .write_from(
-            ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        .write_normal_images(
+            NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
             |visitor| {
                 visitor.visit(
-                    ArchiveImageSource::named("word/media/broken.png").with_mime("image/jpeg"),
+                    NormalImageSource::declared("word/media/broken.png", "image/jpeg"),
                     &mut failing_source,
                 )?;
                 visitor.visit(
-                    ArchiveImageSource::named("word/media/valid.png"),
+                    NormalImageSource::named("word/media/valid.png"),
                     &mut valid_source,
                 )?;
                 Ok(())
@@ -546,7 +559,7 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![named_source(svg.clone(), "word/media/vector.bin")],
     )
     .expect("the full SVG evidence window should be inspected");
@@ -569,7 +582,7 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![
             named_source(b"not really svg".as_slice(), "media/first.svg"),
             named_source(b"not really png".as_slice(), "media/second.png"),
@@ -623,12 +636,12 @@ fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
     let mut third = AssertOutputBeforeTailReader::new(third_payload, temp_dir.join("sample_1.png"));
 
     let result = pipeline
-        .write_from(
-            ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        .write_normal_images(
+            NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
             |visitor| {
-                visitor.visit(ArchiveImageSource::named("first.png"), &mut first)?;
-                visitor.visit(ArchiveImageSource::named("second.png"), &mut second)?;
-                visitor.visit(ArchiveImageSource::named("third.png"), &mut third)?;
+                visitor.visit(NormalImageSource::named("first.png"), &mut first)?;
+                visitor.visit(NormalImageSource::named("second.png"), &mut second)?;
+                visitor.visit(NormalImageSource::named("third.png"), &mut third)?;
                 Ok(())
             },
         )
@@ -669,7 +682,7 @@ fn concurrent_image_emissions_preserve_every_payload() {
             barrier.wait();
             write_sources(
                 &pipeline,
-                ImageWriteRequest::normal_images(&output_dir, "shared"),
+                NormalImageWriteRequest::normal_images(&output_dir, "shared"),
                 vec![named_source(payload, "word/media/image.bin")],
             )
             .expect("concurrent image emission should succeed");
@@ -723,7 +736,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "shared"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "shared"),
         vec![named_source(MINIMAL_PNG, "word/media/image.bin")],
     )
     .expect("colliding image emission should succeed");
@@ -754,7 +767,7 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![mime_source(
             b"not actually a png".as_slice(),
             "word/media/image.png",
@@ -790,15 +803,15 @@ fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
     ));
 
     let result = pipeline
-        .write_from(
-            ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        .write_normal_images(
+            NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
             |visitor| {
                 visitor.unreadable(
-                    ArchiveImageSource::named("../unsafe.png"),
+                    NormalImageSource::named("../unsafe.png"),
                     "unsafe source should remain silent",
                 );
                 visitor.unreadable(
-                    ArchiveImageSource::named("word/media/safe.png"),
+                    NormalImageSource::named("word/media/safe.png"),
                     "safe source could not be opened",
                 );
                 Ok(())
@@ -828,7 +841,7 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![named_source(
             b"not really svg".as_slice(),
             "media/image.svg",
@@ -868,7 +881,7 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![named_source(original.clone(), "image.png")],
     )
     .expect("normal conversion failure should preserve original bytes");
@@ -905,7 +918,7 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![
             named_source(png.clone(), "media/image1.png"),
             named_source(gif.clone(), "media/image2.gif"),
@@ -937,7 +950,7 @@ fn matching_conversion_target_preserves_original_without_conversion_count() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![named_source(original.clone(), "image.png")],
     )
     .expect("matching target should preserve source bytes");
@@ -972,7 +985,7 @@ fn routed_gif_bypasses_conversion() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&output_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&output_dir, "sample"),
         vec![named_source(original.clone(), "media/image.gif")],
     )
     .expect("routed GIF should be written without conversion");
@@ -1000,7 +1013,7 @@ fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
 
     let result = write_sources(
         &pipeline,
-        ImageWriteRequest::normal_images(&temp_dir, "sample"),
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
         vec![mime_source(
             b"unknown bytes".as_slice(),
             "media/image.bin",
@@ -1074,4 +1087,177 @@ fn pipeline_with_conversion(
         Some(conversion),
         gif_output,
     ))
+}
+
+/// Verifies borrowed normal source facts can be reused without weakening magic precedence.
+#[test]
+fn borrowed_normal_evidence_is_reusable_and_magic_outranks_declarations() {
+    let temp_dir = temp_test_dir("pipeline", "borrowed-normal-evidence");
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let name = String::from("image.jpg");
+    let mime = String::from("image/gif");
+    let source = NormalImageSource::declared(&name, &mime);
+    let result = pipeline
+        .write_normal_images(
+            NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
+            |visitor| {
+                visitor.visit(source, &mut Cursor::new(MINIMAL_PNG))?;
+                visitor.visit(source, &mut Cursor::new(MINIMAL_PNG))
+            },
+        )
+        .unwrap();
+    assert_eq!(result.counts.extracted, 2);
+    assert!(result.warnings.is_empty());
+    assert_eq!(
+        fs::read(temp_dir.join("sample_1.png")).unwrap(),
+        MINIMAL_PNG
+    );
+    assert_eq!(
+        fs::read(temp_dir.join("sample_2.png")).unwrap(),
+        MINIMAL_PNG
+    );
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+/// One unsafe archive path naming the rejection condition it exercises.
+struct UnsafePathCase {
+    condition: &'static str,
+    name: &'static str,
+}
+
+/// Returns one representative unsafe archive path per rejection condition.
+///
+/// Each fixture trips exactly one condition, so a lost branch fails the case
+/// named for it rather than being masked by another condition in the same path.
+fn unsafe_path_cases() -> Vec<UnsafePathCase> {
+    vec![
+        UnsafePathCase {
+            condition: "parent-directory traversal",
+            name: "word/media/../../secret.png",
+        },
+        UnsafePathCase {
+            condition: "leading forward slash",
+            name: "/word/media/image1.png",
+        },
+        UnsafePathCase {
+            condition: "leading backslash",
+            name: "\\word\\media\\image1.png",
+        },
+        UnsafePathCase {
+            condition: "alternate data stream syntax",
+            name: "word/media/image1.png:hidden",
+        },
+        UnsafePathCase {
+            condition: "embedded NUL byte",
+            name: "word/media/image\u{0}1.png",
+        },
+    ]
+}
+
+/// Verifies each safety rejection occurs before acquisition at the visitor seam.
+#[test]
+fn unsafe_normal_sources_are_silent_and_leave_readers_untouched() {
+    let temp_dir = temp_test_dir("pipeline", "unsafe-source-readers");
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    for case in unsafe_path_cases() {
+        // Safety precedes acquisition: even valid magic cannot make an unsafe
+        // normal source eligible or cause a single byte to be read.
+        let mut reader = Cursor::new(MINIMAL_PNG);
+        let result = pipeline
+            .write_normal_images(
+                NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
+                |visitor| {
+                    visitor.visit(
+                        NormalImageSource::declared(case.name, "image/png"),
+                        &mut reader,
+                    )
+                },
+            )
+            .unwrap();
+        assert_eq!(reader.position(), 0, "{}", case.condition);
+        assert_eq!(result.counts.extracted, 0, "{}", case.condition);
+        assert!(result.warnings.is_empty(), "{}", case.condition);
+    }
+}
+
+/// Keeps ordinary Office, EPUB, and percent-encoded manifest names eligible.
+#[test]
+fn representative_archive_resource_paths_emit_normal_images() {
+    let temp_dir = temp_test_dir("pipeline", "safe-source-paths");
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    // EPUB manifest paths stay percent-encoded until the ZIP lookup decodes
+    // them, so an encoded name reaches this rule as an ordinary resource.
+    let result = write_sources(
+        &pipeline,
+        NormalImageWriteRequest::normal_images(&temp_dir, "sample"),
+        vec![
+            named_source(MINIMAL_PNG, "word/media/image1.png"),
+            named_source(MINIMAL_PNG, "OEBPS/images/cover.jpg"),
+            named_source(MINIMAL_PNG, "OEBPS/images/cover%20art.jpg"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(result.counts.extracted, 3);
+    assert!(result.warnings.is_empty());
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+/// Verifies cover magic wins and its diagnostic name never supplies path evidence.
+#[test]
+fn required_cover_magic_outranks_mime_and_ignores_unsafe_diagnostic_path() {
+    let temp_dir = temp_test_dir("pipeline", "cover-magic-precedence");
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let name = String::from("../../cover.gif");
+    let mime = String::from("image/jpeg");
+    let source = RequiredCoverSource::new(&name, &mime);
+    for stem in ["first", "second"] {
+        // The adapter owns resource acquisition; the cover name is diagnostic
+        // identity, so normal traversal's path eligibility does not apply.
+        let outcome = pipeline
+            .write_required_cover(RequiredCoverWriteRequest::new(&temp_dir, stem), |visitor| {
+                visitor.visit(source, &mut Cursor::new(MINIMAL_PNG))
+            })
+            .unwrap();
+        let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+            panic!("readable cover should complete");
+        };
+        assert_eq!(result.counts.extracted, 1);
+        assert!(result.warnings.is_empty());
+        assert_eq!(
+            fs::read(temp_dir.join(format!("{stem}.png"))).unwrap(),
+            MINIMAL_PNG
+        );
+    }
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+/// Verifies declared MIME supplies cover evidence after magic fails, regardless of extension.
+#[test]
+fn required_cover_mime_outranks_diagnostic_extension() {
+    let temp_dir = temp_test_dir("pipeline", "cover-mime-precedence");
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let payload = b"unrecognized image bytes";
+    let outcome = pipeline
+        .write_required_cover(
+            RequiredCoverWriteRequest::new(&temp_dir, "sample"),
+            |visitor| {
+                visitor.visit(
+                    RequiredCoverSource::new("OPS/cover.png", "image/jpeg"),
+                    &mut Cursor::new(payload),
+                )
+            },
+        )
+        .unwrap();
+    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+        panic!("readable cover should complete");
+    };
+    assert_eq!(result.counts.extracted, 1);
+    assert!(result.warnings.is_empty());
+    assert_eq!(fs::read(temp_dir.join("sample.jpg")).unwrap(), payload);
+    fs::remove_dir_all(temp_dir).unwrap();
 }

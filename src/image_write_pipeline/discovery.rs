@@ -6,9 +6,6 @@ use std::path::Path;
 
 use crate::image_format::ImageFormat;
 
-use super::purpose::{
-    FilteredFormatAction, ImageWritePurpose, SourceEligibility, UnidentifiedFormatAction,
-};
 use super::{AcceptedImage, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
@@ -30,58 +27,97 @@ const EMF_SIGNATURE_OFFSET: usize = 40;
 const EMF_SIGNATURE: &[u8] = b" EMF";
 const SVG_SEARCH_LIMIT: usize = 1024;
 
-/// Source facts supplied before discovery reads one archive resource.
-///
-/// The optional path evidence encodes eligibility directly: normal sources
-/// include it, while required covers deliberately omit it.
-#[derive(Debug, Clone)]
-pub(crate) struct ArchiveImageSource {
-    diagnostic_name: String,
-    path_evidence_name: Option<String>,
-    declared_mime: Option<String>,
+/// Borrowed evidence for a normal image; the name is also checked for path safety.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NormalImageSource<'a> {
+    source_name: &'a str,
+    declared_mime: Option<&'a str>,
 }
 
-impl ArchiveImageSource {
-    /// Creates a normal archive source whose safe name may identify its format.
-    pub(crate) fn named(source_name: impl Into<String>) -> Self {
-        let source_name = source_name.into();
+impl<'a> NormalImageSource<'a> {
+    /// Creates a named source with no declared MIME evidence.
+    pub(crate) fn named(source_name: &'a str) -> Self {
         Self {
-            diagnostic_name: source_name.clone(),
-            path_evidence_name: Some(source_name),
+            source_name,
             declared_mime: None,
         }
     }
 
-    /// Adds document-declared MIME evidence after magic and eligible path evidence.
-    #[must_use]
-    pub(crate) fn with_mime(mut self, mime: impl Into<String>) -> Self {
-        self.declared_mime = Some(mime.into());
-        self
-    }
-
-    /// Creates a required cover whose path is diagnostic identity, not evidence.
-    ///
-    /// Required covers use bounded byte evidence before declared MIME and never
-    /// fall back to the manifest path extension.
-    pub(crate) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
+    /// Creates a declared source whose MIME follows magic and safe extension evidence.
+    pub(crate) fn declared(source_name: &'a str, mime: &'a str) -> Self {
         Self {
-            diagnostic_name: source_name.into(),
-            path_evidence_name: None,
-            declared_mime: Some(mime.into()),
+            source_name,
+            declared_mime: Some(mime),
         }
     }
 
-    pub(super) fn diagnostic_name(&self) -> &str {
-        &self.diagnostic_name
+    pub(super) fn diagnostic_name(self) -> &'a str {
+        self.source_name
     }
 
-    pub(super) fn path_evidence_name(&self) -> Option<&str> {
-        self.path_evidence_name.as_deref()
+    /// Returns whether discovery may touch this normal source's reader.
+    pub(super) fn is_safe(self) -> bool {
+        is_safe_archive_path(self.source_name)
+    }
+}
+
+/// Borrowed required-cover facts; its name is diagnostic identity only.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RequiredCoverSource<'a> {
+    diagnostic_name: &'a str,
+    declared_mime: &'a str,
+}
+
+impl<'a> RequiredCoverSource<'a> {
+    /// Requires both diagnostic identity and MIME; path extensions never supply evidence.
+    pub(crate) fn new(diagnostic_name: &'a str, declared_mime: &'a str) -> Self {
+        Self {
+            diagnostic_name,
+            declared_mime,
+        }
     }
 
-    pub(super) fn declared_mime(&self) -> Option<&str> {
-        self.declared_mime.as_deref()
+    pub(super) fn diagnostic_name(self) -> &'a str {
+        self.diagnostic_name
     }
+}
+
+/// The two real purposes, bound to only the evidence each permits.
+enum DiscoverySource<'a> {
+    Normal(NormalImageSource<'a>),
+    RequiredCover(RequiredCoverSource<'a>),
+}
+
+/// Facts selected together by the single exhaustive purpose dispatch.
+struct DiscoveryRules<'a> {
+    diagnostic_name: &'a str,
+    path_evidence_name: Option<&'a str>,
+    declared_mime: Option<&'a str>,
+    eligible: bool,
+    default_format: Option<(ImageFormat, &'a str)>,
+    warn_filtered: bool,
+}
+
+/// Acquires normal images with safe-name, extension and optional MIME evidence.
+pub(super) fn discover_normal_image(
+    source: NormalImageSource<'_>,
+    reader: &mut dyn Read,
+    allowed_formats: &HashSet<ImageFormat>,
+) -> DiscoveredImage {
+    discover_image(DiscoverySource::Normal(source), reader, allowed_formats)
+}
+
+/// Acquires a required cover using magic and mandatory declared MIME evidence.
+pub(super) fn discover_required_cover(
+    source: RequiredCoverSource<'_>,
+    reader: &mut dyn Read,
+    allowed_formats: &HashSet<ImageFormat>,
+) -> DiscoveredImage {
+    discover_image(
+        DiscoverySource::RequiredCover(source),
+        reader,
+        allowed_formats,
+    )
 }
 
 /// Discovery-private evidence that selected one canonical Image format.
@@ -117,23 +153,35 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
     AcquisitionFailed,
 }
 
-/// Acquires and identifies one source through a statically selected Image write purpose.
+/// Acquires a source after one exhaustive dispatch binds its evidence and decisions.
 ///
-/// Identification checks magic bytes, an eligible source-path extension, then
-/// declared MIME. Unidentified and requested-format decisions remain delegated
-/// to the purpose. Rejected or filtered sources consume at most 1,027 evidence
-/// bytes; accepted sources retain that prefix and append the remaining payload.
-/// Any read failure returns `AcquisitionFailed` with the existing warning facts.
-pub(super) fn discover_image<P: ImageWritePurpose>(
-    source: &ArchiveImageSource,
+/// Rejected or filtered sources consume at most 1,027 evidence bytes. Accepted
+/// sources retain that prefix and append the remaining payload; read failures
+/// retain warnings already produced and permit required-cover acquisition retry.
+fn discover_image(
+    source: DiscoverySource<'_>,
     reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
-    purpose: &P,
 ) -> DiscoveredImage {
-    if matches!(
-        purpose.source_eligibility(source),
-        SourceEligibility::Reject
-    ) {
+    let rules = match source {
+        DiscoverySource::Normal(source) => DiscoveryRules {
+            diagnostic_name: source.source_name,
+            path_evidence_name: Some(source.source_name),
+            declared_mime: source.declared_mime,
+            eligible: source.is_safe(),
+            default_format: None,
+            warn_filtered: false,
+        },
+        DiscoverySource::RequiredCover(source) => DiscoveryRules {
+            diagnostic_name: source.diagnostic_name,
+            path_evidence_name: None,
+            declared_mime: Some(source.declared_mime),
+            eligible: true,
+            default_format: Some((ImageFormat::Jpg, source.declared_mime)),
+            warn_filtered: true,
+        },
+    };
+    if !rules.eligible {
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,
             warnings: Vec::new(),
@@ -144,7 +192,7 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
     let mut data = Vec::new();
     if let Err(error) = reader.take(FORMAT_EVIDENCE_LIMIT).read_to_end(&mut data) {
         warnings.push(ImageWriteWarning::archive_image_acquisition_failed(
-            source.diagnostic_name(),
+            rules.diagnostic_name,
             error,
         ));
         return DiscoveredImage {
@@ -153,29 +201,28 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
         };
     }
 
-    let identified = identify_source(&data, source);
+    let identified = identify_source(&data, &rules);
     let (format, evidence) = match identified {
         Some(identified) => (identified.format, Some(identified.evidence)),
-        None => {
-            let decision = purpose.unidentified_format(source);
-            if let Some(warning) = decision.warning {
-                warnings.push(warning);
+        None => match rules.default_format {
+            Some((format, mime)) => {
+                warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
+                    mime: mime.to_string(),
+                });
+                (format, None)
             }
-            match decision.action {
-                UnidentifiedFormatAction::ContinueWith(format) => (format, None),
-                UnidentifiedFormatAction::Complete => {
-                    return DiscoveredImage {
-                        outcome: ArchiveImageDiscoveryOutcome::Completed,
-                        warnings,
-                    };
-                }
+            None => {
+                return DiscoveredImage {
+                    outcome: ArchiveImageDiscoveryOutcome::Completed,
+                    warnings,
+                };
             }
-        }
+        },
     };
 
     match evidence {
         Some(IdentificationEvidence::SourcePathExtension) => {
-            if let Some(source_name) = source.path_evidence_name() {
+            if let Some(source_name) = rules.path_evidence_name {
                 warnings.push(ImageWriteWarning::ExtensionFallback {
                     source_name: source_name.to_string(),
                     format,
@@ -186,11 +233,9 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
     }
 
     if !allowed_formats.contains(&format) {
-        let decision = purpose.filtered_format(format);
-        if let Some(warning) = decision.warning {
-            warnings.push(warning);
+        if rules.warn_filtered {
+            warnings.push(ImageWriteWarning::UnsupportedCoverFormat { format });
         }
-        let FilteredFormatAction::CompleteWithoutEmission = decision.action;
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,
             warnings,
@@ -199,7 +244,7 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
 
     if let Err(error) = reader.read_to_end(&mut data) {
         warnings.push(ImageWriteWarning::archive_image_acquisition_failed(
-            source.diagnostic_name(),
+            rules.diagnostic_name,
             error,
         ));
         return DiscoveredImage {
@@ -219,7 +264,7 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
 /// Magic bytes outrank an eligible source-path extension, which outranks declared
 /// MIME. The function performs no I/O and returns `None` when all supplied evidence
 /// is absent or unrecognized; callers enforce the 1,027-byte read boundary.
-fn identify_source(data: &[u8], source: &ArchiveImageSource) -> Option<IdentifiedImage> {
+fn identify_source(data: &[u8], rules: &DiscoveryRules<'_>) -> Option<IdentifiedImage> {
     if let Some(format) = format_from_magic(data) {
         return Some(IdentifiedImage {
             format,
@@ -227,7 +272,7 @@ fn identify_source(data: &[u8], source: &ArchiveImageSource) -> Option<Identifie
         });
     }
 
-    if let Some(source_name) = source.path_evidence_name()
+    if let Some(source_name) = rules.path_evidence_name
         && let Some(format) = Path::new(source_name)
             .extension()
             .and_then(|extension| extension.to_str())
@@ -239,7 +284,7 @@ fn identify_source(data: &[u8], source: &ArchiveImageSource) -> Option<Identifie
         });
     }
 
-    if let Some(mime) = source.declared_mime()
+    if let Some(mime) = rules.declared_mime
         && let Some(format) = format_from_mime(mime)
     {
         return Some(IdentifiedImage {
@@ -343,6 +388,21 @@ fn starts_with_ignore_ascii_case(data: &[u8], prefix: &[u8]) -> bool {
             .iter()
             .zip(prefix)
             .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+}
+
+/// Returns whether an archive path is safe to use as image source evidence.
+fn is_safe_archive_path(name: &str) -> bool {
+    if name.contains('\0') || name.contains("..") {
+        return false;
+    }
+    if name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+    // Colons enable drive-letter and alternate-data-stream syntax on Windows.
+    if name.contains(':') {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

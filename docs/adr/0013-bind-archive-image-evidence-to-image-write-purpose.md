@@ -1,0 +1,5 @@
+# Bind Archive image evidence to its Image write purpose
+
+Archive image discovery currently receives one generic source value separately from the visitor-selected Image write purpose, so a normal traversal can be paired with required-cover evidence and a required-cover traversal can be paired with path-extension evidence. Replace that parallel choice with two borrowed, `Copy` source values accepted only by their matching purpose-specific visitors; atomic constructors expose the evidence each purpose permits, while one closed private dispatch in Archive image discovery preserves the existing evidence precedence, bounded reads, warnings, and retry or completion behavior, and purpose-specific conversion preparation stays separate.
+
+Raw source parameters were rejected because they hide the meaning of the facts at the seam, and associated source/evidence types were rejected because two real purposes do not justify the larger generic interface. The invariant lives in the nominal parameter types without a compile-fail harness, all items remain crate-private under ADR-0003, and ADR-0005's Cover attempts seam and ADR-0007's Emitted image role remain unchanged.

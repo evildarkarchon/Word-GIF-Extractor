@@ -13,10 +13,12 @@ use std::path::{Path, PathBuf};
 use crate::conversion::ConversionPolicy;
 use crate::image_format::ImageFormat;
 
-pub(crate) use self::discovery::ArchiveImageSource;
-use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
+use self::discovery::{
+    ArchiveImageDiscoveryOutcome, discover_normal_image, discover_required_cover,
+};
+pub(crate) use self::discovery::{NormalImageSource, RequiredCoverSource};
 use self::emission::ImageFileEmission;
-use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
+use self::purpose::{NormalImages, RequiredCover};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -237,12 +239,12 @@ struct PreparedImage<'policy> {
 }
 
 /// Document-specific facts for one Image write pipeline invocation.
-pub(crate) struct ImageWriteRequest<'a> {
+pub(crate) struct NormalImageWriteRequest<'a> {
     output_dir: &'a Path,
     base_name: &'a str,
 }
 
-impl<'a> ImageWriteRequest<'a> {
+impl<'a> NormalImageWriteRequest<'a> {
     /// Creates a normal-images request whose sources will be visited in document order.
     pub(crate) fn normal_images(output_dir: &'a Path, base_name: &'a str) -> Self {
         Self {
@@ -330,12 +332,12 @@ impl ImageWritePipeline {
     /// Returns phase-ordered warning facts and counts for files actually written.
     /// Filesystem setup, collision exhaustion, create, write, and flush failures
     /// retain those facts with the error; earlier successful writes are not rolled back.
-    pub(crate) fn write_from(
+    pub(crate) fn write_normal_images(
         &self,
-        request: ImageWriteRequest<'_>,
-        traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
+        request: NormalImageWriteRequest<'_>,
+        traverse: impl FnOnce(&mut NormalImageWriteVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome {
-        let mut visitor = ArchiveImageVisitor::new(&self.policy, request, NormalImages);
+        let mut visitor = NormalImageWriteVisitor::new(&self.policy, request, NormalImages);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -374,12 +376,11 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
     /// retryable; emission failures are returned to abort the document.
     pub(crate) fn visit(
         &mut self,
-        source: ArchiveImageSource,
+        source: RequiredCoverSource<'_>,
         reader: &mut dyn Read,
     ) -> Result<()> {
         self.ensure_empty()?;
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
+        let discovered = discover_required_cover(source, reader, &self.policy.allowed_formats);
         self.result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
@@ -414,7 +415,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
     /// Records a candidate that the EPUB adapter could not open.
     pub(crate) fn unreadable(
         &mut self,
-        source: ArchiveImageSource,
+        source: RequiredCoverSource<'_>,
         error: impl fmt::Display,
     ) -> Result<()> {
         self.ensure_empty()?;
@@ -461,7 +462,7 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
 }
 
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
-pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
+pub(crate) struct NormalImageWriteVisitor<'policy, 'request> {
     policy: &'policy ImageWritePolicy,
     purpose: NormalImages,
     output_dir: &'request Path,
@@ -474,11 +475,11 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
     multiple_emission: Option<ImageFileEmission<'request>>,
 }
 
-impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
+impl<'policy, 'request> NormalImageWriteVisitor<'policy, 'request> {
     /// Starts one scoped Archive image discovery traversal.
     fn new(
         policy: &'policy ImageWritePolicy,
-        request: ImageWriteRequest<'request>,
+        request: NormalImageWriteRequest<'request>,
         purpose: NormalImages,
     ) -> Self {
         Self {
@@ -501,11 +502,10 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     /// emission failures remain fatal and are returned to the traversal.
     pub(crate) fn visit(
         &mut self,
-        source: ArchiveImageSource,
+        source: NormalImageSource<'_>,
         reader: &mut dyn Read,
     ) -> Result<()> {
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
+        let discovered = discover_normal_image(source, reader, &self.policy.allowed_formats);
         self.discovery_warnings.extend(discovered.warnings);
 
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
@@ -524,11 +524,8 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     /// Records a source that the document adapter could not open.
     ///
     /// Unsafe normal-image names remain silent skips, matching discovery behavior.
-    pub(crate) fn unreadable(&mut self, source: ArchiveImageSource, error: impl fmt::Display) {
-        if matches!(
-            self.purpose.source_eligibility(&source),
-            SourceEligibility::Inspect
-        ) {
+    pub(crate) fn unreadable(&mut self, source: NormalImageSource<'_>, error: impl fmt::Display) {
+        if source.is_safe() {
             self.discovery_warnings
                 .push(ImageWriteWarning::archive_image_acquisition_failed(
                     source.diagnostic_name(),

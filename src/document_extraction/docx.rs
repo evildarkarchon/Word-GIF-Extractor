@@ -6,7 +6,7 @@ use std::path::Path;
 use zip::ZipArchive;
 
 use crate::image_write_pipeline::{
-    ArchiveImageSource, ImageWriteOutcome, ImageWritePipeline, ImageWriteRequest,
+    ImageWriteOutcome, ImageWritePipeline, NormalImageSource, NormalImageWriteRequest,
 };
 
 /// Processes a single .docx file, extracting images accepted by the requested Image formats.
@@ -30,15 +30,15 @@ pub(super) fn process_file(
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("Failed to read zip archive: {}", input_path.display()))?;
 
-    pipeline.write_from(
-        ImageWriteRequest::normal_images(output_base_dir, base_name),
+    pipeline.write_normal_images(
+        NormalImageWriteRequest::normal_images(output_base_dir, base_name),
         |visitor| {
             for index in 0..archive.len() {
                 let source_name = archive
                     .name_for_index(index)
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("archive entry #{index}"));
-                let source = ArchiveImageSource::named(source_name);
+                let source = NormalImageSource::named(&source_name);
 
                 match archive.by_index(index) {
                     Ok(mut entry) => visitor.visit(source, &mut entry)?,
