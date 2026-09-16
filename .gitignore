@@ -70,3 +70,4 @@ graphify-out/
 *[Rr]eview.html
 *[Rr]eview_[0-9].html
 *[Rr]eview_[0-9]_files/
+.codegraph/
