@@ -234,43 +234,43 @@ fn filter_epub_files(
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     let (epub_files, other_files) = partition_epubs(files);
-    let total = epub_files.len();
     let terms = EpubFilterTerms::new(filter);
 
-    lifecycle.filtering(!epub_files.is_empty(), filter, total, |progress| {
-        let mut matching_epubs = Vec::new();
-
-        for EpubCandidate { path, .. } in epub_files {
-            let outcome = match EpubDeclarations::acquire(&path) {
+    let matching_epubs = lifecycle.filtering(
+        filter,
+        epub_files,
+        |EpubCandidate { path, .. }, diagnostics| {
+            match EpubDeclarations::acquire(&path) {
                 Ok(declarations)
                     if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
                         .matches(&terms) =>
                 {
-                    matching_epubs.push(DocumentCandidate::Epub(EpubCandidate {
+                    EpubFilterCheck::Matched(EpubCandidate {
                         path,
                         epub_declarations: Some(declarations),
-                    }));
-                    EpubFilterCheck::Matched
+                    })
                 }
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
                 Err(error) => {
                     // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
+                    diagnostics.report(ExtractionRunObservation::UnreadableEpubMetadata {
                         path,
                         purpose: EpubMetadataPurpose::Filtering,
                         detail: error.to_string(),
                     });
                     EpubFilterCheck::Rejected
                 }
-            };
-            progress.record_check(outcome);
-        }
+            }
+        },
+    );
 
-        // Combine matching EPUBs with other document types.
-        let mut result = matching_epubs;
-        result.extend(other_files);
-        result
-    })
+    // Combine matching EPUBs with other document types.
+    let mut result: Vec<_> = matching_epubs
+        .into_iter()
+        .map(DocumentCandidate::Epub)
+        .collect();
+    result.extend(other_files);
+    result
 }
 
 /// Deduplicates EPUB files based on their creator and title declarations.
@@ -283,24 +283,23 @@ fn deduplicate_epubs_by_declarations(
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
     let (epub_files, other_files) = partition_epubs(files);
-    let total = epub_files.len();
 
-    lifecycle.deduplicating(!epub_files.is_empty(), total, |progress| {
-        // Track the Document identity keys already seen. Keys are case-insensitive,
-        // and declared keys never equal filename keys.
-        let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
-        let mut unique_epubs = Vec::new();
+    // Track the Document identity keys already seen. Keys are case-insensitive,
+    // and declared keys never equal filename keys.
+    let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
 
-        for EpubCandidate {
-            path,
-            mut epub_declarations,
-        } in epub_files
-        {
+    let unique_epubs = lifecycle.deduplicating(
+        epub_files,
+        |EpubCandidate {
+             path,
+             mut epub_declarations,
+         },
+         diagnostics| {
             if epub_declarations.is_none() {
                 match EpubDeclarations::acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
                     Err(error) => {
-                        progress.diagnostic(ExtractionRunObservation::UnreadableEpubMetadata {
+                        diagnostics.report(ExtractionRunObservation::UnreadableEpubMetadata {
                             path: path.clone(),
                             purpose: EpubMetadataPurpose::Deduplication,
                             detail: error.to_string(),
@@ -313,25 +312,25 @@ fn deduplicate_epubs_by_declarations(
                 .dedupe_key();
 
             // Only add if we haven't seen this combination before.
-            let outcome = if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key)
-            {
+            if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key) {
                 entry.insert(path.clone());
-                unique_epubs.push(DocumentCandidate::Epub(EpubCandidate {
+                EpubDeduplicationCheck::Unique(EpubCandidate {
                     path,
                     epub_declarations,
-                }));
-                EpubDeduplicationCheck::Unique
+                })
             } else {
                 EpubDeduplicationCheck::Duplicate
-            };
-            progress.record_check(outcome);
-        }
+            }
+        },
+    );
 
-        // Combine unique EPUBs with other document types.
-        let mut result = unique_epubs;
-        result.extend(other_files);
-        result
-    })
+    // Combine unique EPUBs with other document types.
+    let mut result: Vec<_> = unique_epubs
+        .into_iter()
+        .map(DocumentCandidate::Epub)
+        .collect();
+    result.extend(other_files);
+    result
 }
 
 /// Builds one selected document from a filtered and deduplicated candidate.
