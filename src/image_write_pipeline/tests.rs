@@ -833,6 +833,76 @@ fn matching_conversion_target_preserves_original_without_conversion_count() {
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
 }
 
+/// Verifies numbering, once begun, continues past the two images that started it.
+///
+/// The second image is what decides numbering, so the first two are named together;
+/// a third must continue from that count rather than fall back to deciding again.
+#[test]
+fn numbering_continues_past_the_images_that_started_it() {
+    let temp_dir = temp_test_dir("pipeline", "numbering-continues");
+    let payloads = (1..=3u8)
+        .map(|index| {
+            let mut payload = MINIMAL_PNG.to_vec();
+            payload.push(index);
+            payload
+        })
+        .collect::<Vec<_>>();
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+
+    write_sources(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        payloads
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| named_source(payload.clone(), &format!("media/{index}.png")))
+            .collect(),
+    )
+    .expect("three accepted images should be written");
+
+    for (index, payload) in payloads.iter().enumerate() {
+        let name = format!("sample_{}.png", index + 1);
+        assert_eq!(&fs::read(temp_dir.join(&name)).unwrap(), payload, "{name}");
+    }
+    assert!(!temp_dir.join("sample.png").exists());
+}
+
+/// Verifies numbering follows document position even when a GIF is routed elsewhere.
+///
+/// One ordinal counts every image the document emits, so the routed GIF is the
+/// second image of the document in a directory where it is the only file. The
+/// README states the rule; this pins it, since nothing else covered a routed GIF in
+/// a document that also emits a normal image.
+#[test]
+fn numbering_follows_document_position_across_routed_gifs() {
+    let temp_dir = temp_test_dir("pipeline", "numbering-across-routed-gifs");
+    let gif_dir = temp_dir.join("gifs");
+    let output_dir = temp_dir.join("images");
+    let png = MINIMAL_PNG.to_vec();
+    let gif = b"GIF89a routed payload".to_vec();
+    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
+        HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
+        None,
+        Some(gif_dir.clone()),
+    ));
+
+    let result = write_sources(
+        &pipeline,
+        &OutputPlacement::new(&output_dir, "sample"),
+        vec![
+            named_source(png.clone(), "media/image1.png"),
+            named_source(gif.clone(), "media/image2.gif"),
+        ],
+    )
+    .expect("a normal image and a routed GIF should both be written");
+
+    assert_eq!(result.counts.extracted, 2);
+    assert_eq!(result.counts.gifs_routed, 1);
+    assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), png);
+    assert_eq!(fs::read(gif_dir.join("sample_2.gif")).unwrap(), gif);
+    assert!(!gif_dir.join("sample_1.gif").exists());
+}
+
 /// Verifies routed GIF emission retains exact bytes and complete count semantics.
 #[test]
 fn routed_gif_bypasses_conversion() {

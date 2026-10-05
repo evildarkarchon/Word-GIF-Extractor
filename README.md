@@ -74,6 +74,11 @@ Extracted images use the book's metadata for naming in the format "Author - Titl
 
 Invalid filename characters in metadata are automatically replaced with underscores.
 
+For both document kinds, the number is the image's position in the document, counted
+across every image it emits. GIFs routed to a separate directory with `--gif-output`
+keep their place in that count, so a document with one PNG and one GIF writes
+`document_1.png` in the output directory and `document_2.gif` in the GIF directory.
+
 ## License
 
 [GPL-3.0 License](https://opensource.org/licenses/GPL-3.0)
