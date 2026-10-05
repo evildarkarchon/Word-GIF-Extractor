@@ -7,63 +7,11 @@ use std::path::PathBuf;
 use clap::{CommandFactory, Parser};
 
 use crate::conversion::ConversionTarget;
-use crate::extraction_run::run as execute_extraction_run;
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
 use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
-use crate::test_support::{no_fallback_directory, temp_test_dir, write_docx};
-
-/// Delegating presentation that induces one real post-classification traversal failure.
-///
-/// It only causes the failure; what suspension did around the resulting
-/// diagnostic is read back from the capture's ordered transcript afterwards.
-struct FilesystemPresentationObserver {
-    inner: ExtractionRunPresentation,
-    remove_on_scan_start: Option<PathBuf>,
-}
-
-impl ExtractionRunObserver for FilesystemPresentationObserver {
-    /// Delegates observations while deleting the classified root mid-scan.
-    fn on_observation(&mut self, observation: ExtractionRunObservation) {
-        let starts_recursive_scan = matches!(
-            &observation,
-            ExtractionRunObservation::DiscoveringDocuments {
-                scope: DocumentDiscoveryScope::RecursiveDirectories,
-                discovered: 0,
-            }
-        );
-
-        self.inner.on_observation(observation);
-
-        if starts_recursive_scan {
-            // Delegation created and drew the spinner. Removing the classified root
-            // now makes traversal fail while that spinner is live.
-            if let Some(directory) = self.remove_on_scan_start.take() {
-                fs::remove_dir(directory)
-                    .expect("classified directory should be removable before traversal");
-            }
-        }
-    }
-}
-
-/// Delegating presentation that records each warning the run transported.
-///
-/// It captures the opaque warning values the run transported so presentation
-/// can be asserted without the terminal test owning any stable wording.
-struct WarningPresentationObserver {
-    inner: ExtractionRunPresentation,
-    warnings: Vec<DocumentExtractionWarning>,
-}
-
-impl ExtractionRunObserver for WarningPresentationObserver {
-    /// Delegates observations while recording warning values.
-    fn on_observation(&mut self, observation: ExtractionRunObservation) {
-        if let ExtractionRunObservation::DocumentWarning { warning, .. } = &observation {
-            self.warnings.push(warning.clone());
-        }
-
-        self.inner.on_observation(observation);
-    }
-}
+use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::ImageWriteWarning;
+use crate::test_support::{no_fallback_directory, temp_test_dir};
 
 /// Builds one state-valid produced outcome through the production constructor.
 fn produced_outcome(
@@ -308,26 +256,40 @@ fn no_documents_summary_preserves_existing_wording() {
     );
 }
 
-/// Verifies a real recursive failure suspends the scan spinner and then releases it.
+/// Verifies a recursive discovery failure suspends the scan spinner and then releases it.
+///
+/// The observations are the ones Document selection emits when the only requested
+/// directory fails mid-scan, followed by the run's terminal outcome. Feeding them
+/// directly keeps the test about presentation; which failure produces that stream
+/// is Document selection's to test.
 #[test]
 fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
-    let temp_dir = temp_test_dir("presentation", "recursive-suspension");
-    let requested_directory = temp_dir.join("requested");
-    fs::create_dir_all(&requested_directory).expect("requested directory should be creatable");
-    let input = requested_directory.to_string_lossy().into_owned();
-    let args = Args::try_parse_from(["test", input.as_str(), "--recursive"])
-        .expect("recursive arguments should parse");
-    let prepared = prepare_extraction_run(args, no_fallback_directory)
-        .expect("Extraction run intake should succeed");
     let (output, capture) = TerminalOutput::captured();
-    let mut observer = FilesystemPresentationObserver {
-        inner: ExtractionRunPresentation::new(output),
-        remove_on_scan_start: Some(requested_directory),
-    };
+    let mut presentation = ExtractionRunPresentation::new(output);
+    let scope = DocumentDiscoveryScope::RecursiveDirectories;
 
-    let outcome = execute_extraction_run(prepared.request, &mut observer);
+    for observation in [
+        ExtractionRunObservation::DiscoveringDocuments {
+            scope,
+            discovered: 0,
+        },
+        ExtractionRunObservation::DocumentDiscoveryFailed {
+            path: PathBuf::from("requested"),
+            detail: "directory vanished during traversal".to_string(),
+        },
+        ExtractionRunObservation::DiscoveringDocuments {
+            scope,
+            discovered: 0,
+        },
+        ExtractionRunObservation::DocumentDiscoveryFinished {
+            scope,
+            discovered: 0,
+        },
+        ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoDocuments),
+    ] {
+        presentation.on_observation(observation);
+    }
 
-    assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
     let stderr = capture.stderr();
     let diagnostics = stderr
         .lines()
@@ -356,7 +318,7 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
         path: PathBuf::from("late"),
         detail: "arrived after the scan phase finished".to_string(),
     };
-    observer.inner.on_observation(late);
+    presentation.on_observation(late);
     let late_line = capture
         .stderr()
         .lines()
@@ -372,42 +334,51 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
 
 /// Verifies warning presentation adds one prefix and suspends the extraction bar.
 ///
-/// The stable body stays owned by Document extraction, so the assertions
-/// compare against the transported value rather than restating any wording.
+/// The stable body stays owned by Document extraction, so the warning is
+/// fabricated through its test entry point and the assertions compare against
+/// that value rather than restating any wording. The observations are the ones
+/// the run emits around one warned document.
 #[test]
 fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progress() {
-    let temp_dir = temp_test_dir("presentation", "warning-presentation");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let document_path = temp_dir.join("warned.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(
-        &document_path,
-        &[("word/media/only.png", b"not actually a png")],
-    );
-    let args = Args::try_parse_from([
-        "test",
-        document_path.to_string_lossy().as_ref(),
-        "--output",
-        output_dir.to_string_lossy().as_ref(),
-    ])
-    .expect("warning fixture arguments should parse");
-    let prepared = prepare_extraction_run(args, no_fallback_directory)
-        .expect("Extraction run intake should succeed");
+    let document_path = PathBuf::from("documents").join("warned.docx");
+    let warning = DocumentExtractionWarning::fabricated(ImageWriteWarning::ExtensionFallback {
+        source_name: "word/media/only.png".to_string(),
+        format: ImageFormat::Png,
+    });
     let (output, capture) = TerminalOutput::captured();
-    let mut observer = WarningPresentationObserver {
-        inner: ExtractionRunPresentation::new(output),
-        warnings: Vec::new(),
-    };
+    let mut presentation = ExtractionRunPresentation::new(output);
 
-    execute_extraction_run(prepared.request, &mut observer);
-
-    assert_eq!(observer.warnings.len(), 1);
+    for observation in [
+        ExtractionRunObservation::ExtractionStarted {
+            total: 1,
+            cover_only: false,
+        },
+        ExtractionRunObservation::DocumentStarted {
+            path: document_path.clone(),
+            display_name: "warned.docx".to_string(),
+        },
+        ExtractionRunObservation::DocumentWarning {
+            path: document_path.clone(),
+            warning: warning.clone(),
+        },
+        ExtractionRunObservation::DocumentFinished {
+            path: document_path.clone(),
+        },
+        ExtractionRunObservation::Terminal(produced_outcome(
+            ExtractionOutputKind::Images,
+            1,
+            1,
+            None,
+            None,
+        )),
+    ] {
+        presentation.on_observation(observation);
+    }
 
     // Stripping exactly one prefix must leave the transported body untouched,
     // which rules out both a missing prefix and a doubled one without this
     // test knowing what the body says.
-    let warning = &observer.warnings[0];
-    let rendered = document_warning_line(warning);
+    let rendered = document_warning_line(&warning);
     assert_eq!(
         rendered.strip_prefix("Warning: "),
         Some(warning.get_message())
@@ -416,7 +387,7 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
         !rendered.contains(&document_path.display().to_string()),
         "the document path is run context only and must not reach presentation"
     );
-    // The same line is what the run actually wrote, and it went to standard error.
+    // The same line is what presentation actually wrote, and it went to standard error.
     assert!(
         capture.stderr().contains(&rendered),
         "the warning belongs on standard error: {}",

@@ -218,13 +218,14 @@ impl DocumentExtractionFacts {
         // the boundary those counts cross into Document extraction, is what
         // makes such a result trip on arrival rather than three modules away.
         //
-        // Nothing reachable through Document extraction's interface can produce
-        // a violating result, so there is deliberately no test for it. Firing it
-        // would take hand-built pipeline counts reaching around that interface —
-        // do not contort a test into doing so. The existing Extraction run test
-        // pinning three emitted images as one converted, one conversion-skipped
-        // and one GIF-routed is the boundary case that exercises it in debug
-        // builds, at equality.
+        // Nothing reachable through Document extraction's production interface
+        // can produce a violating result. Tests fabricate facts through
+        // `fabricated` below, which routes them here on purpose (ADR-0016), so
+        // the one test that fires the guard does so through that entry point
+        // rather than reaching around this module. The existing Extraction run
+        // test pinning three emitted images as one converted, one
+        // conversion-skipped and one GIF-routed is the boundary case that
+        // exercises it in debug builds, at equality.
         //
         // The sum saturates rather than wrapping so the tripwire fails closed:
         // a build with debug assertions but no overflow checks would otherwise
@@ -270,6 +271,17 @@ impl DocumentExtractionFacts {
                 .map(DocumentExtractionWarning::from_image_write_warning)
                 .collect(),
         }
+    }
+
+    /// Builds facts from fabricated Image write facts, for tests that script an outcome.
+    ///
+    /// Delegates to the production translation rather than assembling the value,
+    /// so the partition guard above checks a test's counts exactly as it checks a
+    /// real result's (ADR-0016). A direct constructor would let tests be the one
+    /// place fabricated facts bypass it.
+    #[cfg(test)]
+    pub(crate) fn fabricated(result: ImageWriteResult) -> Self {
+        Self::from_image_write_result(result)
     }
 
     /// Returns the emitted, GIF-routed, converted and conversion-skipped counts together.
@@ -334,6 +346,15 @@ impl DocumentExtractionWarning {
         Self { message }
     }
 
+    /// Builds a warning from a fabricated Image write warning, for tests that script one.
+    ///
+    /// Delegates to the production translation so the wording stays owned here
+    /// and no test has to restate it to obtain a warning.
+    #[cfg(test)]
+    pub(crate) fn fabricated(warning: ImageWriteWarning) -> Self {
+        Self::from_image_write_warning(warning)
+    }
+
     /// Returns the stable user-visible wording for this warning fact.
     pub fn get_message(&self) -> &str {
         &self.message
@@ -350,6 +371,15 @@ impl DocumentExtractionError {
     /// Preserves the contextual source chain while sealing its concrete type.
     fn from_source(source: anyhow::Error) -> Self {
         Self { source }
+    }
+
+    /// Builds an error from a fabricated underlying cause, for tests that script a failure.
+    ///
+    /// Delegates to the production conversion so a scripted failure seals its
+    /// source exactly as an extracted one does.
+    #[cfg(test)]
+    pub(crate) fn fabricated(source: anyhow::Error) -> Self {
+        Self::from_source(source)
     }
 }
 
