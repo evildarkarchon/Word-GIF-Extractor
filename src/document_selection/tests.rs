@@ -4,7 +4,8 @@ use super::*;
 use crate::extraction_run_observation::DocumentDiscoveryScope;
 use crate::test_support::{
     RecordingRunObserver, create_directory_link, create_file_symlink, remove_directory_link,
-    remove_file_symlink, temp_test_dir, write_epub_with_descriptive_declarations,
+    remove_file_symlink, temp_test_dir, write_epub_package,
+    write_epub_with_descriptive_declarations,
 };
 use std::fs;
 
@@ -1118,6 +1119,51 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             }
         )
     }));
+
+    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}
+
+/// Pins that a blank title with no creator is no declaration at all.
+///
+/// The `epub` crate reports an empty `<dc:title/>` as a present, empty value. Dedupe
+/// used to key on presence alone, so every such book shared one empty key and all
+/// but the first were dropped as duplicates even though each displayed under its
+/// own filename.
+#[test]
+fn select_documents_keeps_distinct_epubs_whose_only_declaration_is_a_blank_title() {
+    const BLANK_TITLE_PACKAGE: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title></dc:title>
+  </metadata>
+  <manifest></manifest>
+  <spine></spine>
+</package>"#;
+    let temp_dir = temp_test_dir("document-selection", "blank-title-dedupe");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    let first = temp_dir.join("first.epub");
+    let second = temp_dir.join("second.epub");
+    write_epub_package(&first, BLANK_TITLE_PACKAGE, &[]);
+    write_epub_package(&second, BLANK_TITLE_PACKAGE, &[]);
+
+    let mut observer = RecordingRunObserver::default();
+    let selected = select_documents(
+        DocumentSelectionOptions {
+            inputs: &[first, second],
+            recursive: false,
+            output: None,
+            epub_filter: &EpubFilter::default(),
+        },
+        &mut observer,
+    );
+
+    let display_names: Vec<_> = selected
+        .iter()
+        .map(SelectedDocument::get_display_name)
+        .collect();
+    assert_eq!(display_names, ["first.epub", "second.epub"]);
+    assert!(observer.selection_diagnostics().is_empty());
 
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
