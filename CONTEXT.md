@@ -37,7 +37,7 @@ The terminal result of Document extraction: either completed or failed with a do
 _Avoid_: Per-file result, extraction return value
 
 **Document extraction facts**:
-The opaque facts retained by a Document extraction outcome, including emitted-image totals, output-purpose classification, conversion and GIF-routing totals, and ordered Document extraction warnings. Its emitted-image totals are one value in which the converted, conversion-skipped and GIF-routed counts together never exceed the emitted count, because the Image write pipeline places each emitted image in exactly one of those roles; folding the facts of several documents therefore cannot produce an Extraction run outcome with inconsistent totals. Its output-purpose classification is a closed three-way value — covers only, included normal images, or nothing emitted — rather than a normal-image boolean.
+The opaque facts retained by a Document extraction outcome: the document's Emitted image tally and its ordered Document extraction warnings. What the document's output was for — covers only, included normal images, or nothing emitted — is read off its tally rather than carried beside it, so folding the facts of several documents cannot produce an Extraction run outcome with inconsistent totals or a classification that disagrees with them.
 _Avoid_: Image write result, extraction summary, raw counters
 
 **Document extraction warning**:
@@ -93,7 +93,7 @@ The project policy for turning parsed user options into one ready-to-run extract
 _Avoid_: Argument normalization, options builder
 
 **Image write pipeline**:
-The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, counts, and special GIF routing.
+The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, the Emitted image tally, and special GIF routing.
 _Avoid_: Save helper, output utility
 
 **Image file emission**:
@@ -109,8 +109,12 @@ The role of one source set in the Image write pipeline: normal batch images or a
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **Emitted image role**:
-The closed four-way role one image takes as the Image write pipeline emits it: GIF-routed, converted, conversion-skipped, or preserved. Exactly one role applies to each emitted image, which is what keeps the converted, conversion-skipped and GIF-routed counts from together exceeding the emitted count. A GIF-routed role carries the destination that routing sends it to, so a routed image and its destination cannot be decided apart. Preserved covers both an unrequested conversion and a conversion that kept a matching source, because neither is counted and the applicable warning fact carries the difference. It excludes Image write purpose, output naming, and the counts it is folded into.
+The closed four-way role one image takes as the Image write pipeline emits it: GIF-routed, converted, conversion-skipped, or preserved. Exactly one role applies to each emitted image, which is what keeps the converted, conversion-skipped and GIF-routed counts from together exceeding the emitted count. A GIF-routed role carries the destination that routing sends it to, so a routed image and its destination cannot be decided apart. Preserved covers both an unrequested conversion and a conversion that kept a matching source, because neither is counted and the applicable warning fact carries the difference. Each emitted image's role is recorded once into the Emitted image tally. It excludes Image write purpose, output naming, and the tally it is recorded into.
 _Avoid_: Conversion flags, emission booleans, write mode
+
+**Emitted image tally**:
+The record of emitted images in which every image is entered exactly once, under its Image write purpose and its Emitted image role. Tallies combine by addition — across one document's attempts and across an Extraction run's documents — so at every level the converted, conversion-skipped and GIF-routed totals never together exceed the emitted total, and whether output was covers only, included normal images, or nothing is read off the tally rather than recorded beside it.
+_Avoid_: Image write counts, emitted-image totals, output purpose, counters
 
 **EPUB cover extraction**:
 The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
