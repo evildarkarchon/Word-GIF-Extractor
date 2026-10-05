@@ -362,28 +362,68 @@ fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     }
 }
 
+/// The phase whose observations drew the progress display that is currently live.
+///
+/// The tag records who drew the display, not where that phase falls in the run:
+/// presentation never learns the phase order, it only refuses to let one phase's
+/// observations advance or finish a display another phase drew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayPhase {
+    Discovery,
+    Filtering,
+    Deduplication,
+    Extraction,
+}
+
+/// The one progress display a run shows at a time, with the phase that drew it.
+struct LiveDisplay {
+    phase: DisplayPhase,
+    bar: ProgressBar,
+}
+
 /// Renders cohesive live Extraction run observations into one terminal destination.
 ///
 /// Crate-visible on purpose: the library publishes [`run_cli`] and the destination
 /// it renders into, not the renderer. Only in-crate tests construct one directly.
+///
+/// Phases never overlap, so a single slot holds whichever progress display is
+/// live. Every direct write to standard error suspends that display, whichever
+/// phase drew it, and the terminal summary finishes it or is printed when none is
+/// live.
 pub(crate) struct ExtractionRunPresentation {
     output: TerminalOutput,
-    discovery_pb: Option<ProgressBar>,
-    epub_filter_pb: Option<ProgressBar>,
-    epub_dedup_pb: Option<ProgressBar>,
-    extraction_pb: Option<ProgressBar>,
+    live: Option<LiveDisplay>,
 }
 
 impl ExtractionRunPresentation {
     /// Creates a presentation with no active progress bars over one destination.
     pub(crate) fn new(output: TerminalOutput) -> Self {
-        Self {
-            output,
-            discovery_pb: None,
-            epub_filter_pb: None,
-            epub_dedup_pb: None,
-            extraction_pb: None,
+        Self { output, live: None }
+    }
+
+    /// Returns the live display's bar when `phase` drew it.
+    fn live_bar(&self, phase: DisplayPhase) -> Option<&ProgressBar> {
+        self.live
+            .as_ref()
+            .filter(|live| live.phase == phase)
+            .map(|live| &live.bar)
+    }
+
+    /// Releases and returns the live display's bar when `phase` drew it.
+    ///
+    /// A display drawn by another phase stays live, so a finished observation
+    /// that arrives out of turn cannot end a display it does not own.
+    fn take_live(&mut self, phase: DisplayPhase) -> Option<ProgressBar> {
+        if self.live_bar(phase).is_some() {
+            self.live.take().map(|live| live.bar)
+        } else {
+            None
         }
+    }
+
+    /// Makes `bar` the live display, drawn by `phase`.
+    fn raise(&mut self, phase: DisplayPhase, bar: ProgressBar) {
+        self.live = Some(LiveDisplay { phase, bar });
     }
 
     /// Renders the ordered facts intake produced before the run started.
@@ -421,21 +461,28 @@ impl ExtractionRunPresentation {
         progress
     }
 
-    /// Finishes the extraction progress bar with the final run summary.
-    fn finish_extraction(&self, message: String) {
-        if let Some(pb) = &self.extraction_pb {
-            pb.finish_with_message(message);
+    /// Ends the run with its summary: finishes the live display, or prints when none is live.
+    ///
+    /// The routing follows display state rather than the outcome, so a summary can
+    /// never be dropped: no documents leaves nothing live and is printed, and any
+    /// other outcome finishes the extraction display the run raised before it.
+    fn finish_run(&mut self, summary: String) {
+        match self.live.take() {
+            Some(live) => live.bar.finish_with_message(summary),
+            None => self.output.print(&summary),
         }
     }
 
-    /// Writes one line to standard error with the supplied progress bar suspended.
+    /// Writes one line to standard error with the live progress display suspended.
     ///
     /// Suspension is the whole reason the sinks are bundled: the bar clears the
     /// lines it drew, the line is written, and the bar redraws, so a redraw cannot
-    /// land on top of the message.
-    fn print_error_suspended(&self, progress: Option<&ProgressBar>, line: &str) {
-        match progress {
-            Some(pb) => pb.suspend(|| self.output.print_error(line)),
+    /// land on top of the message. Whichever phase drew the live display, it is the
+    /// one that would redraw, so it is the one suspended; with nothing live the
+    /// line is written directly.
+    fn print_error_suspended(&self, line: &str) {
+        match &self.live {
+            Some(live) => live.bar.suspend(|| self.output.print_error(line)),
             None => self.output.print_error(line),
         }
     }
@@ -446,16 +493,19 @@ impl ExtractionRunPresentation {
     /// carries the phase's full current state, so nothing is accumulated here.
     /// The spinner is raised only for recursive traversal, which is the case slow
     /// enough to be worth showing. Whether this is the phase's first running
-    /// observation is read from `is_none` rather than carried by the observation.
+    /// observation is read from whether this phase's display is live rather than
+    /// carried by the observation.
     fn render_discovering_documents(&mut self, scope: DocumentDiscoveryScope, discovered: usize) {
-        if scope == DocumentDiscoveryScope::RecursiveDirectories && self.discovery_pb.is_none() {
+        if scope == DocumentDiscoveryScope::RecursiveDirectories
+            && self.live_bar(DisplayPhase::Discovery).is_none()
+        {
             let pb = self.new_progress_bar(None, create_spinner_style());
             pb.set_message("Scanning directories for documents...");
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
-            self.discovery_pb = Some(pb);
+            self.raise(DisplayPhase::Discovery, pb);
         }
         if discovered > 0
-            && let Some(pb) = &self.discovery_pb
+            && let Some(pb) = self.live_bar(DisplayPhase::Discovery)
         {
             pb.set_message(format!("Found {} document(s)...", discovered));
         }
@@ -473,15 +523,15 @@ impl ExtractionRunPresentation {
         checked: usize,
         total: usize,
     ) {
-        if self.epub_filter_pb.is_none() {
+        if self.live_bar(DisplayPhase::Filtering).is_none() {
             let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
             pb.set_message(format!(
                 "Filtering EPUBs by {}",
                 epub_filter_description(title.as_deref(), author.as_deref())
             ));
-            self.epub_filter_pb = Some(pb);
+            self.raise(DisplayPhase::Filtering, pb);
         }
-        if let Some(pb) = &self.epub_filter_pb {
+        if let Some(pb) = self.live_bar(DisplayPhase::Filtering) {
             pb.set_position(checked as u64);
         }
     }
@@ -491,12 +541,12 @@ impl ExtractionRunPresentation {
     /// Rendered without relying on callback deltas: `checked` is the phase's full
     /// current count, so the bar is positioned absolutely rather than incremented.
     fn render_deduplicating_epubs(&mut self, checked: usize, total: usize) {
-        if self.epub_dedup_pb.is_none() {
+        if self.live_bar(DisplayPhase::Deduplication).is_none() {
             let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
             pb.set_message("Deduplicating EPUBs by metadata");
-            self.epub_dedup_pb = Some(pb);
+            self.raise(DisplayPhase::Deduplication, pb);
         }
-        if let Some(pb) = &self.epub_dedup_pb {
+        if let Some(pb) = self.live_bar(DisplayPhase::Deduplication) {
             pb.set_position(checked as u64);
         }
     }
@@ -510,7 +560,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                 self.render_discovering_documents(scope, discovered);
             }
             ExtractionRunObservation::DocumentDiscoveryFinished { discovered, .. } => {
-                if let Some(pb) = self.discovery_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Discovery) {
                     pb.finish_with_message(format!("Found {} document(s)", discovered));
                 }
             }
@@ -526,7 +576,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             ExtractionRunObservation::EpubFilteringFinished {
                 checked, matching, ..
             } => {
-                if let Some(pb) = self.epub_filter_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Filtering) {
                     pb.set_position(checked as u64);
                     pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
                 }
@@ -540,7 +590,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                 unique_remaining,
                 ..
             } => {
-                if let Some(pb) = self.epub_dedup_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Deduplication) {
                     pb.set_position(checked as u64);
                     if duplicates_found > 0 {
                         pb.finish_with_message(format!(
@@ -552,13 +602,14 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     }
                 }
             }
-            // The three arms below render structured Document selection
-            // diagnostics with terminal wording. Each suspends the progress bar
-            // belonging to the phase that produced it, because a diagnostic can
-            // arrive while that bar is live and the next redraw would otherwise
-            // corrupt or overwrite the line.
+            // The arms below render structured Document selection diagnostics
+            // with terminal wording. Every one suspends whatever progress display
+            // is live, because a diagnostic can arrive while one is drawing and
+            // the next redraw would otherwise corrupt or overwrite the line. A
+            // missing input is reported before any display exists, so for it the
+            // suspend is a direct write.
             ExtractionRunObservation::MissingInput { path } => {
-                self.output.print_error(&format!(
+                self.print_error_suspended(&format!(
                     "Warning: Input path does not exist: {}",
                     path.display()
                 ));
@@ -566,14 +617,11 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } => {
                 // Recursive discovery can warn while its spinner is active; suspending
                 // prevents the next redraw from corrupting or overwriting the warning.
-                self.print_error_suspended(
-                    self.discovery_pb.as_ref(),
-                    &format!(
-                        "Warning: Could not inspect {} during document discovery: {}",
-                        path.display(),
-                        detail
-                    ),
-                );
+                self.print_error_suspended(&format!(
+                    "Warning: Could not inspect {} during document discovery: {}",
+                    path.display(),
+                    detail
+                ));
             }
             ExtractionRunObservation::UnreadableEpubMetadata {
                 path,
@@ -581,14 +629,14 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                 detail,
             } => match purpose {
                 EpubMetadataPurpose::Filtering => {
-                    self.print_error_suspended(
-                        self.epub_filter_pb.as_ref(),
-                        &format!("Warning: Could not read {}: {}", path.display(), detail),
-                    );
+                    self.print_error_suspended(&format!(
+                        "Warning: Could not read {}: {}",
+                        path.display(),
+                        detail
+                    ));
                 }
                 EpubMetadataPurpose::Deduplication => {
                     self.print_error_suspended(
-                        self.epub_dedup_pb.as_ref(),
                         &format!(
                             "Warning: Could not read EPUB metadata from {} during deduplication; using filename fallback: {}",
                             path.display(),
@@ -605,38 +653,32 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     "Extracting images from documents"
                 };
                 pb.set_message(extraction_msg);
-                self.extraction_pb = Some(pb);
+                self.raise(DisplayPhase::Extraction, pb);
             }
             ExtractionRunObservation::DocumentStarted { display_name, .. } => {
-                if let Some(pb) = &self.extraction_pb {
+                if let Some(pb) = self.live_bar(DisplayPhase::Extraction) {
                     pb.set_message(display_name);
                 }
             }
             ExtractionRunObservation::DocumentError { path, message } => {
-                self.print_error_suspended(
-                    self.extraction_pb.as_ref(),
-                    &format!("Error processing {}: {}", path.display(), message),
-                );
+                self.print_error_suspended(&format!(
+                    "Error processing {}: {}",
+                    path.display(),
+                    message
+                ));
             }
             ExtractionRunObservation::DocumentWarning { warning, .. } => {
                 // The document path stays run context only; presentation adds the
                 // prefix and nothing else to the Document extraction-owned body.
-                self.print_error_suspended(
-                    self.extraction_pb.as_ref(),
-                    &document_warning_line(&warning),
-                );
+                self.print_error_suspended(&document_warning_line(&warning));
             }
             ExtractionRunObservation::DocumentFinished { .. } => {
-                if let Some(pb) = &self.extraction_pb {
+                if let Some(pb) = self.live_bar(DisplayPhase::Extraction) {
                     pb.inc(1);
                 }
             }
             ExtractionRunObservation::Terminal(outcome) => {
-                if matches!(outcome, ExtractionRunOutcome::NoDocuments) {
-                    self.output.print(&final_summary_message(&outcome));
-                } else {
-                    self.finish_extraction(final_summary_message(&outcome));
-                }
+                self.finish_run(final_summary_message(&outcome));
             }
         }
     }
