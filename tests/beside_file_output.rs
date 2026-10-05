@@ -45,7 +45,7 @@ fn extracts_beside_input_when_output_omitted() {
     assert_eq!(capture.stdout(), "", "unexpected standard output");
     assert_eq!(capture.stderr(), "", "unexpected standard error");
     assert!(
-        capture.writes() > 0,
+        !capture.progress_text().is_empty(),
         "the run summary should have been drawn on the progress display"
     );
 

@@ -54,49 +54,62 @@ pub fn run_cli(args: Args, output: TerminalOutput) -> Result<()> {
     Ok(())
 }
 
-/// What a captured progress display did, and what it said doing it.
+/// One thing a captured run did to its terminal, in the order it did it.
 ///
-/// Clearing and redrawing is what suspension does, so the two counters are how a
-/// captured run shows that a direct write was made without a redraw racing it.
-/// The counters alone cannot show *what* was drawn, which leaves the terminal
-/// summaries of the two output-bearing outcomes -- they are rendered onto the
-/// progress display and never touch a text stream -- unreadable, so the rendered
-/// text is kept alongside them.
-#[derive(Debug, Default)]
-struct TerminalActivity {
-    clear_lines: usize,
-    writes: usize,
-    rendered: String,
+/// Clearing and redrawing is what suspension does, and its whole point is where a
+/// direct write lands relative to them: after the display cleared, before it drew
+/// again. Recording all three sinks into one ordered sequence makes that a
+/// property of the sequence. Counting clears and draws separately could only give
+/// lower bounds, because a steady tick anywhere in a measured window adds to both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TranscriptEntry {
+    /// The progress display cleared one line it had drawn.
+    Cleared,
+    /// The progress display drew one line.
+    ///
+    /// The progress library makes one call per drawn line and leaves the last
+    /// line of a draw unterminated, to keep the terminal cursor on it. Both calls
+    /// land here as one entry each, so the readback is one line per drawn line.
+    Drawn(String),
+    /// One line reached standard output.
+    Stdout(String),
+    /// One line reached standard error.
+    Stderr(String),
 }
 
-impl TerminalActivity {
-    /// Records one drawn terminal line, counting it and keeping its text.
-    ///
-    /// Both write operations land here terminated, because the progress library
-    /// makes one call per drawn line and uses the unterminated one only for the
-    /// last line of a draw, to leave the terminal cursor on it. Terminating both
-    /// keeps the readback one line per drawn line instead of running consecutive
-    /// redraws together.
-    fn record_write(&mut self, line: &str) {
-        self.writes += 1;
-        self.rendered.push_str(line);
-        self.rendered.push('\n');
+impl TranscriptEntry {
+    /// Returns whether the progress display, rather than a text stream, produced this entry.
+    fn is_progress(&self) -> bool {
+        matches!(self, Self::Cleared | Self::Drawn(_))
     }
+
+    /// Returns the line this entry wrote to either text stream, if it wrote one.
+    fn text_line(&self) -> Option<&str> {
+        match self {
+            Self::Stdout(line) | Self::Stderr(line) => Some(line),
+            Self::Cleared | Self::Drawn(_) => None,
+        }
+    }
+}
+
+/// The ordered record shared by every sink of one captured destination.
+///
+/// One lock serializes all three sinks, so the order of entries is the order the
+/// operations happened in, including writes made from inside a suspend.
+type Transcript = Arc<Mutex<Vec<TranscriptEntry>>>;
+
+/// Appends one entry to a shared transcript.
+fn record(transcript: &Transcript, entry: TranscriptEntry) {
+    transcript
+        .lock()
+        .expect("captured transcript should be available")
+        .push(entry);
 }
 
 /// Progress-display terminal that records operations instead of performing them.
 #[derive(Debug)]
 struct RecordingTerm {
-    activity: Arc<Mutex<TerminalActivity>>,
-}
-
-impl RecordingTerm {
-    /// Borrows the shared recording for the duration of one recorded operation.
-    fn counters(&self) -> MutexGuard<'_, TerminalActivity> {
-        self.activity
-            .lock()
-            .expect("terminal activity should be available")
-    }
+    transcript: Transcript,
 }
 
 impl TermLike for RecordingTerm {
@@ -121,17 +134,17 @@ impl TermLike for RecordingTerm {
     }
 
     fn write_line(&self, s: &str) -> io::Result<()> {
-        self.counters().record_write(s);
+        record(&self.transcript, TranscriptEntry::Drawn(s.to_string()));
         Ok(())
     }
 
     fn write_str(&self, s: &str) -> io::Result<()> {
-        self.counters().record_write(s);
+        record(&self.transcript, TranscriptEntry::Drawn(s.to_string()));
         Ok(())
     }
 
     fn clear_line(&self) -> io::Result<()> {
-        self.counters().clear_lines += 1;
+        record(&self.transcript, TranscriptEntry::Cleared);
         Ok(())
     }
 
@@ -145,14 +158,15 @@ enum ProgressSink {
     /// The terminal, through the progress library's own buffered stderr target.
     Terminal,
     /// A recording terminal shared with the [`Capture`] handed back to the caller.
-    Recording(Arc<Mutex<TerminalActivity>>),
+    Recording(Transcript),
 }
 
 /// Where one of the two direct text streams of a run goes.
 enum TextSink {
     Stdout,
     Stderr,
-    Captured(Arc<Mutex<String>>),
+    /// The shared transcript, with the entry constructor naming which stream this is.
+    Captured(Transcript, fn(String) -> TranscriptEntry),
 }
 
 impl TextSink {
@@ -164,10 +178,8 @@ impl TextSink {
             // line-buffered standard output.
             Self::Stdout => writeln!(io::stdout().lock(), "{line}"),
             Self::Stderr => writeln!(io::stderr().lock(), "{line}"),
-            Self::Captured(captured) => {
-                let mut captured = captured.lock().expect("captured text should be available");
-                captured.push_str(line);
-                captured.push('\n');
+            Self::Captured(transcript, stream) => {
+                record(transcript, stream(line.to_string()));
                 Ok(())
             }
         }
@@ -201,21 +213,15 @@ impl TerminalOutput {
     /// The capture shares the destination's storage, so it stays readable after the
     /// destination has been consumed by a run.
     pub fn captured() -> (Self, Capture) {
-        let progress_activity = Arc::new(Mutex::new(TerminalActivity::default()));
-        let stdout = Arc::new(Mutex::new(String::new()));
-        let stderr = Arc::new(Mutex::new(String::new()));
+        let transcript = Transcript::default();
 
         (
             Self {
-                progress: ProgressSink::Recording(Arc::clone(&progress_activity)),
-                stdout: TextSink::Captured(Arc::clone(&stdout)),
-                stderr: TextSink::Captured(Arc::clone(&stderr)),
+                progress: ProgressSink::Recording(Arc::clone(&transcript)),
+                stdout: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stdout),
+                stderr: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stderr),
             },
-            Capture {
-                progress_activity,
-                stdout,
-                stderr,
-            },
+            Capture { transcript },
         )
     }
 
@@ -227,9 +233,9 @@ impl TerminalOutput {
     fn progress_draw_target(&self) -> ProgressDrawTarget {
         match &self.progress {
             ProgressSink::Terminal => ProgressDrawTarget::stderr(),
-            ProgressSink::Recording(activity) => {
+            ProgressSink::Recording(transcript) => {
                 ProgressDrawTarget::term_like(Box::new(RecordingTerm {
-                    activity: Arc::clone(activity),
+                    transcript: Arc::clone(transcript),
                 }))
             }
         }
@@ -252,43 +258,86 @@ impl TerminalOutput {
 }
 
 /// Everything a captured [`TerminalOutput`] recorded during one run.
+///
+/// All three sinks record into one ordered transcript. The readers below either
+/// project one sink out of it or, for suspension, ask a question about its order.
 pub struct Capture {
-    progress_activity: Arc<Mutex<TerminalActivity>>,
-    stdout: Arc<Mutex<String>>,
-    stderr: Arc<Mutex<String>>,
+    transcript: Transcript,
 }
 
 impl Capture {
+    /// Borrows the ordered transcript for the duration of one read.
+    fn entries(&self) -> MutexGuard<'_, Vec<TranscriptEntry>> {
+        self.transcript
+            .lock()
+            .expect("captured transcript should be available")
+    }
+
+    /// Joins the selected entries' lines, each terminated, in transcript order.
+    fn lines(&self, select: impl Fn(&TranscriptEntry) -> Option<&str>) -> String {
+        self.entries()
+            .iter()
+            .filter_map(select)
+            .flat_map(|line| [line, "\n"])
+            .collect()
+    }
+
     /// Returns everything written to standard output so far.
     pub fn stdout(&self) -> String {
-        self.stdout
-            .lock()
-            .expect("captured text should be available")
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Stdout(line) => Some(line),
+            _ => None,
+        })
     }
 
     /// Returns everything written to standard error so far.
     pub fn stderr(&self) -> String {
-        self.stderr
-            .lock()
-            .expect("captured text should be available")
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Stderr(line) => Some(line),
+            _ => None,
+        })
     }
 
-    /// Returns how many drawn lines the progress display has cleared so far.
-    pub fn clear_lines(&self) -> usize {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .clear_lines
-    }
+    /// Returns whether every write of `line` happened with the progress display suspended.
+    ///
+    /// Suspended means the display cleared before the write and drew again after it:
+    /// the nearest progress-display entry before each occurrence is a clear, and the
+    /// nearest one after it is a draw. Writes to either text stream count as
+    /// occurrences and are skipped when looking for those neighbours. `line` is
+    /// compared whole and without its terminator. A line that was never written
+    /// returns `false`, so a mistyped expectation cannot pass by matching nothing.
+    ///
+    /// The answer is exact rather than a lower bound: the progress library holds the
+    /// display's lock for the whole of a suspend, so a steady tick cannot draw
+    /// between the clear and the write it protects.
+    pub fn suspended_around(&self, line: &str) -> bool {
+        let entries = self.entries();
+        let mut occurrences = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.text_line() == Some(line))
+            .map(|(index, _)| index)
+            .peekable();
+        if occurrences.peek().is_none() {
+            return false;
+        }
 
-    /// Returns how many times the progress display has written to the terminal.
-    pub fn writes(&self) -> usize {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .writes
+        occurrences.all(|index| {
+            let cleared_before = matches!(
+                entries[..index]
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.is_progress()),
+                Some(TranscriptEntry::Cleared)
+            );
+            let drawn_after = matches!(
+                entries[index + 1..]
+                    .iter()
+                    .find(|entry| entry.is_progress()),
+                Some(TranscriptEntry::Drawn(_))
+            );
+            cleared_before && drawn_after
+        })
     }
 
     /// Returns every line the progress display has drawn so far, each terminated.
@@ -303,11 +352,10 @@ impl Capture {
     /// renders through its own styling, so entries may carry terminal escapes
     /// around the parts a style colours.
     pub fn progress_text(&self) -> String {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .rendered
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Drawn(line) => Some(line),
+            _ => None,
+        })
     }
 }
 
