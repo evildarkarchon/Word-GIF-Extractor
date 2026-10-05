@@ -187,55 +187,6 @@ impl ExtractionRunOutcome {
             Self::ProducedOutput(output) => output.failed_documents,
         }
     }
-
-    /// Creates a produced-output outcome when all semantic totals are consistent.
-    ///
-    /// Positive count types prevent terminal adapters and tests from creating a
-    /// produced state with zero output. The remaining checks ensure documents
-    /// and classified output facts cannot exceed the emitted-image total.
-    ///
-    /// This is the constructor for arbitrary totals, and it is how a caller with
-    /// no run to execute — Extraction run presentation's tests, building one
-    /// outcome to render — reaches a produced state. It is not leftover from the
-    /// production path: an Extraction run builds its outcome through
-    /// [`ExtractionRunOutcomeAccumulator`], which is valid by construction and
-    /// needs no validation to reject.
-    // Only tests call it now that the run builds outcomes by construction, which
-    // is the decision recorded in ADR-0006 rather than an unfinished migration.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn try_produced(
-        output_kind: ExtractionOutputKind,
-        emitted_images: NonZeroUsize,
-        documents_with_output: NonZeroUsize,
-        conversion: Option<ConversionFacts>,
-        gif_routing: Option<GifRoutingFacts>,
-        failed_documents: Option<NonZeroUsize>,
-    ) -> Option<Self> {
-        let conversion_total = match conversion {
-            Some(facts) => facts
-                .converted_images
-                .checked_add(facts.skipped_conversions)?,
-            None => 0,
-        };
-        let routed_gifs = gif_routing
-            .as_ref()
-            .map_or(0, |facts| facts.routed_gifs.get());
-        let classified_output = conversion_total.checked_add(routed_gifs)?;
-        if documents_with_output.get() > emitted_images.get()
-            || classified_output > emitted_images.get()
-        {
-            return None;
-        }
-
-        Some(Self::ProducedOutput(ProducedOutput {
-            output_kind,
-            emitted_images,
-            documents_with_output,
-            conversion,
-            gif_routing,
-            failed_documents,
-        }))
-    }
 }
 
 /// Builds one [`ExtractionRunOutcome`] from the documents an Extraction run processed.
@@ -244,17 +195,16 @@ impl ExtractionRunOutcome {
 /// document with that document's [`DocumentExtractionFacts`], and finished into
 /// an outcome. Finish takes the run's cover intent and cannot fail.
 ///
-/// This is the production path, and it is the counterpart to
-/// [`ExtractionRunOutcome::try_produced`]: this one is valid by construction and
-/// is the only way an Extraction run assembles an outcome, while that one
-/// validates arbitrary totals for callers holding no run state. Neither
-/// replaces the other.
+/// This is the one definition of a valid produced outcome. An Extraction run
+/// assembles its outcome here, and so does any caller holding no run, such as a
+/// test building one outcome to render: a few recorded tallies are enough to
+/// fold, so no second, validating constructor is needed (ADR-0017).
 ///
 /// # Why finishing needs no check
 ///
-/// `try_produced` rejects a produced outcome whose documents or whose
-/// classified output exceed its emitted-image total. Neither can happen here,
-/// and nothing is re-tested after the fold, per ADR-0006. Every total this
+/// A produced outcome whose documents or whose classified output exceeded its
+/// emitted total would be inconsistent. Neither can happen here, and
+/// nothing is re-tested after the fold, per ADR-0006. Every total this
 /// value reads comes from one Emitted image tally, the sum of the documents'
 /// tallies, and a tally grows only by recording images, each under one purpose
 /// and at most one counted role, so its converted, conversion-skipped and

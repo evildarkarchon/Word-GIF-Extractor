@@ -8,35 +8,6 @@
 use super::*;
 use crate::emitted_image_tally::TallyRole;
 
-#[test]
-fn produced_outcome_rejects_inconsistent_semantic_totals() {
-    let one = NonZeroUsize::new(1).expect("one should be nonzero");
-    let two = NonZeroUsize::new(2).expect("two should be nonzero");
-
-    assert!(
-        ExtractionRunOutcome::try_produced(
-            ExtractionOutputKind::Images,
-            one,
-            two,
-            None,
-            None,
-            None
-        )
-        .is_none()
-    );
-    assert!(
-        ExtractionRunOutcome::try_produced(
-            ExtractionOutputKind::Images,
-            one,
-            one,
-            Some(ConversionFacts::new(1, 0)),
-            Some(GifRoutingFacts::new(one, PathBuf::from("gifs"))),
-            None,
-        )
-        .is_none()
-    );
-}
-
 /// Returns the tally of a document that wrote `count` normal images as extracted.
 fn normal_images(count: usize) -> EmittedImageTally {
     normal_images_in(&vec![TallyRole::Preserved; count])

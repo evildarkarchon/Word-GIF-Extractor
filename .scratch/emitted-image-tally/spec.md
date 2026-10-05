@@ -1,6 +1,6 @@
 # Record each emitted image once into an Emitted image tally
 
-Status: ready-for-agent
+Status: done
 
 Governing decision: ADR-0017 (Record each emitted image once into an Emitted image tally), which supersedes parts of ADR-0004, ADR-0006, ADR-0007 and ADR-0016. Origin: candidate 1 of the 2026-10-05 architecture review, run with every ADR open for re-evaluation and settled in a grilling session before any code was written. Glossary terms used here are defined in `CONTEXT.md`: Extraction run, Extraction run outcome, Extraction run presentation, Document extraction, Document extraction facts, Document extraction warning, Applicable outcome facts, EPUB cover extraction, Image write pipeline, Image write purpose, Emitted image role, Emitted image tally. The CONTEXT.md entries for the Emitted image tally and the revised Document extraction facts already landed with ADR-0017, ahead of the code, as a deliberate departure from ADR-0008's convention. Until this work lands, ADR-0017 is the reference for which of the two is current.
 
