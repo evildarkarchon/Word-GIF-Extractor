@@ -972,6 +972,91 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
 }
 
 #[test]
+fn select_documents_orders_dedupe_diagnostic_before_progress_advances_and_finish() {
+    let temp_dir = temp_test_dir("document-selection", "dedupe-diagnostic-order");
+    let invalid_epub = temp_dir.join("invalid.epub");
+    let valid_epub = temp_dir.join("valid.epub");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    fs::write(&invalid_epub, b"not an epub").expect("invalid EPUB should be writable");
+    write_epub_with_descriptive_declarations(&valid_epub, "Test Author", "Magic Book");
+    let inputs = vec![invalid_epub.clone(), valid_epub];
+    let mut observer = RecordingRunObserver::default();
+
+    // No filter is requested, so deduplication is the first phase to acquire declarations.
+    let selected = select_documents(
+        DocumentSelectionOptions {
+            inputs: &inputs,
+            recursive: false,
+            output: None,
+            epub_filter: &EpubFilter::default(),
+        },
+        &mut observer,
+    );
+
+    assert_eq!(selected.len(), 2);
+    let deduplication_facts: Vec<_> = observer
+        .observations
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact,
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
+                    | ExtractionRunObservation::UnreadableEpubMetadata {
+                        purpose: EpubMetadataPurpose::Deduplication,
+                        ..
+                    }
+            )
+        })
+        .collect();
+
+    assert_eq!(deduplication_facts.len(), 5);
+    assert!(matches!(
+        deduplication_facts[0],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 0,
+            unique_remaining: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[1],
+        ExtractionRunObservation::UnreadableEpubMetadata {
+                path,
+                purpose: EpubMetadataPurpose::Deduplication,
+                ..
+            } if path == &invalid_epub
+    ));
+    assert!(matches!(
+        deduplication_facts[2],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 1,
+            unique_remaining: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[3],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 2,
+            unique_remaining: 2,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[4],
+        ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            duplicates_found: 0,
+            unique_remaining: 2,
+            ..
+        }
+    ));
+
+    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}
+
+#[test]
 fn resolves_output_dir_uses_global_when_set() {
     let global = Path::new("/out");
     let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), Some(global));
