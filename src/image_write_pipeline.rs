@@ -16,7 +16,7 @@ use crate::output_placement::OutputPlacement;
 
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
-use self::emission::ImageFileEmission;
+use self::emission::{ImageFileEmission, OutputNaming};
 use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
@@ -360,7 +360,7 @@ impl ImageWritePipeline {
                 return Ok(RequiredCoverWriteOutcome::Completed(result));
             }
         };
-        let mut emission = ImageFileEmission::new(placement.base_name(), false);
+        let mut emission = ImageFileEmission::new(placement.base_name(), OutputNaming::Singular);
         if let Err(error) = emit_prepared_image(
             placement.output_dir(),
             &mut emission,
@@ -418,6 +418,21 @@ impl ImageWritePipeline {
     }
 }
 
+/// Where the normal-images visitor stands on singular versus numbered naming.
+///
+/// A lone image is named after the base name alone and several are numbered, so the
+/// first prepared image cannot be emitted until the visitor knows whether a second
+/// follows. These three states are the whole of that wait: holding an image back
+/// and numbering are never both true.
+enum NormalImageNaming<'policy, 'placement> {
+    /// No image has been prepared yet.
+    Undecided,
+    /// One image is held back until the next one, or the end of traversal, names it.
+    Pending(PreparedImage<'policy>),
+    /// A second image arrived, so every image from here on is numbered.
+    Numbering(ImageFileEmission<'placement>),
+}
+
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
@@ -428,8 +443,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
     normal_image_output: NormalImageOutput,
-    pending_first: Option<PreparedImage<'policy>>,
-    multiple_emission: Option<ImageFileEmission<'placement>>,
+    naming: NormalImageNaming<'policy, 'placement>,
 }
 
 impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
@@ -448,8 +462,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
             normal_image_output: NormalImageOutput::Absent,
-            pending_first: None,
-            multiple_emission: None,
+            naming: NormalImageNaming::Undecided,
         }
     }
 
@@ -518,19 +531,23 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     ///
     /// Returns an error if switching to multiple naming cannot emit either prepared image.
     fn stage_prepared(&mut self, prepared: PreparedImage<'policy>) -> Result<()> {
-        if let Some(mut emission) = self.multiple_emission.take() {
-            self.emit_prepared(&mut emission, prepared)?;
-            self.multiple_emission = Some(emission);
-            return Ok(());
-        }
-
-        if let Some(first) = self.pending_first.take() {
-            let mut emission = ImageFileEmission::new(self.base_name, true);
-            self.emit_prepared(&mut emission, first)?;
-            self.emit_prepared(&mut emission, prepared)?;
-            self.multiple_emission = Some(emission);
-        } else {
-            self.pending_first = Some(prepared);
+        // The state is taken out so emission can borrow the visitor mutably. An
+        // emission error leaves it `Undecided`, which nothing reads again: the
+        // traversal aborts on that error and the visitor becomes a failure.
+        match std::mem::replace(&mut self.naming, NormalImageNaming::Undecided) {
+            NormalImageNaming::Undecided => {
+                self.naming = NormalImageNaming::Pending(prepared);
+            }
+            NormalImageNaming::Pending(first) => {
+                let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Numbered);
+                self.emit_prepared(&mut emission, first)?;
+                self.emit_prepared(&mut emission, prepared)?;
+                self.naming = NormalImageNaming::Numbering(emission);
+            }
+            NormalImageNaming::Numbering(mut emission) => {
+                self.emit_prepared(&mut emission, prepared)?;
+                self.naming = NormalImageNaming::Numbering(emission);
+            }
         }
 
         Ok(())
@@ -553,8 +570,10 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     ///
     /// Returns an error if the lone pending image cannot be emitted.
     fn finish(mut self) -> ImageWriteOutcome {
-        if let Some(prepared) = self.pending_first.take() {
-            let mut emission = ImageFileEmission::new(self.base_name, false);
+        if let NormalImageNaming::Pending(prepared) =
+            std::mem::replace(&mut self.naming, NormalImageNaming::Undecided)
+        {
+            let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Singular);
             if let Err(error) = self.emit_prepared(&mut emission, prepared) {
                 return Err(self.into_failure(error));
             }
