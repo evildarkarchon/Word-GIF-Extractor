@@ -4,7 +4,7 @@ mod discovery;
 mod document_identity;
 mod progress;
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::epub_declarations::EpubDeclarations;
@@ -291,7 +291,7 @@ fn deduplicate_epubs_by_declarations(
 
     // Track the Document identity keys already seen. Keys are case-insensitive,
     // and declared keys never equal filename keys.
-    let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
+    let mut seen: HashSet<DedupeKey> = HashSet::new();
 
     let unique_epubs = lifecycle.deduplicating(
         epub_files,
@@ -318,8 +318,7 @@ fn deduplicate_epubs_by_declarations(
                 .dedupe_key();
 
             // Only add if we haven't seen this combination before.
-            if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key) {
-                entry.insert(path.clone());
+            if seen.insert(key) {
                 EpubDeduplicationCheck::Unique(EpubCandidate {
                     path,
                     epub_declarations,
