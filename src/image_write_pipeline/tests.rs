@@ -95,20 +95,20 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let RequiredCoverWriteOutcome::Completed(result) = outcome else {
         panic!("a readable required cover should complete the cover decision");
     };
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.gifs_routed, 0);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
-    // Emitted something, but not normal image output: that pair is exactly what
-    // Document extraction reads to classify a document as covers-only
-    // (`document_extraction.rs`, `DocumentOutputPurpose`). It holds because the
-    // required-cover visitor never sets the normal-batch flag, so a change that
-    // started setting it would misreport this document as containing normal
-    // images — which is what this assertion is here to catch. Do not remove it
-    // as unfailable; the invariant it guards belongs to the code under test,
-    // not to the fixture. The count must stay beside it, because the consumer
-    // never reads the flag at all when nothing was emitted.
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.gifs_routed(), 0);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
+    // Recorded as a cover, not as a normal image: that pair is exactly what
+    // Document extraction reads off the tally to classify a document as
+    // covers-only (`document_extraction.rs`, `DocumentOutputPurpose`). It holds
+    // because the required-cover path records covers, so a change that recorded
+    // this image as a normal image would misreport the document as containing
+    // normal images — which is what these assertions are here to catch. Do not
+    // remove them as unfailable; the invariant they guard belongs to the code
+    // under test, not to the fixture.
+    assert_eq!(result.tally.covers(), 1);
+    assert_eq!(result.tally.normal_images(), 0);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::CoverDefaultToJpeg {
@@ -146,7 +146,7 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
     let RequiredCoverWriteOutcome::Completed(result) = outcome else {
         panic!("a filtered cover should complete rather than retry");
     };
-    assert_eq!(result.counts.extracted, 0);
+    assert_eq!(result.tally.emitted(), 0);
 }
 
 /// Pins that a failed acquisition leaves the cover decision open.
@@ -172,7 +172,7 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
     let RequiredCoverWriteOutcome::Retry(result) = outcome else {
         panic!("a tail read failure should permit another cover candidate");
     };
-    assert_eq!(result.counts.extracted, 0);
+    assert_eq!(result.tally.emitted(), 0);
 }
 
 #[test]
@@ -197,8 +197,8 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     let RequiredCoverWriteOutcome::Completed(result) = outcome else {
         panic!("conversion skip should complete rather than retry");
     };
-    assert_eq!(result.counts.extracted, 0);
-    assert_eq!(result.counts.skipped, 0);
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::CoverConversionSkipped {
@@ -229,8 +229,8 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     let RequiredCoverWriteOutcome::Completed(result) = outcome else {
         panic!("conversion failure should complete rather than retry");
     };
-    assert_eq!(result.counts.extracted, 0);
-    assert_eq!(result.counts.skipped, 0);
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
     assert!(matches!(
         &result.warnings[..],
         [ImageWriteWarning::CoverConversionFailed { detail }]
@@ -262,9 +262,9 @@ fn required_gif_cover_routes_without_conversion() {
     let RequiredCoverWriteOutcome::Completed(result) = outcome else {
         panic!("a routed cover should complete");
     };
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.gifs_routed, 1);
-    assert_eq!(result.counts.converted, 0);
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.gifs_routed(), 1);
+    assert_eq!(result.tally.converted(), 0);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), b"GIF89a");
     assert!(!output_dir.exists());
@@ -296,11 +296,11 @@ fn emitted_file_is_named_from_the_identified_format() {
     )
     .expect("magic-identified image should be emitted");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.gifs_routed, 0);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.gifs_routed(), 0);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert!(result.tally.normal_images() > 0);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.webp")).unwrap(), payload);
 }
@@ -321,7 +321,7 @@ fn magic_evidence_outranks_conflicting_extension_and_mime() {
     )
     .expect("magic-identified image should be emitted");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
     assert!(!temp_dir.join("sample.jpg").exists());
@@ -356,8 +356,8 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
         })
         .expect("normal image write should succeed");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert!(result.tally.normal_images() > 0);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
 }
@@ -390,11 +390,11 @@ fn non_emitting_discovery_outcomes_move_no_counts() {
     )
     .expect("non-emitting sources should be a normal pipeline outcome");
 
-    assert_eq!(result.counts.extracted, 0);
-    assert_eq!(result.counts.gifs_routed, 0);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(result.tally.gifs_routed(), 0);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert_eq!(result.tally.normal_images(), 0);
     assert!(result.warnings.is_empty());
 }
 
@@ -413,8 +413,8 @@ fn failed_normal_emission_does_not_report_normal_output() {
     )
     .expect_err("failed Image file emission should abort the pipeline");
 
-    assert_eq!(failure.partial.counts.extracted, 0);
-    assert!(!failure.partial.has_normal_image_output());
+    assert_eq!(failure.partial.tally.emitted(), 0);
+    assert_eq!(failure.partial.tally.normal_images(), 0);
     assert!(!blocked_output.join("sample.png").exists());
 }
 
@@ -441,7 +441,7 @@ fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
         })
         .expect("a later readable source should still be emitted");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(matches!(
         &result.warnings[..],
         [
@@ -477,7 +477,7 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
     )
     .expect("the full SVG evidence window should be inspected");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.svg")).unwrap(), svg);
 }
@@ -501,8 +501,8 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
     )
     .expect("both accepted sources should be emitted");
 
-    assert_eq!(result.counts.extracted, 2);
-    assert_eq!(result.counts.skipped, 1);
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(result.tally.conversion_skipped(), 1);
     assert_eq!(
         result.warnings,
         vec![
@@ -550,7 +550,7 @@ fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
         .expect("three images should be emitted incrementally");
 
     assert!(third.checked);
-    assert_eq!(result.counts.extracted, 3);
+    assert_eq!(result.tally.emitted(), 3);
     assert!(temp_dir.join("sample_1.png").exists());
     assert!(temp_dir.join("sample_2.png").exists());
     assert!(temp_dir.join("sample_3.png").exists());
@@ -631,7 +631,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
     )
     .expect("colliding image emission should succeed");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert_eq!(
         fs::read(temp_dir.join("shared.png")).expect("existing output should remain readable"),
         b"existing"
@@ -660,7 +660,7 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
     )
     .expect("extension fallback image should be written");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::ExtensionFallback {
@@ -694,8 +694,8 @@ fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
         })
         .expect("unreadable sources should remain non-fatal");
 
-    assert_eq!(result.counts.extracted, 0);
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(result.tally.normal_images(), 0);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
@@ -724,8 +724,8 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
     )
     .expect("normal conversion skip should preserve original bytes");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.skipped, 1);
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.conversion_skipped(), 1);
     assert_eq!(
         result.warnings,
         vec![
@@ -759,9 +759,9 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
     )
     .expect("normal conversion failure should preserve original bytes");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 1);
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 1);
     assert!(matches!(
         &result.warnings[..],
         [ImageWriteWarning::ConversionFailed { base_name, detail }]
@@ -793,11 +793,11 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
     )
     .expect("accepted sources should be written without conversion or routing");
 
-    assert_eq!(result.counts.extracted, 2);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
-    assert_eq!(result.counts.gifs_routed, 0);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert_eq!(result.tally.gifs_routed(), 0);
+    assert!(result.tally.normal_images() > 0);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample_1.png")).unwrap(), png);
     assert_eq!(fs::read(temp_dir.join("sample_2.gif")).unwrap(), gif);
@@ -820,9 +820,9 @@ fn matching_conversion_target_preserves_original_without_conversion_count() {
     )
     .expect("matching target should preserve source bytes");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::ExtensionFallback {
@@ -896,8 +896,8 @@ fn numbering_follows_document_position_across_routed_gifs() {
     )
     .expect("a normal image and a routed GIF should both be written");
 
-    assert_eq!(result.counts.extracted, 2);
-    assert_eq!(result.counts.gifs_routed, 1);
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(result.tally.gifs_routed(), 1);
     assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), png);
     assert_eq!(fs::read(gif_dir.join("sample_2.gif")).unwrap(), gif);
     assert!(!gif_dir.join("sample_1.gif").exists());
@@ -923,11 +923,11 @@ fn routed_gif_bypasses_conversion() {
     )
     .expect("routed GIF should be written without conversion");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert_eq!(result.counts.gifs_routed, 1);
-    assert_eq!(result.counts.converted, 0);
-    assert_eq!(result.counts.skipped, 0);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.gifs_routed(), 1);
+    assert_eq!(result.tally.converted(), 0);
+    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert!(result.tally.normal_images() > 0);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), original);
     assert!(!output_dir.exists());
@@ -949,7 +949,7 @@ fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
     )
     .expect("MIME-identified image should be written");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(result.warnings.is_empty());
     assert_eq!(
         fs::read(temp_dir.join("sample.png")).unwrap(),
@@ -965,33 +965,28 @@ fn constructed_results_carry_their_facts_through_the_fold() {
     let later_warning = ImageWriteWarning::CoverConversionFailed {
         detail: "encoder rejected the payload".to_string(),
     };
-    let mut earlier = ImageWriteResult::new(
-        ImageWriteCounts {
-            extracted: 1,
-            skipped: 3,
-            ..ImageWriteCounts::default()
-        },
-        vec![earlier_warning.clone()],
-        NormalImageOutput::Absent,
-    );
+    // One converted cover first, then three normal images in the three counted
+    // roles, so every total draws on the side or sides it should.
+    let mut earlier_tally = EmittedImageTally::default();
+    earlier_tally.record_cover(TallyRole::Converted);
+    let mut earlier = ImageWriteResult::new(earlier_tally, vec![earlier_warning.clone()]);
 
+    let mut later_tally = EmittedImageTally::default();
+    later_tally.record_normal_image(TallyRole::RoutedGif);
+    later_tally.record_normal_image(TallyRole::Converted);
+    later_tally.record_normal_image(TallyRole::ConversionSkipped);
     earlier.append(ImageWriteResult::new(
-        ImageWriteCounts {
-            extracted: 1,
-            gifs_routed: 1,
-            converted: 2,
-            skipped: 0,
-        },
+        later_tally,
         vec![later_warning.clone()],
-        NormalImageOutput::Present,
     ));
 
-    assert_eq!(earlier.counts.extracted, 2);
-    assert_eq!(earlier.counts.gifs_routed, 1);
-    assert_eq!(earlier.counts.converted, 2);
-    assert_eq!(earlier.counts.skipped, 3);
+    assert_eq!(earlier.tally.covers(), 1);
+    assert_eq!(earlier.tally.normal_images(), 3);
+    assert_eq!(earlier.tally.emitted(), 4);
+    assert_eq!(earlier.tally.gifs_routed(), 1);
+    assert_eq!(earlier.tally.converted(), 2);
+    assert_eq!(earlier.tally.conversion_skipped(), 1);
     assert_eq!(earlier.warnings, vec![earlier_warning, later_warning]);
-    assert!(earlier.has_normal_image_output());
 }
 
 /// Builds a pipeline with a default Conversion policy for interface tests.
@@ -1163,6 +1158,6 @@ fn unavailable_required_cover_retries_with_its_acquisition_warning() {
             detail: "entry is missing".to_string(),
         }]
     );
-    assert_eq!(result.counts.extracted, 0);
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(result.tally.normal_images(), 0);
 }

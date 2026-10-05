@@ -106,8 +106,8 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     let result = extract(selected, Some(EpubCoverPolicy::CoverOnly), &pipeline)
         .expect("a declared cover should be acquired and emitted");
 
-    assert_eq!(result.counts.extracted, 1);
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.normal_images(), 0);
     assert!(result.warnings.is_empty());
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test.jpg")).unwrap(),
@@ -141,7 +141,7 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
     assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
 }
@@ -166,7 +166,7 @@ fn extracts_epub_resource_by_magic_without_declared_image_hints() {
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
 }
 
@@ -190,7 +190,7 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
     let result =
         extract(selected, None, &pipeline).expect("a missing resource should not abort the EPUB");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert!(matches!(
         &result.warnings[..],
         [ImageWriteWarning::ArchiveImageAcquisitionFailed {
@@ -231,7 +231,7 @@ fn epub_batch_output_uses_resolved_path_order() {
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 2);
+    assert_eq!(result.tally.emitted(), 2);
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
         first_by_path
@@ -268,7 +268,7 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 2);
+    assert_eq!(result.tally.emitted(), 2);
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
         first_by_resolved_path
@@ -296,7 +296,7 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
     let result = extract(selected, None, &pipeline)
         .expect("percent-decoded lookup should preserve EPUB crate behavior");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG
@@ -327,7 +327,7 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
     let result =
         extract(selected, None, &pipeline).expect("exact ZIP lookup should take precedence");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         exact_payload
@@ -356,7 +356,7 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
         "unexpected failure: {}",
         failure.error
     );
-    assert_eq!(failure.partial.counts.extracted, 0);
+    assert_eq!(failure.partial.tally.emitted(), 0);
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
         "unexpected failure: {}",
         failure.error
     );
-    assert_eq!(failure.partial.counts.extracted, 0);
+    assert_eq!(failure.partial.tally.emitted(), 0);
 }
 
 /// Proves that several distinct manifest spellings resolve to one Archive resource identity.
@@ -432,8 +432,8 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
         acquisition_failure_sources(&result.warnings),
         vec!["OEBPS/images/cover%2Ejpg"]
     );
-    assert_eq!(result.counts.extracted, 1);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert!(result.tally.normal_images() > 0);
     assert_eq!(
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG

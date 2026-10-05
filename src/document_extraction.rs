@@ -209,60 +209,47 @@ impl DocumentExtractionFacts {
     /// counts cross into Document extraction; see the comment on it. The
     /// translation itself is infallible.
     fn from_image_write_result(result: ImageWriteResult) -> Self {
-        // Tripwire for a fabricated Image write result, not a runtime condition.
-        // The pipeline itself can no longer violate this: `EmittedImageRole`
-        // gives each emitted image exactly one role, so the counts it folds
-        // satisfy the rule by construction. What remains reachable is
-        // `ImageWriteResult::new`, which assembles a complete outcome from
-        // already-produced facts and validates none of them. Checking here, at
-        // the boundary those counts cross into Document extraction, is what
-        // makes such a result trip on arrival rather than three modules away.
-        //
-        // Nothing reachable through Document extraction's production interface
-        // can produce a violating result. Tests fabricate facts through
-        // `fabricated` below, which routes them here on purpose (ADR-0016), so
-        // the one test that fires the guard does so through that entry point
-        // rather than reaching around this module. The existing Extraction run
-        // test pinning three emitted images as one converted, one
-        // conversion-skipped and one GIF-routed is the boundary case that
-        // exercises it in debug builds, at equality.
+        let tally = result.tally;
+
+        // Tripwire kept from ADR-0007, now unable to fire. It guarded results
+        // assembled through `ImageWriteResult::new` from hand-built counts, but
+        // that constructor now takes an Emitted image tally, which can only grow
+        // by recording images and so satisfies the partition however it was
+        // built (ADR-0017). It stays until Document extraction facts carry the
+        // tally directly, when it is deleted rather than moved.
         //
         // The sum saturates rather than wrapping so the tripwire fails closed:
         // a build with debug assertions but no overflow checks would otherwise
         // wrap a bogus total back under the emitted count and stay silent.
         debug_assert!(
-            result
-                .counts
-                .converted
-                .saturating_add(result.counts.skipped)
-                .saturating_add(result.counts.gifs_routed)
-                <= result.counts.extracted,
+            tally
+                .converted()
+                .saturating_add(tally.conversion_skipped())
+                .saturating_add(tally.gifs_routed())
+                <= tally.emitted(),
             "Image write pipeline classified more images than it emitted: \
              converted {} + skipped {} + routed {} > emitted {}",
-            result.counts.converted,
-            result.counts.skipped,
-            result.counts.gifs_routed,
-            result.counts.extracted,
+            tally.converted(),
+            tally.conversion_skipped(),
+            tally.gifs_routed(),
+            tally.emitted(),
         );
 
-        // "Nothing emitted" is read off the emitted count rather than from the
-        // pipeline, which reports only whether the normal batch produced output.
-        // The pipeline never emits a normal image and a required cover for the
-        // same document, so a non-zero emitted count with no normal-image output
-        // can only be required-cover output.
-        let output_purpose = if result.counts.extracted == 0 {
+        // The tally keeps normal images and covers apart, so the purpose is read
+        // off its two totals: nothing emitted, any normal image, or covers only.
+        let output_purpose = if tally.emitted() == 0 {
             DocumentOutputPurpose::NothingEmitted
-        } else if result.has_normal_image_output() {
+        } else if tally.normal_images() > 0 {
             DocumentOutputPurpose::IncludedNormalImages
         } else {
             DocumentOutputPurpose::CoversOnly
         };
         Self {
             emitted_image_totals: EmittedImageTotals {
-                emitted_images: result.counts.extracted,
-                routed_gifs: result.counts.gifs_routed,
-                converted_images: result.counts.converted,
-                skipped_conversions: result.counts.skipped,
+                emitted_images: tally.emitted(),
+                routed_gifs: tally.gifs_routed(),
+                converted_images: tally.converted(),
+                skipped_conversions: tally.conversion_skipped(),
             },
             output_purpose,
             warnings: result
@@ -276,9 +263,9 @@ impl DocumentExtractionFacts {
     /// Builds facts from fabricated Image write facts, for tests that script an outcome.
     ///
     /// Delegates to the production translation rather than assembling the value,
-    /// so the partition guard above checks a test's counts exactly as it checks a
-    /// real result's (ADR-0016). A direct constructor would let tests be the one
-    /// place fabricated facts bypass it.
+    /// so a test's facts are translated exactly as a real result's are (ADR-0016).
+    /// The partition guard it once routed them through can no longer fire, because
+    /// the result now carries an Emitted image tally (ADR-0017).
     #[cfg(test)]
     pub(crate) fn fabricated(result: ImageWriteResult) -> Self {
         Self::from_image_write_result(result)

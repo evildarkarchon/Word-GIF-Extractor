@@ -11,6 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
+use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::image_format::ImageFormat;
 use crate::output_placement::OutputPlacement;
 
@@ -50,15 +51,6 @@ impl ImageWritePolicy {
     pub(crate) fn gif_destination(&self) -> Option<&Path> {
         self.gif_output.as_deref()
     }
-}
-
-/// Observable Image write pipeline counts for one invocation.
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct ImageWriteCounts {
-    pub(crate) extracted: usize,
-    pub(crate) gifs_routed: usize,
-    pub(crate) converted: usize,
-    pub(crate) skipped: usize,
 }
 
 /// Structured warning facts produced by the Image write pipeline.
@@ -107,55 +99,29 @@ impl ImageWriteWarning {
     }
 }
 
-/// Whether an Image write pipeline invocation emitted any normal batch image.
-///
-/// Required-cover output is not normal image output, so a completed cover attempt
-/// reports `Absent`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NormalImageOutput {
-    Present,
-    Absent,
-}
-
 /// Complete observable outcome of one Image write pipeline invocation.
+///
+/// The Emitted image tally records whether each emitted image was a normal image
+/// or a cover, so no separate normal-output flag travels beside it.
 #[derive(Debug, Default)]
 pub(crate) struct ImageWriteResult {
-    pub(crate) counts: ImageWriteCounts,
+    pub(crate) tally: EmittedImageTally,
     pub(crate) warnings: Vec<ImageWriteWarning>,
-    has_normal_image_output: bool,
 }
 
 impl ImageWriteResult {
     /// Creates one complete Image write pipeline outcome from already-produced facts.
     ///
-    /// `normal_image_output` supplies the normal-batch emission flag, which is
-    /// otherwise readable only through [`Self::has_normal_image_output`]. Taking it
-    /// as a parameter is what keeps that field private: a complete outcome can be
-    /// built anywhere in the crate without the field becoming crate-visible.
-    pub(crate) fn new(
-        counts: ImageWriteCounts,
-        warnings: Vec<ImageWriteWarning>,
-        normal_image_output: NormalImageOutput,
-    ) -> Self {
-        Self {
-            counts,
-            warnings,
-            has_normal_image_output: normal_image_output == NormalImageOutput::Present,
-        }
+    /// Crate-visible so EPUB cover extraction's tests can script an attempt without
+    /// touching disk. There is nothing to validate: a tally can only grow by
+    /// recording images, so its totals are consistent however it was built.
+    pub(crate) fn new(tally: EmittedImageTally, warnings: Vec<ImageWriteWarning>) -> Self {
+        Self { tally, warnings }
     }
 
-    /// Returns whether at least one normal batch image was emitted.
-    pub(crate) fn has_normal_image_output(&self) -> bool {
-        self.has_normal_image_output
-    }
-
-    /// Appends later Image write facts while preserving warning order.
+    /// Appends later Image write facts, adding tallies and preserving warning order.
     pub(crate) fn append(&mut self, mut later: Self) {
-        self.counts.extracted += later.counts.extracted;
-        self.counts.gifs_routed += later.counts.gifs_routed;
-        self.counts.converted += later.counts.converted;
-        self.counts.skipped += later.counts.skipped;
-        self.has_normal_image_output |= later.has_normal_image_output;
+        self.tally += later.tally;
         self.warnings.append(&mut later.warnings);
     }
 }
@@ -216,7 +182,8 @@ struct AcceptedImage {
 /// converted, conversion-skipped and GIF-routed counts from together exceeding
 /// the emitted count. `RoutedGif` carries the destination read from the Image
 /// write policy at the moment routing was decided, so a routed image and the
-/// destination that justifies it cannot be decided apart.
+/// destination that justifies it cannot be decided apart. The Emitted image
+/// tally records the destination-free [`TallyRole`] this maps onto.
 #[derive(Debug, Clone, Copy)]
 enum EmittedImageRole<'policy> {
     /// A GIF the Image write policy sends to its own destination, unconverted.
@@ -361,12 +328,14 @@ impl ImageWritePipeline {
             }
         };
         let mut emission = ImageFileEmission::new(placement.base_name(), OutputNaming::Singular);
-        if let Err(error) = emit_prepared_image(
-            placement.output_dir(),
-            &mut emission,
-            prepared,
-            &mut result.counts,
-        ) {
+        // This path is bound to the required-cover purpose, so it records covers
+        // whatever role the image took: a routed GIF cover is a routed cover.
+        let tally = &mut result.tally;
+        if let Err(error) =
+            emit_prepared_image(placement.output_dir(), &mut emission, prepared, |role| {
+                tally.record_cover(role)
+            })
+        {
             return Err(ImageWriteFailure {
                 partial: result,
                 error,
@@ -402,7 +371,7 @@ impl ImageWritePipeline {
     /// Per-resource acquisition failures belong to the visitor and remain non-fatal;
     /// an error returned by the traversal aborts the document.
     ///
-    /// Returns phase-ordered warning facts and counts for files actually written.
+    /// Returns phase-ordered warning facts and a tally of files actually written.
     /// Filesystem setup, collision exhaustion, create, write, and flush failures
     /// retain those facts with the error; earlier successful writes are not rolled back.
     pub(crate) fn write_from(
@@ -441,8 +410,7 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     base_name: &'placement str,
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
-    counts: ImageWriteCounts,
-    normal_image_output: NormalImageOutput,
+    tally: EmittedImageTally,
     naming: NormalImageNaming<'policy, 'placement>,
 }
 
@@ -460,8 +428,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
             base_name: placement.base_name(),
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
-            counts: ImageWriteCounts::default(),
-            normal_image_output: NormalImageOutput::Absent,
+            tally: EmittedImageTally::default(),
             naming: NormalImageNaming::Undecided,
         }
     }
@@ -561,9 +528,12 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         emission: &mut ImageFileEmission<'_>,
         prepared: PreparedImage<'policy>,
     ) -> Result<()> {
-        emit_prepared_image(self.output_dir, emission, prepared, &mut self.counts)?;
-        self.normal_image_output = NormalImageOutput::Present;
-        Ok(())
+        // This visitor is bound to the normal-images purpose, so it records
+        // normal images; the counting function supplies only the role.
+        let tally = &mut self.tally;
+        emit_prepared_image(self.output_dir, emission, prepared, |role| {
+            tally.record_normal_image(role)
+        })
     }
 
     /// Completes singular lookahead and returns phase-ordered warning facts.
@@ -585,12 +555,11 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     /// Collects phase-ordered facts after traversal succeeds.
     fn into_result(self) -> ImageWriteResult {
         ImageWriteResult::new(
-            self.counts,
+            self.tally,
             self.discovery_warnings
                 .into_iter()
                 .chain(self.conversion_warnings)
                 .collect(),
-            self.normal_image_output,
         )
     }
 
@@ -670,11 +639,19 @@ fn prepare_image_for_write(
 }
 
 /// Emits one prepared image using shared destination routing and count semantics.
+///
+/// This is the one place production counts images. It maps the Emitted image
+/// role onto the tally's destination-free role and hands it to `record` only once
+/// the file is complete. `record` is how the caller's Image write purpose arrives:
+/// each caller is statically bound to one purpose and records into its tally under
+/// it, so no runtime purpose value is passed here.
+///
+/// Returns an error, recording nothing, when Image file emission fails.
 fn emit_prepared_image(
     output_dir: &Path,
     emission: &mut ImageFileEmission<'_>,
     prepared: PreparedImage<'_>,
-    counts: &mut ImageWriteCounts,
+    record: impl FnOnce(TallyRole),
 ) -> Result<()> {
     // Both matches stay exhaustive so a new Emitted image role fails to compile
     // here rather than silently defaulting to the document's output directory
@@ -687,13 +664,12 @@ fn emit_prepared_image(
     };
     emission.emit(destination, prepared.format, &prepared.data)?;
 
-    counts.extracted += 1;
-    match prepared.role {
-        EmittedImageRole::RoutedGif(_) => counts.gifs_routed += 1,
-        EmittedImageRole::Converted => counts.converted += 1,
-        EmittedImageRole::ConversionSkipped => counts.skipped += 1,
-        EmittedImageRole::Preserved => {}
-    }
+    record(match prepared.role {
+        EmittedImageRole::RoutedGif(_) => TallyRole::RoutedGif,
+        EmittedImageRole::Converted => TallyRole::Converted,
+        EmittedImageRole::ConversionSkipped => TallyRole::ConversionSkipped,
+        EmittedImageRole::Preserved => TallyRole::Preserved,
+    });
 
     Ok(())
 }

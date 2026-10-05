@@ -3,12 +3,11 @@
 use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_extraction::{DocumentExtractionError, DocumentExtractionFacts};
+use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, GifRoutingFacts, ProducedOutput};
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{
-    ImageWriteCounts, ImageWriteResult, ImageWriteWarning, NormalImageOutput,
-};
+use crate::image_write_pipeline::{ImageWriteResult, ImageWriteWarning};
 use crate::test_support::{
     DeclaredEpubDeclarations, InMemorySearchSurface, RecordingRunObserver,
     SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, write_epub_document,
@@ -168,12 +167,25 @@ fn jpg_conversion() -> ConversionPolicy {
     .expect("test conversion policy should be valid")
 }
 
-/// Returns Image write counts for a document that emitted `extracted` images and nothing else.
-fn emitted(extracted: usize) -> ImageWriteCounts {
-    ImageWriteCounts {
-        extracted,
-        ..ImageWriteCounts::default()
+/// Returns the tally of a document that wrote `count` normal images as extracted.
+fn normal_images(count: usize) -> EmittedImageTally {
+    normal_images_in(&vec![TallyRole::Preserved; count])
+}
+
+/// Returns the tally of a document that wrote one normal image per role, in order.
+fn normal_images_in(roles: &[TallyRole]) -> EmittedImageTally {
+    let mut tally = EmittedImageTally::default();
+    for &role in roles {
+        tally.record_normal_image(role);
     }
+    tally
+}
+
+/// Returns the tally of an EPUB that wrote its one required cover as extracted.
+fn one_cover() -> EmittedImageTally {
+    let mut tally = EmittedImageTally::default();
+    tally.record_cover(TallyRole::Preserved);
+    tally
 }
 
 /// Returns the warning the Image write pipeline records when magic detection fails for one archive entry.
@@ -187,33 +199,22 @@ fn extension_fallback(source_name: &str) -> ImageWriteWarning {
     }
 }
 
-/// Fabricates Document extraction facts from Image write facts, through Document extraction's own translation.
+/// Fabricates Document extraction facts from a tally and Image write warnings, through Document extraction's own translation.
 ///
-/// Going through the test entry point rather than around it means the partition
-/// guard checks these counts as it would a real result's (ADR-0016).
-fn facts(
-    counts: ImageWriteCounts,
-    warnings: Vec<ImageWriteWarning>,
-    normal_image_output: NormalImageOutput,
-) -> DocumentExtractionFacts {
-    DocumentExtractionFacts::fabricated(ImageWriteResult::new(
-        counts,
-        warnings,
-        normal_image_output,
-    ))
+/// Going through the test entry point rather than around it means these facts
+/// are translated exactly as a real result's are (ADR-0016).
+fn facts(tally: EmittedImageTally, warnings: Vec<ImageWriteWarning>) -> DocumentExtractionFacts {
+    DocumentExtractionFacts::fabricated(ImageWriteResult::new(tally, warnings))
 }
 
-/// Fabricates a completed outcome from Image write counts, with no warnings.
-fn completed(
-    counts: ImageWriteCounts,
-    normal_image_output: NormalImageOutput,
-) -> DocumentExtractionOutcome {
-    DocumentExtractionOutcome::Completed(facts(counts, Vec::new(), normal_image_output))
+/// Fabricates a completed outcome from a tally, with no warnings.
+fn completed(tally: EmittedImageTally) -> DocumentExtractionOutcome {
+    DocumentExtractionOutcome::Completed(facts(tally, Vec::new()))
 }
 
 /// Fabricates the completed outcome of a document that emitted nothing, such as a DOCX without media.
 fn completed_without_images() -> DocumentExtractionOutcome {
-    completed(ImageWriteCounts::default(), NormalImageOutput::Absent)
+    completed(EmittedImageTally::default())
 }
 
 /// Fabricates a failed outcome retaining `facts`, whose error is sealed from `cause`.
@@ -637,18 +638,9 @@ fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
         Some("Covered"),
     );
     // Only the EPUB is scripted, so the DOCX reaching extraction would panic
-    // rather than emit anything; one emitted image with no normal-image output
-    // is what a written required cover looks like to Document extraction.
-    let mut document_extraction = ScriptedDocumentExtraction::for_covers().with_outcome(
-        epub_path.clone(),
-        completed(
-            ImageWriteCounts {
-                extracted: 1,
-                ..ImageWriteCounts::default()
-            },
-            NormalImageOutput::Absent,
-        ),
-    );
+    // rather than emit anything; the EPUB writes its one required cover.
+    let mut document_extraction = ScriptedDocumentExtraction::for_covers()
+        .with_outcome(epub_path.clone(), completed(one_cover()));
 
     let (outcome, observer) = run_scripted(
         &["sample.docx", "book.epub"],
@@ -695,10 +687,8 @@ fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
 #[test]
 fn normal_document_output_returns_produced_images() {
     let surface = InMemorySearchSurface::new().with_file("sample.docx");
-    let mut document_extraction = ScriptedDocumentExtraction::for_images().with_outcome(
-        "sample.docx",
-        completed(emitted(1), NormalImageOutput::Present),
-    );
+    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+        .with_outcome("sample.docx", completed(normal_images(1)));
 
     let (outcome, observer) = run_scripted(
         &["sample.docx"],
@@ -732,10 +722,7 @@ fn epub_normal_fallback_is_classified_as_images() {
         Some(EpubCoverPolicy::CoverThenNormalImages),
         default_image_write_policy(),
     )
-    .with_outcome(
-        "fallback.epub",
-        completed(emitted(1), NormalImageOutput::Present),
-    );
+    .with_outcome("fallback.epub", completed(normal_images(1)));
 
     let (outcome, _) = run_scripted(
         &["fallback.epub"],
@@ -761,10 +748,7 @@ fn requested_conversion_retains_valid_zero_totals() {
         None,
         ImageWritePolicy::new(ImageFormat::all_set(), Some(jpg_conversion()), None),
     )
-    .with_outcome(
-        "matching.docx",
-        completed(emitted(1), NormalImageOutput::Present),
-    );
+    .with_outcome("matching.docx", completed(normal_images(1)));
 
     let (outcome, _) = run_scripted(
         &["matching.docx"],
@@ -793,14 +777,7 @@ fn routed_gif_retains_its_count_and_destination() {
     )
     .with_outcome(
         "animation.docx",
-        completed(
-            ImageWriteCounts {
-                extracted: 1,
-                gifs_routed: 1,
-                ..ImageWriteCounts::default()
-            },
-            NormalImageOutput::Present,
-        ),
+        completed(normal_images_in(&[TallyRole::RoutedGif])),
     );
 
     let (outcome, _) = run_scripted(
@@ -826,8 +803,8 @@ fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
     let gif_output = PathBuf::from("gifs");
     let surface = InMemorySearchSurface::new().with_file("sample.docx");
     // One PNG converted, one SVG skipped and one GIF routed: three emitted
-    // images, each in exactly one role. The partition guard therefore sees this
-    // boundary case at equality, through the fabrication entry point.
+    // images, each recorded under exactly one role, so the role totals reach the
+    // emitted total exactly.
     let mut document_extraction = ScriptedDocumentExtraction::new(
         None,
         ImageWritePolicy::new(
@@ -839,19 +816,17 @@ fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
     .with_outcome(
         "sample.docx",
         DocumentExtractionOutcome::Completed(facts(
-            ImageWriteCounts {
-                extracted: 3,
-                gifs_routed: 1,
-                converted: 1,
-                skipped: 1,
-            },
+            normal_images_in(&[
+                TallyRole::Converted,
+                TallyRole::ConversionSkipped,
+                TallyRole::RoutedGif,
+            ]),
             // The skipped SVG warns, as a real run does, though nothing here
             // asserts on it.
             vec![ImageWriteWarning::ConversionSkipped {
                 base_name: "sample".to_string(),
                 format: ImageFormat::Svg,
             }],
-            NormalImageOutput::Present,
         )),
     );
 
@@ -964,11 +939,7 @@ fn failed_document_without_output_is_counted_in_no_output() {
     let mut document_extraction = ScriptedDocumentExtraction::for_images().with_outcome(
         "broken.docx",
         failed(
-            facts(
-                ImageWriteCounts::default(),
-                Vec::new(),
-                NormalImageOutput::Absent,
-            ),
+            facts(EmittedImageTally::default(), Vec::new()),
             "scripted archive failure",
         ),
     );
@@ -1014,20 +985,16 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
         failing_path.clone(),
         failed(
             facts(
-                emitted(2),
+                normal_images(2),
                 vec![
                     extension_fallback("word/media/first.png"),
                     extension_fallback("word/media/second.png"),
                 ],
-                NormalImageOutput::Present,
             ),
             failure_cause,
         ),
     )
-    .with_outcome(
-        succeeding_path.clone(),
-        completed(emitted(1), NormalImageOutput::Present),
-    );
+    .with_outcome(succeeding_path.clone(), completed(normal_images(1)));
 
     let (outcome, observer) = run_scripted(
         &["failing.docx", "succeeding.docx"],
@@ -1148,20 +1115,18 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
         .with_outcome(
             first_path.clone(),
             DocumentExtractionOutcome::Completed(facts(
-                emitted(2),
+                normal_images(2),
                 vec![
                     extension_fallback("word/media/alpha.png"),
                     extension_fallback("word/media/beta.png"),
                 ],
-                NormalImageOutput::Present,
             )),
         )
         .with_outcome(
             second_path.clone(),
             DocumentExtractionOutcome::Completed(facts(
-                emitted(1),
+                normal_images(1),
                 vec![extension_fallback("word/media/beta.png")],
-                NormalImageOutput::Present,
             )),
         );
 
@@ -1234,12 +1199,8 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
 // them, so the moved tests stay unedited (ADR-0016).
 
 /// Fabricates the completed outcome of an EPUB whose required cover was written.
-///
-/// One emitted image with no normal-image output is what a written required
-/// cover looks like to Document extraction, as in
-/// `cover_only_run_skips_requested_docx_and_diagnoses_it`.
 fn completed_with_cover() -> DocumentExtractionOutcome {
-    completed(emitted(1), NormalImageOutput::Absent)
+    completed(one_cover())
 }
 
 /// Returns the display names of started documents, in the order the run started them.
@@ -1327,7 +1288,7 @@ fn cover_run_merging_covers_with_fallback_images_classifies_as_images_in_either_
     let declarations = DeclaredEpubDeclarations::new()
         .with_declarations("first.epub", Some("Test Creator"), Some("First"))
         .with_declarations("second.epub", Some("Test Creator"), Some("Second"));
-    let fallback_images = || completed(emitted(1), NormalImageOutput::Present);
+    let fallback_images = || completed(normal_images(1));
     let scripted_orders = [
         (
             "covers then fallback",
@@ -1399,8 +1360,8 @@ fn produced_outcome_sums_conversion_and_gif_routing_totals_across_documents() {
         .with_file("first.docx")
         .with_file("empty.docx")
         .with_file("last.docx");
-    // Each document's converted, skipped and routed counts stay within its own
-    // emitted count, so the partition guard accepts both.
+    // Each document records its own normal images, so its converted, skipped and
+    // routed totals stay within its own emitted total.
     let mut document_extraction = ScriptedDocumentExtraction::new(
         None,
         ImageWritePolicy::new(
@@ -1411,28 +1372,19 @@ fn produced_outcome_sums_conversion_and_gif_routing_totals_across_documents() {
     )
     .with_outcome(
         "first.docx",
-        completed(
-            ImageWriteCounts {
-                extracted: 2,
-                gifs_routed: 1,
-                converted: 1,
-                skipped: 0,
-            },
-            NormalImageOutput::Present,
-        ),
+        completed(normal_images_in(&[
+            TallyRole::RoutedGif,
+            TallyRole::Converted,
+        ])),
     )
     .with_outcome("empty.docx", completed_without_images())
     .with_outcome(
         "last.docx",
-        completed(
-            ImageWriteCounts {
-                extracted: 3,
-                gifs_routed: 1,
-                converted: 1,
-                skipped: 1,
-            },
-            NormalImageOutput::Present,
-        ),
+        completed(normal_images_in(&[
+            TallyRole::RoutedGif,
+            TallyRole::Converted,
+            TallyRole::ConversionSkipped,
+        ])),
     );
 
     let (outcome, observer) = run_scripted(
@@ -1474,25 +1426,18 @@ fn every_failed_document_is_counted_in_the_outcome() {
         .with_outcome(
             partial_path.clone(),
             failed(
-                facts(emitted(1), Vec::new(), NormalImageOutput::Present),
+                facts(normal_images(1), Vec::new()),
                 "scripted failure after one image",
             ),
         )
         .with_outcome(
             broken_path.clone(),
             failed(
-                facts(
-                    ImageWriteCounts::default(),
-                    Vec::new(),
-                    NormalImageOutput::Absent,
-                ),
+                facts(EmittedImageTally::default(), Vec::new()),
                 "scripted failure before any image",
             ),
         )
-        .with_outcome(
-            "succeeding.docx",
-            completed(emitted(1), NormalImageOutput::Present),
-        );
+        .with_outcome("succeeding.docx", completed(normal_images(1)));
 
     let (outcome, observer) = run_scripted(
         &["partial.docx", "broken.docx", "succeeding.docx"],
@@ -1541,11 +1486,7 @@ fn failed_epub_in_cover_only_run_is_counted_in_cover_no_output() {
     let mut document_extraction = ScriptedDocumentExtraction::for_covers().with_outcome(
         "broken.epub",
         failed(
-            facts(
-                ImageWriteCounts::default(),
-                Vec::new(),
-                NormalImageOutput::Absent,
-            ),
+            facts(EmittedImageTally::default(), Vec::new()),
             "scripted archive failure",
         ),
     );
