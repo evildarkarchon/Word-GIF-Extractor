@@ -147,13 +147,15 @@ pub struct DocumentSelectionOptions<'a> {
 /// Private pre-eligibility representation used during filtering and deduplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DocumentCandidate {
-    Docx {
-        path: PathBuf,
-    },
-    Epub {
-        path: PathBuf,
-        epub_declarations: Option<EpubDeclarations>,
-    },
+    Docx { path: PathBuf },
+    Epub(EpubCandidate),
+}
+
+/// Private pre-eligibility EPUB that the EPUB filtering and deduplication phases check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EpubCandidate {
+    path: PathBuf,
+    epub_declarations: Option<EpubDeclarations>,
 }
 
 impl DocumentCandidate {
@@ -166,10 +168,10 @@ impl DocumentCandidate {
             .as_deref()
         {
             Some("docx") => Some(Self::Docx { path }),
-            Some("epub") => Some(Self::Epub {
+            Some("epub") => Some(Self::Epub(EpubCandidate {
                 path,
                 epub_declarations: None,
-            }),
+            })),
             _ => None,
         }
     }
@@ -208,9 +210,21 @@ pub fn select_documents(
         .collect()
 }
 
-/// Checks if a candidate is an EPUB file.
-fn is_epub(candidate: &DocumentCandidate) -> bool {
-    matches!(candidate, DocumentCandidate::Epub { .. })
+/// Splits candidates into the EPUBs a declaration phase checks and every other document.
+///
+/// Both groups keep their encounter order, and the EPUB group is typed so the phases
+/// iterating it never meet a non-EPUB candidate.
+fn partition_epubs(files: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec<DocumentCandidate>) {
+    // Separate EPUB files from other document types.
+    let mut epub_files = Vec::new();
+    let mut other_files = Vec::new();
+    for candidate in files {
+        match candidate {
+            DocumentCandidate::Epub(epub) => epub_files.push(epub),
+            other => other_files.push(other),
+        }
+    }
+    (epub_files, other_files)
 }
 
 /// Filters EPUB files by title and creator declarations while passing non-EPUB files through.
@@ -219,27 +233,23 @@ fn filter_epub_files(
     filter: &EpubFilter,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
-    // Separate EPUB files from other document types.
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
+    let (epub_files, other_files) = partition_epubs(files);
     let total = epub_files.len();
     let terms = EpubFilterTerms::new(filter);
 
     lifecycle.filtering(!epub_files.is_empty(), filter, total, |progress| {
         let mut matching_epubs = Vec::new();
 
-        for candidate in epub_files {
-            let DocumentCandidate::Epub { path, .. } = candidate else {
-                continue;
-            };
+        for EpubCandidate { path, .. } in epub_files {
             let outcome = match EpubDeclarations::acquire(&path) {
                 Ok(declarations)
                     if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
                         .matches(&terms) =>
                 {
-                    matching_epubs.push(DocumentCandidate::Epub {
+                    matching_epubs.push(DocumentCandidate::Epub(EpubCandidate {
                         path,
                         epub_declarations: Some(declarations),
-                    });
+                    }));
                     EpubFilterCheck::Matched
                 }
                 Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
@@ -272,7 +282,7 @@ fn deduplicate_epubs_by_declarations(
     files: Vec<DocumentCandidate>,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
-    let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
+    let (epub_files, other_files) = partition_epubs(files);
     let total = epub_files.len();
 
     lifecycle.deduplicating(!epub_files.is_empty(), total, |progress| {
@@ -281,14 +291,11 @@ fn deduplicate_epubs_by_declarations(
         let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
         let mut unique_epubs = Vec::new();
 
-        for candidate in epub_files {
-            let DocumentCandidate::Epub {
-                path,
-                mut epub_declarations,
-            } = candidate
-            else {
-                continue;
-            };
+        for EpubCandidate {
+            path,
+            mut epub_declarations,
+        } in epub_files
+        {
             if epub_declarations.is_none() {
                 match EpubDeclarations::acquire(&path) {
                     Ok(declarations) => epub_declarations = Some(declarations),
@@ -309,10 +316,10 @@ fn deduplicate_epubs_by_declarations(
             let outcome = if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key)
             {
                 entry.insert(path.clone());
-                unique_epubs.push(DocumentCandidate::Epub {
+                unique_epubs.push(DocumentCandidate::Epub(EpubCandidate {
                     path,
                     epub_declarations,
-                });
+                }));
                 EpubDeduplicationCheck::Unique
             } else {
                 EpubDeduplicationCheck::Duplicate
@@ -343,10 +350,10 @@ fn selected_document_from_candidate(
                 identity.display_name(),
             ))
         }
-        DocumentCandidate::Epub {
+        DocumentCandidate::Epub(EpubCandidate {
             path,
             epub_declarations,
-        } => {
+        }) => {
             let output_dir = resolve_output_dir(&path, global_output);
             // Selection fixes the run identity from retained declarations only;
             // extraction-time declaration retries cannot revise this fallback.
