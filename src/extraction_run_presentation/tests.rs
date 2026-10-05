@@ -365,8 +365,6 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
         !capture.suspended_around(&late_line),
         "the finished scan spinner should have been released, leaving nothing to suspend"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies warning presentation adds one prefix and suspends the extraction bar.
@@ -425,8 +423,6 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
         capture.suspended_around(&rendered),
         "the active extraction bar should clear before the warning and redraw after it"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -726,8 +722,6 @@ fn run_cli_renders_a_complete_run_into_the_supplied_destination() {
 
     assert_eq!(capture.stdout(), "No documents found to process.\n");
     assert_eq!(capture.stderr(), "");
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies intake failures are returned rather than written to the destination.

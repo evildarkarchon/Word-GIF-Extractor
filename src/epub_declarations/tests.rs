@@ -25,8 +25,6 @@ fn acquires_complete_payload_free_epub_declarations() {
         .expect("cover declaration should be retained");
     assert_eq!(cover.path(), Path::new("OEBPS/cover.png"));
     assert_eq!(cover.mime(), "image/png");
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -43,8 +41,6 @@ fn sparse_epub_declarations_are_a_successful_acquisition() {
     assert_eq!(declarations.creator(), None);
     assert_eq!(declarations.cover_id(), None);
     assert!(declarations.resources().is_empty());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -79,6 +75,4 @@ fn absent_declarations_are_acquired_and_report_an_unreadable_path() {
 
     assert_eq!(acquired.title(), Some("Retained Title"));
     assert!(unreadable.is_err());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }

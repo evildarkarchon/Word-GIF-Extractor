@@ -31,8 +31,6 @@ fn returns_extension_fallback_warning_fact() {
             format: ImageFormat::Png,
         }]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -64,6 +62,4 @@ fn preserves_zip_order_for_numbered_outputs() {
     assert_eq!(result.counts.extracted, 2);
     assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), first);
     assert_eq!(fs::read(output_dir.join("sample_2.gif")).unwrap(), second);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

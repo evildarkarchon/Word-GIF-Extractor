@@ -117,8 +117,6 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     );
     assert_eq!(fs::read(temp_dir.join("sample.jpg")).unwrap(), original);
     assert!(!temp_dir.join("sample.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Pins that a completed discovery is a *final* cover decision.
@@ -270,8 +268,6 @@ fn required_gif_cover_routes_without_conversion() {
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), b"GIF89a");
     assert!(!output_dir.exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves an emitted file is named from the format its payload was identified as.
@@ -307,8 +303,6 @@ fn emitted_file_is_named_from_the_identified_format() {
     assert!(result.has_normal_image_output());
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.webp")).unwrap(), payload);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -332,8 +326,6 @@ fn magic_evidence_outranks_conflicting_extension_and_mime() {
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
     assert!(!temp_dir.join("sample.jpg").exists());
     assert!(!temp_dir.join("sample.gif").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves a payload larger than the evidence window reaches disk whole.
@@ -368,8 +360,6 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
     assert!(result.has_normal_image_output());
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves a discovery outcome that emits nothing contributes nothing to the run.
@@ -426,8 +416,6 @@ fn failed_normal_emission_does_not_report_normal_output() {
     assert_eq!(failure.partial.counts.extracted, 0);
     assert!(!failure.partial.has_normal_image_output());
     assert!(!blocked_output.join("sample.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Pins extension-fallback warning order when later payload acquisition fails.
@@ -471,8 +459,6 @@ fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
     ));
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), MINIMAL_PNG);
     assert!(!temp_dir.join("sample_1.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -494,8 +480,6 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
     assert_eq!(result.counts.extracted, 1);
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample.svg")).unwrap(), svg);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -544,8 +528,6 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
         fs::read(temp_dir.join("sample_2.png")).unwrap(),
         b"not really png"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -572,8 +554,6 @@ fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
     assert!(temp_dir.join("sample_1.png").exists());
     assert!(temp_dir.join("sample_2.png").exists());
     assert!(temp_dir.join("sample_3.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -590,7 +570,7 @@ fn concurrent_image_emissions_preserve_every_payload() {
         payload.push(writer_index as u8);
         expected_payloads.push(payload.clone());
 
-        let output_dir = temp_dir.clone();
+        let output_dir = temp_dir.to_path_buf();
         let barrier = barrier.clone();
         writers.push(std::thread::spawn(move || {
             let pipeline = pipeline_accepting([ImageFormat::Png]);
@@ -634,8 +614,6 @@ fn concurrent_image_emissions_preserve_every_payload() {
 
     assert_eq!(emitted_names, expected_names);
     assert_eq!(emitted_payloads, expected_payloads);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -663,8 +641,6 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
             .expect("collision-suffixed image should be readable"),
         MINIMAL_PNG
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves extension evidence outranks MIME and returns the exact fallback warning.
@@ -697,8 +673,6 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
         b"not actually a png"
     );
     assert!(!temp_dir.join("sample.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -766,8 +740,6 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
         ]
     );
     assert!(temp_dir.join("sample.svg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -796,8 +768,6 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
             if base_name == "sample" && detail == "Failed to decode image"
     ));
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Pins the invariant that an unconfigured Image write policy produces no
@@ -831,8 +801,6 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(temp_dir.join("sample_1.png")).unwrap(), png);
     assert_eq!(fs::read(temp_dir.join("sample_2.gif")).unwrap(), gif);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -863,8 +831,6 @@ fn matching_conversion_target_preserves_original_without_conversion_count() {
         }]
     );
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies routed GIF emission retains exact bytes and complete count semantics.
@@ -895,8 +861,6 @@ fn routed_gif_bypasses_conversion() {
     assert!(result.warnings.is_empty());
     assert_eq!(fs::read(gif_dir.join("sample.gif")).unwrap(), original);
     assert!(!output_dir.exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -921,8 +885,6 @@ fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
         fs::read(temp_dir.join("sample.png")).unwrap(),
         b"unknown bytes"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]

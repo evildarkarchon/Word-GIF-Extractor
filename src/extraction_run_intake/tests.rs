@@ -7,7 +7,8 @@ use crate::extraction_run_observation::{
     ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput,
 };
 use crate::test_support::{
-    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, valid_png, write_docx,
+    SilentExtractionRunObserver, TempTestPath, no_fallback_directory, temp_test_dir, valid_png,
+    write_docx,
 };
 use clap::Parser;
 use std::cell::Cell;
@@ -28,11 +29,15 @@ fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
 }
 
 /// Prepares and executes one archive-backed DOCX request through the public operation seam.
+///
+/// The returned guard owns the temporary directory. A caller binds it to a named
+/// variable, `_temp_dir` when unused, because `_` would drop it at once and remove
+/// the directory while the test is still reading its output.
 fn run_docx(
     test_name: &str,
     sources: Vec<(&str, Vec<u8>)>,
     extra_args: &[&str],
-) -> (PreparedExtractionRun, PathBuf, PathBuf) {
+) -> (PreparedExtractionRun, TempTestPath, PathBuf) {
     let temp_dir = temp_test_dir("intake", test_name);
     let input_path = temp_dir.join("input.docx");
     let output_dir = temp_dir.join("output");
@@ -95,8 +100,6 @@ fn combines_positional_and_named_inputs() {
     let output = produced(execute(prepared));
     assert_eq!(output.emitted_images(), 2);
     assert_eq!(output.documents_with_output(), 2);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -174,7 +177,7 @@ fn returns_defaulted_input_before_ignored_format_notices() {
 
 #[test]
 fn parses_allowed_formats_and_records_ignored_tokens() {
-    let (prepared, temp_dir, output_dir) = run_docx(
+    let (prepared, _temp_dir, output_dir) = run_docx(
         "selected-formats",
         vec![
             ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
@@ -194,13 +197,11 @@ fn parses_allowed_formats_and_records_ignored_tokens() {
     assert!(output_dir.join("input_1.png").exists());
     assert!(output_dir.join("input_2.jpg").exists());
     assert!(!output_dir.join("input_3.gif").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
-    let (prepared, temp_dir, output_dir) = run_docx(
+    let (prepared, _temp_dir, output_dir) = run_docx(
         "all-formats-fallback",
         vec![("vector.bin", b"<svg/>".to_vec())],
         &["--formats", "unknown"],
@@ -214,13 +215,11 @@ fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
     );
     assert_eq!(produced(execute(prepared)).emitted_images(), 1);
     assert!(output_dir.join("input.svg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn gif_only_overrides_format_selection() {
-    let (prepared, temp_dir, output_dir) = run_docx(
+    let (prepared, _temp_dir, output_dir) = run_docx(
         "gif-only",
         vec![
             ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
@@ -232,13 +231,11 @@ fn gif_only_overrides_format_selection() {
     assert_eq!(produced(execute(prepared)).emitted_images(), 1);
     assert!(output_dir.join("input.gif").exists());
     assert!(!output_dir.join("input.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn builds_default_conversion_policy() {
-    let (prepared, temp_dir, output_dir) = run_docx(
+    let (prepared, _temp_dir, output_dir) = run_docx(
         "default-conversion",
         vec![("image.png", valid_png())],
         &["--convert", "jpg"],
@@ -254,13 +251,11 @@ fn builds_default_conversion_policy() {
         1
     );
     assert!(output_dir.join("input.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
 fn builds_validated_epub_cover_extraction_policy() {
-    let (prepared, temp_dir, _) = run_docx(
+    let (prepared, _temp_dir, _) = run_docx(
         "cover-policy",
         Vec::new(),
         &["--cover-only", "--cover-fallback"],
@@ -270,8 +265,6 @@ fn builds_validated_epub_cover_extraction_policy() {
         execute(prepared),
         ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]

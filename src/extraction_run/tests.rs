@@ -73,7 +73,7 @@ fn no_selected_documents_returns_no_documents_outcome() {
     let temp_dir = temp_test_dir("run", "no-documents");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let request = prepare_request_from(Args {
-        inputs: vec![temp_dir.clone()],
+        inputs: vec![temp_dir.to_path_buf()],
         ..Args::default()
     });
     let mut observer = RecordingRunObserver::default();
@@ -87,8 +87,6 @@ fn no_selected_documents_returns_no_documents_outcome() {
         ExtractionRunObservation::ExtractionStarted { .. }
             | ExtractionRunObservation::DocumentStarted { .. }
     )));
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -135,8 +133,6 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
         ExtractionRunObservation::ExtractionStarted { .. }
             | ExtractionRunObservation::DocumentStarted { .. }
     )));
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies in-scan discovery diagnostics retain their order through the run seam.
@@ -186,7 +182,6 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
     assert_single_terminal_observation(&observer, &outcome);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies recursive discovery diagnostics retain order in the unified run stream.
@@ -246,7 +241,6 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
     assert_single_terminal_observation(&observer, &outcome);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -304,8 +298,6 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
             )),
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -331,8 +323,6 @@ fn selected_document_without_images_returns_image_no_output() {
         ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
     );
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -359,8 +349,6 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
         ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
     );
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -391,8 +379,6 @@ fn normal_document_output_returns_produced_images() {
     assert!(output.conversion().is_none());
     assert!(output.gif_routing().is_none());
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -421,8 +407,6 @@ fn epub_normal_fallback_is_classified_as_images() {
         produced(&outcome).output_kind(),
         ExtractionOutputKind::Images
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -449,8 +433,6 @@ fn requested_conversion_retains_valid_zero_totals() {
         produced(&outcome).conversion(),
         Some(&ConversionFacts::new(0, 0))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -478,8 +460,6 @@ fn routed_gif_retains_its_count_and_destination() {
     assert!(output.conversion().is_none());
     assert_eq!(gif_routing.routed_gifs(), 1);
     assert_eq!(gif_routing.destination(), gif_destination);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -524,8 +504,6 @@ fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
         .expect("routed GIF facts should be present");
     assert_eq!(gif_routing.routed_gifs(), 1);
     assert_eq!(gif_routing.destination(), gif_output);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -604,8 +582,6 @@ fn epub_identity_is_consistent_across_normal_and_cover_runs() {
             "Test Creator - Declared Title"
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -715,8 +691,6 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     assert_eq!(succeeding_finish_indices.len(), 1);
     assert!(succeeding_start < succeeding_finish_indices[0]);
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies the run transports opaque warning values with their document paths.
@@ -806,6 +780,4 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
     assert!(started_at(&second_path) < warnings[2].0);
     assert!(warnings[2].0 < finished_at(&second_path));
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }

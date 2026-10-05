@@ -53,7 +53,7 @@ fn select_documents_reports_scanning_through_its_public_interface() {
 
     let selected = select_documents(
         DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&temp_dir),
+            inputs: &[temp_dir.to_path_buf()],
             recursive: false,
             output: None,
             epub_filter: &EpubFilter::default(),
@@ -80,8 +80,6 @@ fn select_documents_reports_scanning_through_its_public_interface() {
         ]
     );
     assert!(observer.selection_diagnostics().is_empty());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -100,7 +98,7 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
 
     let selected = select_documents(
         DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&temp_dir),
+            inputs: &[temp_dir.to_path_buf()],
             recursive: false,
             output: None,
             epub_filter: &filter,
@@ -195,8 +193,6 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
     assert!(last_scan < first_filter);
     assert!(last_filter < first_dedup);
     assert!(observer.selection_diagnostics().is_empty());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -277,7 +273,6 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
     );
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies that a nested inspection failure stays ordered inside active scanning.
@@ -324,7 +319,6 @@ fn select_documents_reports_broken_nested_link_before_later_supported_input() {
     ));
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies recursive inspection diagnoses one broken nested link at encounter position.
@@ -369,7 +363,6 @@ fn select_documents_reports_broken_nested_link_once_during_recursive_scanning() 
     ));
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies an all-failed recursive scan still finishes with an explicit zero count.
@@ -408,7 +401,6 @@ fn select_documents_finishes_recursive_scanning_at_zero_after_failure() {
     ));
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies requested-root fallback and continuation when opening a directory fails.
@@ -446,8 +438,6 @@ fn select_documents_reports_directory_open_failure_and_continues_to_supported_in
                 .. },
         ] if path == &removed_directory && !detail.is_empty()
     ));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies recursive traversal reports a vanished root and continues to a later input.
@@ -485,8 +475,6 @@ fn select_documents_reports_recursive_root_traversal_failure_and_continues() {
                 discovered: 1 },
         ] if path == &removed_directory && !detail.is_empty()
     ));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies distinct recursive failures are each reported once in encounter order.
@@ -547,7 +535,6 @@ fn select_documents_orders_distinct_recursive_failures_before_later_progress() {
     ));
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a broken recursive entry does not suppress a readable sibling candidate.
@@ -591,7 +578,6 @@ fn select_documents_keeps_readable_nested_sibling_after_recursive_failure() {
     ));
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies that a supported nested file link remains eligible without recursive scanning.
@@ -607,7 +593,6 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
     fs::write(&target, []).expect("linked DOCX target should be writable");
     if !create_file_symlink(&target, &linked_document) {
         eprintln!("skipping file-symlink eligibility: Windows denied symlink creation");
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
         return;
     }
     assert!(
@@ -642,7 +627,6 @@ fn select_documents_keeps_nested_supported_file_link_eligible() {
     ));
 
     remove_file_symlink(&linked_document);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies recursive scanning still admits a nested link to a supported regular file.
@@ -658,7 +642,6 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
     fs::write(&target, []).expect("linked DOCX target should be writable");
     if !create_file_symlink(&target, &linked_document) {
         eprintln!("skipping file-symlink eligibility: Windows denied symlink creation");
-        fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
         return;
     }
     let mut observer = RecordingRunObserver::default();
@@ -695,7 +678,6 @@ fn select_documents_keeps_nested_supported_file_link_eligible_when_recursive() {
     ));
 
     remove_file_symlink(&linked_document);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -741,7 +723,6 @@ fn select_documents_follows_requested_directory_link_during_recursive_scanning()
     ));
 
     remove_directory_link(&requested_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies recursive scanning does not widen scope through a nested directory link.
@@ -785,7 +766,6 @@ fn select_documents_does_not_follow_nested_directory_link_when_recursive() {
     );
 
     remove_directory_link(&nested_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -862,8 +842,6 @@ fn select_documents_reports_filtering_metadata_failure_and_skips_deduplication()
                     | ExtractionRunObservation::EpubDeduplicationFinished { .. }
             ))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -967,8 +945,6 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
         })
         .expect("deduplication should start for the matching EPUB");
     assert!(filter_finished < dedup_started);
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1052,8 +1028,6 @@ fn select_documents_orders_dedupe_diagnostic_before_progress_advances_and_finish
             ..
         }
     ));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1094,7 +1068,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
     let mut observer = RecordingRunObserver::default();
     let non_recursive = select_documents(
         DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&temp_dir),
+            inputs: &[temp_dir.to_path_buf()],
             recursive: false,
             output: None,
             epub_filter: &EpubFilter::default(),
@@ -1106,7 +1080,7 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
     let mut observer = RecordingRunObserver::default();
     let recursive = select_documents(
         DocumentSelectionOptions {
-            inputs: std::slice::from_ref(&temp_dir),
+            inputs: &[temp_dir.to_path_buf()],
             recursive: true,
             output: None,
             epub_filter: &EpubFilter::default(),
@@ -1129,8 +1103,6 @@ fn select_documents_respects_recursive_scanning_through_its_public_interface() {
                 }
             ))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1168,8 +1140,6 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
                     | ExtractionRunObservation::EpubDeduplicationFinished { .. }
             ))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1204,8 +1174,6 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             }
         )
     }));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Pins that a blank title with no creator is no declaration at all.
@@ -1249,8 +1217,6 @@ fn select_documents_keeps_distinct_epubs_whose_only_declaration_is_a_blank_title
         .collect();
     assert_eq!(display_names, ["first.epub", "second.epub"]);
     assert!(observer.selection_diagnostics().is_empty());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1302,8 +1268,6 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
             .count(),
         2
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -1325,6 +1289,4 @@ fn select_documents_uses_declaration_derived_display_name() {
 
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_display_name(), "Tester - Magic Test");
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }

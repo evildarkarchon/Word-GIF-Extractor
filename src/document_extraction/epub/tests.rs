@@ -120,8 +120,6 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
             .count(),
         1
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -148,8 +146,6 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
     assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -175,8 +171,6 @@ fn extracts_epub_resource_by_magic_without_declared_image_hints() {
 
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -212,8 +206,6 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -252,8 +244,6 @@ fn epub_batch_output_uses_resolved_path_order() {
         fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
         second_by_path
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -292,8 +282,6 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
         fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
         second_by_resolved_path
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -318,8 +306,6 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -351,8 +337,6 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         exact_payload
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -378,7 +362,6 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
         failure.error
     );
     assert_eq!(failure.partial.counts.extracted, 0);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -404,7 +387,6 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
         failure.error
     );
     assert_eq!(failure.partial.counts.extracted, 0);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves that several distinct manifest spellings resolve to one Archive resource identity.
@@ -469,6 +451,4 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
             .count(),
         1
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

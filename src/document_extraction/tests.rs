@@ -81,8 +81,6 @@ fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
     );
     assert!(facts.get_warnings().is_empty());
     assert!(output_dir.join("sample.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -135,8 +133,6 @@ fn failed_extraction_retains_document_extraction_facts() {
             .contains("Failed to create output directory")
     );
     assert!(output_dir.join("sample_1.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -186,8 +182,6 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
             "Skipping conversion for sample (svg format not supported for conversion)",
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -265,8 +259,6 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         filtered_facts.get_output_purpose(),
         DocumentOutputPurpose::NothingEmitted
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -360,8 +352,6 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         failed_facts.get_output_purpose(),
         DocumentOutputPurpose::NothingEmitted
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -409,8 +399,6 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
             "Magic detection failed for OEBPS/images/page.png; falling back to .png extension",
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -443,8 +431,6 @@ fn epub_cover_output_is_classified_as_covers_only() {
         DocumentOutputPurpose::CoversOnly
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -472,8 +458,6 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
         DocumentOutputPurpose::IncludedNormalImages
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -504,8 +488,6 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         DocumentOutputPurpose::IncludedNormalImages
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -560,8 +542,6 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         fs::read(output_dir.join("Test.jpg")).expect("selected image should be readable"),
         selected_payload
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -608,6 +588,4 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
         b"\xFF\xD8\xFFrecovered"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
