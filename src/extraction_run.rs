@@ -130,6 +130,7 @@ pub fn run(
         }
         outcome_accumulator.fold(&facts);
         if let Some(error) = error {
+            outcome_accumulator.record_failed_document();
             observer.on_observation(ExtractionRunObservation::DocumentError {
                 path: path.clone(),
                 message: error.to_string(),

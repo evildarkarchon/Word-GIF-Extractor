@@ -14,7 +14,8 @@
 //!
 //! `cfg(test)` is not set when the library is compiled for an integration test, so
 //! nothing in the crate-private support module is reachable from here. The overlap —
-//! the temporary directory helper, the DOCX builder, the directory-link pair — is
+//! the temporary directory helper and the guard it returns, the DOCX builder, the
+//! directory-link pair — is
 //! deliberate and was accepted when this module was created. The two alternatives, a
 //! feature-gated module with the package depending on itself and a separate workspace
 //! crate for fixtures, are argued and rejected in the header of
@@ -26,9 +27,12 @@
 // that has to be maintained every time a test moves between files.
 #![allow(dead_code)]
 
+use std::ffi::OsStr;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -40,6 +44,10 @@ use zip::write::SimpleFileOptions;
 use word_image_extractor::{Args, Capture, TerminalOutput, run_cli};
 
 /// A PNG small enough to inline whose magic bytes still identify it as one.
+///
+/// Byte-identical to the crate-private constant of the same name, deliberately, for
+/// the reason the DOCX fallback helper below is: a shared name that meant a subtly
+/// different fixture would be a trap.
 const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 
 /// Drives the library entry point once, with a destination that captures everything.
@@ -48,15 +56,16 @@ const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01
 /// only the flags its own test is about.
 ///
 /// Both halves of the return value matter, and the split between them is narrower than
-/// it looks. The capture holds what the run said, split by stream and with the progress
-/// display's activity counted separately — that is where nearly every assertion belongs.
-/// The returned result holds only what Extraction run intake refused: an intake failure
-/// travels as the returned error and never reaches the destination, because the process
-/// exit path is what prints it. Nothing that happens after intake can make it an error,
-/// so a run that found no documents, produced nothing, or failed every document it
-/// opened still returns `Ok`. A test asserting intake wording therefore reads the error;
-/// a test asserting anything else reads the capture and the files on disk.
-pub fn run_captured(arguments: &[&str]) -> (Result<()>, Capture) {
+/// it looks. The capture holds what the run said, in one order across both streams and
+/// the progress display — that is where nearly every assertion belongs. The returned
+/// result holds what Extraction run intake refused, and otherwise the exit status: an
+/// intake failure travels as the returned error and never reaches the destination,
+/// because the process exit path is what prints it. Nothing that happens after intake
+/// can make it an error, so a run that found no documents, produced nothing, or failed
+/// every document it opened still returns `Ok`, carrying the exit status the binary
+/// would end with. A test asserting intake wording therefore reads the error; a test
+/// asserting anything else reads the capture and the files on disk.
+pub fn run_captured(arguments: &[&str]) -> (Result<ExitCode>, Capture) {
     let args = Args::try_parse_from(
         std::iter::once("word-image-extractor").chain(arguments.iter().copied()),
     )
@@ -116,21 +125,92 @@ impl Drop for WorkingDirectoryGuard {
     }
 }
 
+/// A temporary test path, removed when a passing test drops it.
+///
+/// The same guard as the crate-private one of the same name, deliberately. A failing
+/// test keeps whatever it left at the path, because the drop sees the thread
+/// unwinding and a failure is exactly when someone wants to go and look. A passing
+/// test's path is removed, directory or file, and nothing having been created there
+/// is fine. A removal that fails on the success path fails the test, so a passing
+/// test cannot quietly leave its tree behind; panicking is safe only because the
+/// unwinding case returned first.
+///
+/// A test that also moves the working directory with [`with_current_dir`] declares
+/// this guard first, so the original working directory is restored before the
+/// directory is removed.
+#[derive(Debug)]
+pub struct TempTestPath {
+    path: PathBuf,
+}
+
+impl Deref for TempTestPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempTestPath {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+// Lets `&TempTestPath` convert into a `PathBuf` through the standard library's
+// `From<&T: AsRef<OsStr>>`, exactly as the path it replaced did.
+impl AsRef<OsStr> for TempTestPath {
+    fn as_ref(&self) -> &OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl Drop for TempTestPath {
+    /// Removes the path after a passing test, and keeps it after a failing one.
+    ///
+    /// # Panics
+    ///
+    /// When the test passed but the path exists and cannot be removed.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+
+        // Metadata of the path itself, not a link target: a test that left a link
+        // here wants the link removed, not whatever it points at.
+        let removal = match fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => Err(error),
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&self.path),
+            Ok(_) => fs::remove_file(&self.path),
+        };
+        if let Err(error) = removal {
+            panic!(
+                "temporary test path {} should be removable: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
 /// Returns an unused temporary directory path for one integration test.
 ///
 /// `area` names the behaviour under test and only makes the path readable when a
 /// failing test leaves its directory behind; the process id and nanosecond stamp are
 /// what actually keep concurrent tests from colliding. The directory is not created —
-/// callers that need it on disk create it themselves.
-pub fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
+/// callers that need it on disk create it themselves. The returned guard removes it
+/// once a passing test is done with it; see [`TempTestPath`].
+pub fn temp_test_dir(area: &str, test_name: &str) -> TempTestPath {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after Unix epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "word-image-extractor-{area}-{test_name}-{}-{nanos}",
-        std::process::id()
-    ))
+    TempTestPath {
+        path: std::env::temp_dir().join(format!(
+            "word-image-extractor-{area}-{test_name}-{}-{nanos}",
+            std::process::id()
+        )),
+    }
 }
 
 /// Writes a ZIP archive containing the supplied entries in order.

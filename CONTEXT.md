@@ -13,7 +13,7 @@ The ready-to-execute handoff produced by Extraction run intake, containing the r
 _Avoid_: Run options, prepared options, configuration bundle
 
 **Extraction run outcome**:
-The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts; the outcome excludes terminal wording and raw cross-module counters.
+The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts. Whenever documents were selected, the outcome also records how many of them failed to extract, if any did; a run that selected no documents had none to fail. The outcome excludes terminal wording and raw cross-module counters.
 _Avoid_: Run report, extraction summary, final counters
 
 **Applicable outcome facts**:
@@ -53,11 +53,11 @@ The per-run choice to extract a required EPUB cover instead of normal document i
 _Avoid_: Document extraction policy, cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, display identity, and per-document output placement. A run may restrict eligibility to EPUB documents alone; selection is told that eligibility is restricted, never why, and reports each document it skips for that reason as a Document selection diagnostic. A selected document's display identity is stable across EPUB cover policies: EPUB declarations supply it when available, otherwise selection uses its path identity.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, Document identity, and per-document Output placement. A run may restrict eligibility to EPUB documents alone; selection is told that eligibility is restricted, never why, and reports each document it skips for that reason as a Document selection diagnostic. A selected document's Document identity is stable across EPUB cover policies.
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:
-The part of Document selection that inspects requested files and directories through the Document search surface, reports non-fatal inspection failures, and yields supported document candidates in encounter order. Each candidate carries how it was found — named by the user, or turned up by a directory search — because discovery is the last stage that still knows: the same file named directly and reached through a directory above it yields two candidates that are equal as paths. It excludes EPUB filtering, deduplication, identity, and output placement.
+The part of Document selection that inspects requested files and directories through the Document search surface, reports non-fatal inspection failures, and yields supported document candidates in encounter order. Each candidate carries how it was found — named by the user, or turned up by a directory search — because discovery is the last stage that still knows: the same file named directly and reached through a directory above it yields two candidates that are equal as paths. It excludes EPUB filtering, deduplication, Document identity, and Output placement.
 _Avoid_: File collection, directory scan, input traversal, source discovery
 
 **Document search surface**:
@@ -65,16 +65,20 @@ What Document discovery can observe about the world it searches — what one pat
 _Avoid_: Filesystem, file system adapter, VFS, path provider
 
 **Selected document**:
-The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, display identity, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
+The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, Output placement, the display name its Document identity decides, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
 _Avoid_: Extraction work item, selected file, document task
 
 **Source identity**:
-The path a Selected document was found at, fixed by Document selection and unchanged by anything Document extraction later learns. It is distinct from output placement even when output placement is derived from it.
+The path a Selected document was found at, fixed by Document selection and unchanged by anything Document extraction later learns. It is distinct from Output placement even when Output placement is derived from it.
 _Avoid_: Input path, file path, source file
 
 **Output placement**:
-Where one selected document's emitted files go and what they are named — the output directory together with the output filename stem, decided by Document selection before extraction begins. Deriving the directory from the source identity does not make them one fact. It excludes collision handling and per-image naming, which belong to Image file emission.
-_Avoid_: Output dir, output path, base name
+Where one Selected document's images are written: its output directory and the output base name its Document identity decided. Document selection fixes it when it selects the document, before extraction begins, and it travels whole to the Image write pipeline; nothing downstream revises it. Deriving the directory from the Source identity does not make them one fact. It excludes collision handling and per-image naming, which belong to Image file emission.
+_Avoid_: Output target, output location, destination pair, output dir, output path
+
+**Document identity**:
+The identity Document selection assigns one document, from which its duplicate recognition, output base name, display name, and EPUB filter match are all decided. It is declared when the document's EPUB declarations carry a non-blank creator or title, and otherwise comes from the document's path; a blank declaration counts as no declaration, and a declared identity never equals a path identity. It decides the base name an Output placement carries but not the output directory, and it excludes the Archive resource identity of anything inside the document.
+_Avoid_: Declared identity, display identity, metadata identity
 
 **Document selection progress**:
 The live, user-observable status of Document selection while it discovers documents, filters EPUBs, and removes duplicates. Each phase reports a running status and exactly one finished status, both as Extraction run observations. Discovery has no denominator until it has finished finding, so it reports only a growing count, while filtering and deduplication run against a known candidate set every member of which must be accounted for before their finished status is meaningful. It excludes per-document extraction status and terminal presentation details.

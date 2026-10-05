@@ -1049,6 +1049,80 @@ fn select_documents_orders_filter_diagnostic_before_progress_advances_and_finish
 }
 
 #[test]
+fn select_documents_orders_dedupe_diagnostic_before_progress_advances_and_finish() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("invalid.epub")
+        .with_file("valid.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_unreadable("invalid.epub")
+        .with_declarations("valid.epub", Some("Test Author"), Some("Magic Book"));
+
+    // No filter is requested, so deduplication is the first phase to acquire declarations.
+    let (selected, observer) =
+        select_against_declared(&surface, &declarations, &["invalid.epub", "valid.epub"]);
+
+    assert_eq!(selected.len(), 2);
+    let deduplication_facts: Vec<_> = observer
+        .observations
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact,
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
+                    | ExtractionRunObservation::UnreadableEpubDeclarations {
+                        purpose: EpubDeclarationPurpose::Deduplication,
+                        ..
+                    }
+            )
+        })
+        .collect();
+
+    assert_eq!(deduplication_facts.len(), 5);
+    assert!(matches!(
+        deduplication_facts[0],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 0,
+            unique_remaining: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[1],
+        ExtractionRunObservation::UnreadableEpubDeclarations {
+                path,
+                purpose: EpubDeclarationPurpose::Deduplication,
+                ..
+            } if path == Path::new("invalid.epub")
+    ));
+    assert!(matches!(
+        deduplication_facts[2],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 1,
+            unique_remaining: 1,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[3],
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 2,
+            unique_remaining: 2,
+            ..
+        }
+    ));
+    assert!(matches!(
+        deduplication_facts[4],
+        ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            duplicates_found: 0,
+            unique_remaining: 2,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn resolves_output_dir_uses_global_when_set() {
     let global = Path::new("/out");
     let resolved = resolve_output_dir(Path::new("subdir/doc.docx"), Some(global));
@@ -1098,6 +1172,32 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             }
         )
     }));
+}
+
+/// Pins that a blank title with no creator is no declaration at all.
+///
+/// The `epub` crate reports an empty `<dc:title/>` as a present, empty value. Dedupe
+/// used to key on presence alone, so every such book shared one empty key and all
+/// but the first were dropped as duplicates even though each displayed under its
+/// own filename.
+#[test]
+fn select_documents_keeps_distinct_epubs_whose_only_declaration_is_a_blank_title() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", None, Some(""))
+        .with_declarations("second.epub", None, Some(""));
+
+    let (selected, observer) =
+        select_against_declared(&surface, &declarations, &["first.epub", "second.epub"]);
+
+    let display_names: Vec<_> = selected
+        .iter()
+        .map(SelectedDocument::get_display_name)
+        .collect();
+    assert_eq!(display_names, ["first.epub", "second.epub"]);
+    assert!(observer.selection_diagnostics().is_empty());
 }
 
 #[test]
@@ -1205,40 +1305,4 @@ fn deduplication_acquires_each_candidate_once_when_no_filter_ran() {
         declarations.acquisitions(),
         vec![PathBuf::from("first.epub"), PathBuf::from("second.epub")]
     );
-}
-
-#[test]
-fn test_format_epub_base_name_both() {
-    let result = format_epub_base_name(Some("Stephen King"), Some("The Shining"), "fallback");
-    assert_eq!(result, "Stephen King - The Shining");
-}
-
-#[test]
-fn test_format_epub_base_name_title_only() {
-    let result = format_epub_base_name(None, Some("The Shining"), "fallback");
-    assert_eq!(result, "The Shining");
-}
-
-#[test]
-fn test_format_epub_base_name_author_only() {
-    let result = format_epub_base_name(Some("Stephen King"), None, "fallback");
-    assert_eq!(result, "Stephen King");
-}
-
-#[test]
-fn test_format_epub_base_name_neither() {
-    let result = format_epub_base_name(None, None, "fallback");
-    assert_eq!(result, "fallback");
-}
-
-#[test]
-fn test_format_epub_base_name_empty_strings() {
-    let result = format_epub_base_name(Some("  "), Some(""), "fallback");
-    assert_eq!(result, "fallback");
-}
-
-#[test]
-fn test_format_epub_base_name_sanitizes() {
-    let result = format_epub_base_name(Some("Author/Name"), Some("Title:Subtitle"), "fallback");
-    assert_eq!(result, "Author_Name - Title_Subtitle");
 }

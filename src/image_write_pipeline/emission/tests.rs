@@ -24,8 +24,6 @@ fn write_failure_removes_the_reserved_partial_file() {
 
     assert!(result.is_err());
     assert!(!output_path.exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -59,6 +57,4 @@ fn cleanup_failure_is_reported_with_the_original_write_failure() {
     assert!(error_report.contains("injected write failure"));
     assert!(error_report.contains("failed to remove partial output file"));
     assert!(error_report.contains(&output_path.display().to_string()));
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

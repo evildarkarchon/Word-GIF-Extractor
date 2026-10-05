@@ -4,55 +4,21 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
+use crate::conversion::ConversionTarget;
 use crate::extraction_run::run as execute_extraction_run;
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
 use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
-use crate::test_support::{temp_test_dir, write_docx};
-
-/// What a captured progress display did while single lines were written through it.
-///
-/// Suspension is visible as a clear followed by a redraw, so both delegating
-/// observers below measure it the same way: snapshot the capture, delegate one
-/// observation, then add the difference to a running total.
-///
-/// The totals are lower bounds rather than exact counts. A live spinner keeps a
-/// steady tick running, and a tick landing inside a measured window adds to both
-/// counters; the production spinner is not asked to stop ticking just because a
-/// test is watching, because that would make presentation behave differently when
-/// captured. The window is microseconds against a hundred-millisecond tick, and
-/// removing the suspend still drops both totals to zero.
-#[derive(Default)]
-struct SuspensionActivity {
-    clear_lines: usize,
-    writes: usize,
-}
-
-impl SuspensionActivity {
-    /// Reads the counters to hand back to [`SuspensionActivity::accumulate`].
-    fn snapshot(capture: &Capture) -> (usize, usize) {
-        (capture.clear_lines(), capture.writes())
-    }
-
-    /// Adds everything the capture recorded since `before` to the running totals.
-    fn accumulate(&mut self, capture: &Capture, before: (usize, usize)) {
-        self.clear_lines += capture.clear_lines() - before.0;
-        self.writes += capture.writes() - before.1;
-    }
-}
+use crate::test_support::{no_fallback_directory, temp_test_dir, write_docx};
 
 /// Delegating presentation that induces one real post-classification traversal failure.
 ///
-/// The capture is the same one the presentation writes into, so the wrapper can
-/// measure what suspension did around a single diagnostic without touching the
-/// progress display the presentation owns.
+/// It only causes the failure; what suspension did around the resulting
+/// diagnostic is read back from the capture's ordered transcript afterwards.
 struct FilesystemPresentationObserver {
     inner: ExtractionRunPresentation,
-    capture: Capture,
     remove_on_scan_start: Option<PathBuf>,
-    discovery_diagnostics: usize,
-    diagnostic_suspension: SuspensionActivity,
 }
 
 impl ExtractionRunObserver for FilesystemPresentationObserver {
@@ -65,13 +31,6 @@ impl ExtractionRunObserver for FilesystemPresentationObserver {
                 discovered: 0,
             }
         );
-        let is_discovery_diagnostic = matches!(
-            &observation,
-            ExtractionRunObservation::DocumentDiscoveryFailed { .. }
-        );
-        // Snapshot before delegation so only the diagnostic's suspend operation
-        // contributes to the clear/redraw deltas measured below.
-        let before = is_discovery_diagnostic.then(|| SuspensionActivity::snapshot(&self.capture));
 
         self.inner.on_observation(observation);
 
@@ -83,44 +42,26 @@ impl ExtractionRunObserver for FilesystemPresentationObserver {
                     .expect("classified directory should be removable before traversal");
             }
         }
-
-        if let Some(before) = before {
-            self.discovery_diagnostics += 1;
-            self.diagnostic_suspension.accumulate(&self.capture, before);
-        }
     }
 }
 
-/// Delegating presentation that measures suspension around each warning.
+/// Delegating presentation that records each warning the run transported.
 ///
 /// It captures the opaque warning values the run transported so presentation
 /// can be asserted without the terminal test owning any stable wording.
 struct WarningPresentationObserver {
     inner: ExtractionRunPresentation,
-    capture: Capture,
     warnings: Vec<DocumentExtractionWarning>,
-    warning_suspension: SuspensionActivity,
 }
 
 impl ExtractionRunObserver for WarningPresentationObserver {
-    /// Delegates observations while recording warning values and suspension effects.
+    /// Delegates observations while recording warning values.
     fn on_observation(&mut self, observation: ExtractionRunObservation) {
-        let warning = match &observation {
-            ExtractionRunObservation::DocumentWarning { warning, .. } => Some(warning.clone()),
-            _ => None,
-        };
-        // Snapshot before delegation so only the warning's suspend operation
-        // contributes to the clear/redraw deltas measured below.
-        let before = warning
-            .as_ref()
-            .map(|_| SuspensionActivity::snapshot(&self.capture));
+        if let ExtractionRunObservation::DocumentWarning { warning, .. } = &observation {
+            self.warnings.push(warning.clone());
+        }
 
         self.inner.on_observation(observation);
-
-        if let (Some(warning), Some(before)) = (warning, before) {
-            self.warnings.push(warning);
-            self.warning_suspension.accumulate(&self.capture, before);
-        }
     }
 }
 
@@ -143,6 +84,7 @@ fn produced_outcome(
                 destination,
             )
         }),
+        None,
     )
     .expect("terminal test outcome should be semantically valid")
 }
@@ -161,7 +103,9 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
     let mut presentation = ExtractionRunPresentation::new(output);
     let cover_only = match &outcome {
         ExtractionRunOutcome::NoDocuments => false,
-        ExtractionRunOutcome::NoOutput(output_kind) => *output_kind == ExtractionOutputKind::Covers,
+        ExtractionRunOutcome::NoOutput { output_kind, .. } => {
+            *output_kind == ExtractionOutputKind::Covers
+        }
         ExtractionRunOutcome::ProducedOutput(output) => {
             output.output_kind() == ExtractionOutputKind::Covers
         }
@@ -170,14 +114,11 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
         total: 1,
         cover_only,
     });
-    let drawn_before = capture.writes();
 
     presentation.on_observation(ExtractionRunObservation::Terminal(outcome));
 
-    assert!(
-        capture.writes() > drawn_before,
-        "the terminal outcome should be drawn on the extraction display"
-    );
+    // The summary cannot be in the drawn text before the terminal observation, so
+    // finding it there is what shows that observation drew it.
     assert!(
         capture.progress_text().contains(&summary),
         "the drawn summary should be readable back; wanted {:?} within {:?}",
@@ -207,7 +148,7 @@ fn terminal_epub_filter_description_preserves_existing_wording() {
 #[test]
 fn test_quality_with_png_error() {
     let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("PNG quality should fail semantic intake")
@@ -222,7 +163,7 @@ fn test_quality_with_png_error() {
 #[test]
 fn test_lossless_with_jpg_error() {
     let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("JPEG lossless should fail semantic intake")
@@ -237,7 +178,7 @@ fn test_lossless_with_jpg_error() {
 #[test]
 fn test_lossless_with_png_error() {
     let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("PNG lossless should fail semantic intake")
@@ -247,6 +188,67 @@ fn test_lossless_with_png_error() {
         "Error was: {}",
         err_msg
     );
+}
+
+/// Verifies every flag the intake error wording names is a flag `Args` defines.
+///
+/// The wording stays here because this module owns every word the tool says, which
+/// leaves it far from the `clap` definitions it spells. A renamed field or `long`
+/// override would leave it naming a flag that no longer exists, with nothing failing
+/// to compile. This renders all four Conversion policy arms -- including the two
+/// `clap` pre-empts on the command line -- and resolves every `--name` it finds,
+/// plus the value that follows a flag with a closed set of values, against the
+/// command definition itself.
+#[test]
+fn intake_error_wording_names_only_flags_args_defines() {
+    let command = Args::command();
+    let errors = [
+        ConversionPolicyError::QualityOutOfRange { quality: 0 },
+        ConversionPolicyError::QualityUnsupportedForPng,
+        ConversionPolicyError::LosslessUnsupportedForTarget {
+            target: ConversionTarget::Jpg,
+        },
+        ConversionPolicyError::LosslessConflictsWithQuality,
+    ];
+
+    for error in errors {
+        let message =
+            render_intake_error(ExtractionRunIntakeError::ConversionPolicy(error)).to_string();
+        let words = message.split_whitespace().collect::<Vec<_>>();
+        let mut flags_named = 0;
+
+        for (index, word) in words.iter().enumerate() {
+            let Some(long) = word.strip_prefix("--") else {
+                continue;
+            };
+            flags_named += 1;
+            let argument = command
+                .get_arguments()
+                .find(|argument| argument.get_long() == Some(long))
+                .unwrap_or_else(|| {
+                    panic!("{message:?} names --{long}, which Args does not define")
+                });
+
+            // A switch reports `true` and `false` as its possible values without
+            // taking either from the command line, so only a flag that takes a
+            // value has one to check in the wording.
+            let possible_values = argument.get_possible_values();
+            if argument.get_action().takes_values() && !possible_values.is_empty() {
+                let value = words
+                    .get(index + 1)
+                    .unwrap_or_else(|| panic!("{message:?} names --{long} without its value"));
+                assert!(
+                    possible_values
+                        .iter()
+                        .any(|possible| possible.matches(value, false)),
+                    "{message:?} gives --{long} the value {value:?}, which Args does not accept"
+                );
+            }
+        }
+
+        // A message that names no flag would pass the loop above vacuously.
+        assert!(flags_named > 0, "{message:?} names no flag to check");
+    }
 }
 
 #[test]
@@ -315,64 +317,57 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
     let input = requested_directory.to_string_lossy().into_owned();
     let args = Args::try_parse_from(["test", input.as_str(), "--recursive"])
         .expect("recursive arguments should parse");
-    let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
+    let prepared = prepare_extraction_run(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     let (output, capture) = TerminalOutput::captured();
     let mut observer = FilesystemPresentationObserver {
         inner: ExtractionRunPresentation::new(output),
-        capture,
         remove_on_scan_start: Some(requested_directory),
-        discovery_diagnostics: 0,
-        diagnostic_suspension: SuspensionActivity::default(),
     };
 
     let outcome = execute_extraction_run(prepared.request, &mut observer);
 
     assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
-    assert_eq!(observer.discovery_diagnostics, 1);
-    assert!(
-        observer.diagnostic_suspension.clear_lines > 0,
-        "suspension should clear the active spinner before rendering the warning"
+    let stderr = capture.stderr();
+    let diagnostics = stderr
+        .lines()
+        .filter(|line| line.contains("during document discovery"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the diagnostic belongs on standard error, once: {stderr}"
     );
     assert!(
-        observer.diagnostic_suspension.writes > 0,
-        "suspension should redraw the active spinner after rendering the warning"
+        capture.suspended_around(diagnostics[0]),
+        "the active spinner should clear before the warning and redraw after it"
     );
     assert!(
-        observer
-            .capture
-            .stderr()
-            .contains("during document discovery"),
-        "the diagnostic belongs on standard error: {}",
-        observer.capture.stderr()
-    );
-    assert!(
-        observer
-            .capture
-            .stdout()
-            .contains("No documents found to process."),
+        capture.stdout().contains("No documents found to process."),
         "the terminal summary belongs on standard output: {}",
-        observer.capture.stdout()
+        capture.stdout()
     );
 
     // The finished scan phase must also have released its spinner. A diagnostic
-    // arriving now therefore has no live display to suspend, so it clears and
-    // redraws nothing -- which is what the released slot looks like from outside.
-    let after_run = SuspensionActivity::snapshot(&observer.capture);
-    let mut released = SuspensionActivity::default();
-    observer
-        .inner
-        .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed {
-            path: PathBuf::from("late"),
-            detail: "arrived after the scan phase finished".to_string(),
-        });
-    released.accumulate(&observer.capture, after_run);
-    assert_eq!(
-        (released.clear_lines, released.writes),
-        (0, 0),
+    // arriving now therefore has no live display to suspend, so nothing clears
+    // before it or redraws after it -- which is what the released slot looks like
+    // from outside. A finished bar still held would clear and redraw around it.
+    let late = ExtractionRunObservation::DocumentDiscoveryFailed {
+        path: PathBuf::from("late"),
+        detail: "arrived after the scan phase finished".to_string(),
+    };
+    observer.inner.on_observation(late);
+    let late_line = capture
+        .stderr()
+        .lines()
+        .last()
+        .expect("the late diagnostic should reach standard error")
+        .to_string();
+    assert!(late_line.contains("arrived after the scan phase finished"));
+    assert!(
+        !capture.suspended_around(&late_line),
         "the finished scan spinner should have been released, leaving nothing to suspend"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies warning presentation adds one prefix and suspends the extraction bar.
@@ -396,26 +391,17 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
         output_dir.to_string_lossy().as_ref(),
     ])
     .expect("warning fixture arguments should parse");
-    let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
+    let prepared = prepare_extraction_run(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     let (output, capture) = TerminalOutput::captured();
     let mut observer = WarningPresentationObserver {
         inner: ExtractionRunPresentation::new(output),
-        capture,
         warnings: Vec::new(),
-        warning_suspension: SuspensionActivity::default(),
     };
 
     execute_extraction_run(prepared.request, &mut observer);
 
     assert_eq!(observer.warnings.len(), 1);
-    assert!(
-        observer.warning_suspension.clear_lines > 0,
-        "suspension should clear the active extraction bar before rendering the warning"
-    );
-    assert!(
-        observer.warning_suspension.writes > 0,
-        "suspension should redraw the active extraction bar after rendering the warning"
-    );
 
     // Stripping exactly one prefix must leave the transported body untouched,
     // which rules out both a missing prefix and a doubled one without this
@@ -432,20 +418,23 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
     );
     // The same line is what the run actually wrote, and it went to standard error.
     assert!(
-        observer.capture.stderr().contains(&rendered),
+        capture.stderr().contains(&rendered),
         "the warning belongs on standard error: {}",
-        observer.capture.stderr()
+        capture.stderr()
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+    assert!(
+        capture.suspended_around(&rendered),
+        "the active extraction bar should clear before the warning and redraw after it"
+    );
 }
 
 #[test]
 fn image_no_output_summary_preserves_existing_wording() {
     assert_eq!(
-        final_summary_message(&ExtractionRunOutcome::NoOutput(
-            ExtractionOutputKind::Images
-        )),
+        final_summary_message(&ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }),
         "No images found"
     );
 }
@@ -453,9 +442,10 @@ fn image_no_output_summary_preserves_existing_wording() {
 #[test]
 fn cover_no_output_summary_preserves_existing_wording() {
     assert_eq!(
-        final_summary_message(&ExtractionRunOutcome::NoOutput(
-            ExtractionOutputKind::Covers
-        )),
+        final_summary_message(&ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None
+        }),
         "No cover images found"
     );
 }
@@ -505,8 +495,14 @@ fn gif_routing_summary_preserves_existing_wording() {
 fn terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display() {
     let gif_dir = PathBuf::from("/tmp/gifs");
     let outcomes = [
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers),
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None,
+        },
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None,
+        },
         produced_outcome(ExtractionOutputKind::Images, 3, 2, None, None),
         produced_outcome(
             ExtractionOutputKind::Images,
@@ -589,10 +585,110 @@ fn no_documents_terminal_outcome_is_printed_rather_than_drawn() {
         ExtractionRunOutcome::NoDocuments,
     ));
 
-    assert_eq!(capture.stdout(), "No documents found to process.\n");
+    // The whole transcript is one line on standard output: nothing was cleared or
+    // drawn before it, and nothing reached standard error.
+    assert_eq!(
+        *capture.entries(),
+        [TranscriptEntry::Stdout(
+            "No documents found to process.".to_string()
+        )]
+    );
+}
+
+/// Builds a capture over a hand-written transcript, to pin what its readers conclude.
+fn capture_of(entries: Vec<TranscriptEntry>) -> Capture {
+    Capture {
+        transcript: Transcript::new(Mutex::new(entries)),
+    }
+}
+
+/// Verifies a line between a clear and a draw counts as suspended, past text entries.
+#[test]
+fn suspended_around_finds_the_nearest_progress_entries_past_text() {
+    use TranscriptEntry::{Cleared, Drawn, Stderr, Stdout};
+
+    let direct = capture_of(vec![
+        Drawn("bar".to_string()),
+        Cleared,
+        Stderr("warning".to_string()),
+        Drawn("bar".to_string()),
+    ]);
+    assert!(direct.suspended_around("warning"));
+
+    // Other text written inside the same suspend is skipped, on either stream.
+    let among_text = capture_of(vec![
+        Drawn("bar".to_string()),
+        Cleared,
+        Stdout("before".to_string()),
+        Stderr("warning".to_string()),
+        Stderr("after".to_string()),
+        Drawn("bar".to_string()),
+    ]);
+    assert!(among_text.suspended_around("warning"));
+    assert!(among_text.suspended_around("before"));
+}
+
+/// Verifies a write missing either half of a suspend is not suspended.
+#[test]
+fn suspended_around_requires_a_clear_before_and_a_draw_after() {
+    use TranscriptEntry::{Cleared, Drawn, Stderr};
+
+    let never_cleared = capture_of(vec![
+        Drawn("bar".to_string()),
+        Stderr("warning".to_string()),
+        Drawn("bar".to_string()),
+    ]);
+    assert!(!never_cleared.suspended_around("warning"));
+
+    let never_redrawn = capture_of(vec![
+        Drawn("bar".to_string()),
+        Cleared,
+        Stderr("warning".to_string()),
+    ]);
+    assert!(!never_redrawn.suspended_around("warning"));
+}
+
+/// Verifies every occurrence must be suspended, and an absent line never is.
+#[test]
+fn suspended_around_requires_every_occurrence_and_at_least_one() {
+    use TranscriptEntry::{Cleared, Drawn, Stderr};
+
+    let once_unsuspended = capture_of(vec![
+        Drawn("bar".to_string()),
+        Cleared,
+        Stderr("warning".to_string()),
+        Drawn("bar".to_string()),
+        Stderr("warning".to_string()),
+    ]);
+    assert!(!once_unsuspended.suspended_around("warning"));
+
+    // Lines are compared whole, so a prefix of a suspended line is a line never written.
+    let suspended = capture_of(vec![
+        Cleared,
+        Stderr("warning".to_string()),
+        Drawn("bar".to_string()),
+    ]);
+    assert!(!suspended.suspended_around("warn"));
+    assert!(!capture_of(Vec::new()).suspended_around("warning"));
+}
+
+/// Verifies a summary arriving with no live display is printed rather than lost.
+///
+/// The run always starts extraction before a non-empty outcome, so this sequence
+/// is unreachable through it today. The terminal arm must not depend on that
+/// ordering: whatever the outcome, a summary with nothing live to finish belongs
+/// on standard output, exactly as the no-documents summary does.
+#[test]
+fn terminal_summary_without_a_live_display_is_printed_rather_than_dropped() {
+    let outcome = produced_outcome(ExtractionOutputKind::Images, 1, 1, None, None);
+    let summary = final_summary_message(&outcome);
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    presentation.on_observation(ExtractionRunObservation::Terminal(outcome));
+
+    assert_eq!(capture.stdout(), format!("{summary}\n"));
     assert_eq!(capture.stderr(), "");
-    assert_eq!(capture.writes(), 0);
-    assert_eq!(capture.clear_lines(), 0);
     assert_eq!(capture.progress_text(), "");
 }
 
@@ -633,12 +729,41 @@ fn run_cli_renders_a_complete_run_into_the_supplied_destination() {
         .expect("entry point arguments should parse");
     let (output, capture) = TerminalOutput::captured();
 
-    run_cli(args, output).expect("an empty input directory is not a failure");
+    let exit = run_cli(args, output).expect("an empty input directory is not an intake failure");
 
+    // Finding nothing is an answer rather than a failure, so it exits successfully.
+    assert_eq!(exit, ExitCode::SUCCESS);
     assert_eq!(capture.stdout(), "No documents found to process.\n");
     assert_eq!(capture.stderr(), "");
+}
 
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+/// Verifies a document that fails to extract makes the whole run exit with failure.
+///
+/// The exit status follows what the terminal shows: the run printed an `Error
+/// processing` line, so it reports failure even though it reached its summary.
+#[test]
+fn run_cli_exits_with_failure_when_a_document_fails() {
+    let temp_dir = temp_test_dir("presentation", "run-cli-failed-document");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let broken_path = temp_dir.join("broken.docx");
+    fs::write(&broken_path, b"not a zip archive").expect("broken DOCX should be writable");
+    let args = Args::try_parse_from([
+        "test",
+        broken_path.to_string_lossy().as_ref(),
+        "--output",
+        temp_dir.join("output").to_string_lossy().as_ref(),
+    ])
+    .expect("entry point arguments should parse");
+    let (output, capture) = TerminalOutput::captured();
+
+    let exit = run_cli(args, output).expect("a failed document is not an intake failure");
+
+    assert_eq!(exit, ExitCode::FAILURE);
+    assert!(
+        capture.stderr().contains("Error processing"),
+        "the failure should have been reported: {}",
+        capture.stderr()
+    );
 }
 
 /// Verifies intake failures are returned rather than written to the destination.

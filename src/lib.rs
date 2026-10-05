@@ -43,6 +43,7 @@ mod extraction_run_observation;
 mod extraction_run_presentation;
 mod image_format;
 mod image_write_pipeline;
+mod output_placement;
 #[cfg(test)]
 mod test_support;
 

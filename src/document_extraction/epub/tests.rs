@@ -8,15 +8,13 @@ use crate::document_selection::{
 };
 use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
+use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    SilentExtractionRunObserver, temp_test_dir, write_epub_with_one_image,
-    write_stored_epub_fixture,
+    MINIMAL_PNG, SilentExtractionRunObserver, pipeline_accepting, temp_test_dir,
+    write_epub_with_one_image, write_stored_epub_fixture,
 };
-use std::collections::HashSet;
 use std::fs;
-
-const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+use std::path::Path;
 
 /// Obtains one owned EPUB handoff through the production Document selection operation.
 fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
@@ -102,11 +100,7 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
             ("OEBPS/images/b.jpg", cover),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, Some(EpubCoverPolicy::CoverOnly), &pipeline)
@@ -125,8 +119,6 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
             .count(),
         1
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -144,11 +136,7 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
         MINIMAL_PNG,
     );
 
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
@@ -156,8 +144,6 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
     assert!(!output_dir.join("Tester - Magic Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -175,19 +161,13 @@ fn extracts_epub_resource_by_magic_without_declared_image_hints() {
         MINIMAL_PNG,
     );
 
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
 
     assert_eq!(result.counts.extracted, 1);
     assert!(output_dir.join("Tester - Magic Test.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -204,11 +184,7 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
         ],
         &[("OEBPS/images/b.png", MINIMAL_PNG)],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result =
@@ -227,8 +203,6 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -252,11 +226,7 @@ fn epub_batch_output_uses_resolved_path_order() {
             ("OEBPS/images/a.png", &first_by_path),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
@@ -270,8 +240,6 @@ fn epub_batch_output_uses_resolved_path_order() {
         fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
         second_by_path
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -295,11 +263,7 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
             ("OEBPS/images/a.png", &first_by_resolved_path),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
@@ -313,8 +277,6 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
         fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
         second_by_resolved_path
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -328,11 +290,7 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
         &[("image", "images/cover%20art.png", "image/png", None)],
         &[("OEBPS/images/cover art.png", MINIMAL_PNG)],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, None, &pipeline)
@@ -343,8 +301,6 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         MINIMAL_PNG
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -365,11 +321,7 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
             ("OEBPS/images/cover art.png", &decoded_payload),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result =
@@ -380,8 +332,6 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
         fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
         exact_payload
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -393,11 +343,7 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
     write_epub_with_one_image(&input_path, "images/image.png", "image/png", MINIMAL_PNG);
     let selected = select_epub(&input_path, &output_dir);
     fs::remove_file(&input_path).expect("selected EPUB should be removable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure =
         extract(selected, None, &pipeline).expect_err("archive-open failure should be fatal");
@@ -411,7 +357,6 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
         failure.error
     );
     assert_eq!(failure.partial.counts.extracted, 0);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -423,11 +368,7 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
     write_epub_with_one_image(&input_path, "images/image.png", "image/png", MINIMAL_PNG);
     let selected = select_epub(&input_path, &output_dir);
     fs::write(&input_path, b"not a ZIP archive").expect("selected EPUB should be replaceable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure =
         extract(selected, None, &pipeline).expect_err("archive-parse failure should be fatal");
@@ -441,7 +382,6 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
         failure.error
     );
     assert_eq!(failure.partial.counts.extracted, 0);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Proves that several distinct manifest spellings resolve to one Archive resource identity.
@@ -476,11 +416,7 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
         ],
     );
     corrupt_stored_payload(&input_path, corrupt_cover);
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(
@@ -508,6 +444,4 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
             .count(),
         1
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

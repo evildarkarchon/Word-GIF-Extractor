@@ -31,7 +31,7 @@ fn renders_document_extraction_warning_with_one_prefix_and_no_document_path() {
     let stdout = capture.stdout();
     assert!(stdout.is_empty(), "unexpected standard output: {stdout}");
     assert!(
-        capture.writes() > 0,
+        !capture.progress_text().is_empty(),
         "the run summary should have been drawn on the progress display"
     );
 
@@ -53,6 +53,4 @@ fn renders_document_extraction_warning_with_one_prefix_and_no_document_path() {
         !stderr_lines[0].contains(&document_path.display().to_string()),
         "the document path is run context only and must not be rendered: {stderr}"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

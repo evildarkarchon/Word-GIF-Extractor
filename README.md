@@ -82,6 +82,21 @@ Extracted images use the book's metadata for naming in the format "Author - Titl
 
 Invalid filename characters in metadata are automatically replaced with underscores.
 
+For both document kinds, the number is the image's position in the document, counted
+across every image it emits. GIFs routed to a separate directory with `--gif-output`
+keep their place in that count, so a document with one PNG and one GIF writes
+`document_1.png` in the output directory and `document_2.gif` in the GIF directory.
+
+## Exit Status
+
+- `0`: the run completed and no document failed. This includes runs that found no
+  documents or no images, and runs whose only problems were printed as warnings.
+- `1`: at least one document failed to extract (each is printed as an
+  `Error processing ...` line, and the run still processes the rest), or the
+  options were valid to parse but could not be combined, such as `--quality` with
+  `--convert png`.
+- `2`: the command line could not be parsed.
+
 ## License
 
 [GPL-3.0 License](https://opensource.org/licenses/GPL-3.0)

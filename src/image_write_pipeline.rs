@@ -4,7 +4,7 @@ mod discovery;
 mod emission;
 mod purpose;
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{Error, Result};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
@@ -12,13 +12,12 @@ use std::path::{Path, PathBuf};
 
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
+use crate::output_placement::OutputPlacement;
 
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
-use self::emission::ImageFileEmission;
-use self::purpose::{
-    ConversionAction, ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility,
-};
+use self::emission::{ImageFileEmission, OutputNaming};
+use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -238,36 +237,32 @@ struct PreparedImage<'policy> {
     role: EmittedImageRole<'policy>,
 }
 
-/// Document-specific facts for one Image write pipeline invocation.
-pub(crate) struct ImageWriteRequest<'a> {
-    output_dir: &'a Path,
-    base_name: &'a str,
+/// Purpose-free result of applying Image write policy to one accepted image.
+///
+/// Preparation reports a conversion fallback instead of resolving it, because
+/// what a fallback means depends on the Image write purpose: a normal image is
+/// still emitted in its original bytes, while a required cover is not emitted at
+/// all. Each visitor already knows its purpose, so each resolves the fallback
+/// itself and preparation never has to return a case its caller cannot reach.
+enum ImagePreparation<'policy> {
+    /// The image is ready to emit in the role preparation decided.
+    Prepared(PreparedImage<'policy>),
+    /// The Conversion policy could not produce requested bytes; the original
+    /// bytes and the format to emit them under are returned unchanged.
+    ConversionFellBack {
+        data: Vec<u8>,
+        format: ImageFormat,
+        reason: ConversionFallbackReason,
+    },
 }
 
-impl<'a> ImageWriteRequest<'a> {
-    /// Creates a normal-images request whose sources will be visited in document order.
-    pub(crate) fn normal_images(output_dir: &'a Path, base_name: &'a str) -> Self {
-        Self {
-            output_dir,
-            base_name,
-        }
-    }
-}
-
-/// Output facts for one required EPUB cover attempt.
-pub(crate) struct RequiredCoverWriteRequest<'a> {
-    output_dir: &'a Path,
-    base_name: &'a str,
-}
-
-impl<'a> RequiredCoverWriteRequest<'a> {
-    /// Creates a required-cover request with singular output naming.
-    pub(crate) fn new(output_dir: &'a Path, base_name: &'a str) -> Self {
-        Self {
-            output_dir,
-            base_name,
-        }
-    }
+/// Why the Conversion policy fell back to an image's original bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConversionFallbackReason {
+    /// The source format cannot be decoded for conversion.
+    Unsupported,
+    /// Conversion was attempted and failed, with the error's detail.
+    Failed(String),
 }
 
 /// Completion disposition for one required-cover candidate.
@@ -279,13 +274,15 @@ pub(crate) enum RequiredCoverWriteOutcome {
     Completed(ImageWriteResult),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum RequiredCoverWriteDisposition {
-    Retry,
-    Completed,
-}
-
 /// Immutable Image write pipeline configured for one Extraction run.
+///
+/// It holds nothing but its policy, and stays a type of its own anyway, for the
+/// reason [`DocumentExtraction`] stays distinct from its Document extraction
+/// policy: the policy is the run's choices, and this is the process that applies
+/// them. Merging the two would leave either a policy that writes images or an
+/// intake that builds the pipeline itself.
+///
+/// [`DocumentExtraction`]: crate::document_extraction::DocumentExtraction
 pub(crate) struct ImageWritePipeline {
     policy: ImageWritePolicy,
 }
@@ -306,25 +303,101 @@ impl ImageWritePipeline {
         self.policy.gif_destination()
     }
 
-    /// Discovers and writes one required EPUB cover through a scoped source reader.
+    /// Discovers and writes one required EPUB cover from its scoped payload reader.
     ///
-    /// Acquisition failures return a retry disposition. Filtering and other Image
-    /// write policy decisions complete the attempt, while emission failures retain
-    /// facts accumulated before returning the error.
+    /// Single-shot, unlike [`Self::write_from`]: a cover attempt has exactly one
+    /// source, and normal images need a traversal only because their singular versus
+    /// multiple naming waits on the next source. Taking the reader directly lets the
+    /// signature say "one" where a traversal had to check it at runtime. The source
+    /// facts are raw so the pipeline builds the cover's evidence itself, and a caller
+    /// cannot hand it a normal source that would enable path-extension fallback.
+    ///
+    /// An emitted cover is named singularly after the placement's base name, since a
+    /// cover attempt never has a second image to number against.
+    ///
+    /// Read failures return `Retry`, so EPUB cover extraction may try its next
+    /// candidate. Filtering, conversion fallback and successful emission return
+    /// `Completed`. Emission failures retain the facts accumulated before them.
     pub(crate) fn write_required_cover(
         &self,
-        request: RequiredCoverWriteRequest<'_>,
-        traverse: impl FnOnce(&mut RequiredCoverWriteVisitor<'_, '_>) -> Result<()>,
+        placement: &OutputPlacement,
+        manifest_path: &str,
+        mime: &str,
+        reader: &mut dyn Read,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request, RequiredCover);
-        if let Err(error) = traverse(&mut visitor) {
-            return Err(visitor.into_failure(error));
+        let source = ArchiveImageSource::required_cover(manifest_path, mime);
+        let discovered = discover_image(
+            &source,
+            reader,
+            &self.policy.allowed_formats,
+            &RequiredCover,
+        );
+        let mut result = ImageWriteResult::default();
+        result.warnings.extend(discovered.warnings);
+        let image = match discovered.outcome {
+            ArchiveImageDiscoveryOutcome::Accepted(image) => image,
+            ArchiveImageDiscoveryOutcome::Completed => {
+                return Ok(RequiredCoverWriteOutcome::Completed(result));
+            }
+            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
+                return Ok(RequiredCoverWriteOutcome::Retry(result));
+            }
+        };
+
+        let prepared = match prepare_image_for_write(image, &self.policy) {
+            ImagePreparation::Prepared(prepared) => prepared,
+            // A required cover is never emitted in bytes the Conversion policy could
+            // not produce; the attempt completes with the cover-specific warning.
+            ImagePreparation::ConversionFellBack { format, reason, .. } => {
+                result.warnings.push(match reason {
+                    ConversionFallbackReason::Unsupported => {
+                        ImageWriteWarning::CoverConversionSkipped { format }
+                    }
+                    ConversionFallbackReason::Failed(detail) => {
+                        ImageWriteWarning::CoverConversionFailed { detail }
+                    }
+                });
+                return Ok(RequiredCoverWriteOutcome::Completed(result));
+            }
+        };
+        let mut emission = ImageFileEmission::new(placement.base_name(), OutputNaming::Singular);
+        if let Err(error) = emit_prepared_image(
+            placement.output_dir(),
+            &mut emission,
+            prepared,
+            &mut result.counts,
+        ) {
+            return Err(ImageWriteFailure {
+                partial: result,
+                error,
+            });
         }
-        visitor.finish()
+        Ok(RequiredCoverWriteOutcome::Completed(result))
+    }
+
+    /// Records a required cover whose payload the EPUB adapter could not acquire.
+    ///
+    /// Always `Retry`: an unavailable candidate settles nothing about the cover, so
+    /// EPUB cover extraction may try its next candidate.
+    pub(crate) fn required_cover_unavailable(
+        &self,
+        manifest_path: &str,
+        error: impl fmt::Display,
+    ) -> RequiredCoverWriteOutcome {
+        let mut result = ImageWriteResult::default();
+        result
+            .warnings
+            .push(ImageWriteWarning::archive_image_acquisition_failed(
+                manifest_path,
+                error,
+            ));
+        RequiredCoverWriteOutcome::Retry(result)
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
     ///
+    /// Sources are numbered in the order the traversal visits them, which is the
+    /// document's own order, under the placement's directory and base name.
     /// The traversal must finish each reader before opening the next archive entry.
     /// Per-resource acquisition failures belong to the visitor and remain non-fatal;
     /// an error returned by the traversal aborts the document.
@@ -334,10 +407,10 @@ impl ImageWritePipeline {
     /// retain those facts with the error; earlier successful writes are not rolled back.
     pub(crate) fn write_from(
         &self,
-        request: ImageWriteRequest<'_>,
+        placement: &OutputPlacement,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome {
-        let mut visitor = ArchiveImageVisitor::new(&self.policy, request, NormalImages);
+        let mut visitor = ArchiveImageVisitor::new(&self.policy, placement, NormalImages);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -345,158 +418,51 @@ impl ImageWritePipeline {
     }
 }
 
-/// Scoped authority for one required-cover acquisition and Image write decision.
-pub(crate) struct RequiredCoverWriteVisitor<'policy, 'request> {
-    policy: &'policy ImageWritePolicy,
-    request: RequiredCoverWriteRequest<'request>,
-    purpose: RequiredCover,
-    disposition: Option<RequiredCoverWriteDisposition>,
-    result: ImageWriteResult,
-}
-
-impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
-    /// Starts one required-cover attempt with no acquired source.
-    fn new(
-        policy: &'policy ImageWritePolicy,
-        request: RequiredCoverWriteRequest<'request>,
-        purpose: RequiredCover,
-    ) -> Self {
-        Self {
-            policy,
-            request,
-            purpose,
-            disposition: None,
-            result: ImageWriteResult::default(),
-        }
-    }
-
-    /// Consumes one scoped cover reader and applies required-cover Image write policy.
-    ///
-    /// Bounded evidence is read before the remaining payload. Read failures are
-    /// retryable; emission failures are returned to abort the document.
-    pub(crate) fn visit(
-        &mut self,
-        source: ArchiveImageSource,
-        reader: &mut dyn Read,
-    ) -> Result<()> {
-        self.ensure_empty()?;
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
-        self.result.warnings.extend(discovered.warnings);
-        let image = match discovered.outcome {
-            ArchiveImageDiscoveryOutcome::Accepted(image) => image,
-            ArchiveImageDiscoveryOutcome::Completed => {
-                self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-                return Ok(());
-            }
-            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
-                self.disposition = Some(RequiredCoverWriteDisposition::Retry);
-                return Ok(());
-            }
-        };
-
-        let Some(prepared) = prepare_image_for_write(
-            image,
-            self.request.base_name,
-            self.policy,
-            &self.purpose,
-            &mut self.result.warnings,
-        ) else {
-            self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-            return Ok(());
-        };
-        let mut emission = ImageFileEmission::new(self.request.base_name, false);
-        emit_prepared_image(
-            self.request.output_dir,
-            &mut emission,
-            prepared,
-            &mut self.result.counts,
-        )?;
-        self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-        Ok(())
-    }
-
-    /// Records a candidate that the EPUB adapter could not open.
-    pub(crate) fn unreadable(
-        &mut self,
-        source: ArchiveImageSource,
-        error: impl fmt::Display,
-    ) -> Result<()> {
-        self.ensure_empty()?;
-        self.result
-            .warnings
-            .push(ImageWriteWarning::archive_image_acquisition_failed(
-                source.diagnostic_name(),
-                error,
-            ));
-        self.disposition = Some(RequiredCoverWriteDisposition::Retry);
-        Ok(())
-    }
-
-    /// Returns an error when a traversal attempts to supply more than one cover source.
-    fn ensure_empty(&self) -> Result<()> {
-        if self.disposition.is_some() {
-            return Err(anyhow!(
-                "required-cover traversal supplied more than one source"
-            ));
-        }
-        Ok(())
-    }
-
-    /// Completes the required-cover traversal after exactly one source attempt.
-    fn finish(self) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        match self.disposition {
-            Some(RequiredCoverWriteDisposition::Retry) => {
-                Ok(RequiredCoverWriteOutcome::Retry(self.result))
-            }
-            Some(RequiredCoverWriteDisposition::Completed) => {
-                Ok(RequiredCoverWriteOutcome::Completed(self.result))
-            }
-            None => Err(self.into_failure(anyhow!("required-cover traversal supplied no source"))),
-        }
-    }
-
-    /// Retains facts accumulated before a required-cover failure.
-    fn into_failure(self, error: Error) -> ImageWriteFailure {
-        ImageWriteFailure {
-            partial: self.result,
-            error,
-        }
-    }
+/// Where the normal-images visitor stands on singular versus numbered naming.
+///
+/// A lone image is named after the base name alone and several are numbered, so the
+/// first prepared image cannot be emitted until the visitor knows whether a second
+/// follows. These three states are the whole of that wait: holding an image back
+/// and numbering are never both true.
+enum NormalImageNaming<'policy, 'placement> {
+    /// No image has been prepared yet.
+    Undecided,
+    /// One image is held back until the next one, or the end of traversal, names it.
+    Pending(PreparedImage<'policy>),
+    /// A second image arrived, so every image from here on is numbered.
+    Numbering(ImageFileEmission<'placement>),
 }
 
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
-pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
+pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
     purpose: NormalImages,
-    output_dir: &'request Path,
-    base_name: &'request str,
+    output_dir: &'placement Path,
+    base_name: &'placement str,
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
     normal_image_output: NormalImageOutput,
-    pending_first: Option<PreparedImage<'policy>>,
-    multiple_emission: Option<ImageFileEmission<'request>>,
+    naming: NormalImageNaming<'policy, 'placement>,
 }
 
-impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
+impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     /// Starts one scoped Archive image discovery traversal.
     fn new(
         policy: &'policy ImageWritePolicy,
-        request: ImageWriteRequest<'request>,
+        placement: &'placement OutputPlacement,
         purpose: NormalImages,
     ) -> Self {
         Self {
             policy,
             purpose,
-            output_dir: request.output_dir,
-            base_name: request.base_name,
+            output_dir: placement.output_dir(),
+            base_name: placement.base_name(),
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),
             normal_image_output: NormalImageOutput::Absent,
-            pending_first: None,
-            multiple_emission: None,
+            naming: NormalImageNaming::Undecided,
         }
     }
 
@@ -516,14 +482,30 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
-        let Some(prepared) = prepare_image_for_write(
-            image,
-            self.base_name,
-            self.policy,
-            &self.purpose,
-            &mut self.conversion_warnings,
-        ) else {
-            unreachable!("normal-image preparation always preserves accepted bytes");
+        let prepared = match prepare_image_for_write(image, self.policy) {
+            ImagePreparation::Prepared(prepared) => prepared,
+            // A normal image is still emitted when conversion falls back: its
+            // original bytes go out as a conversion-skipped image with a warning.
+            ImagePreparation::ConversionFellBack {
+                data,
+                format,
+                reason,
+            } => {
+                let base_name = self.base_name.to_string();
+                self.conversion_warnings.push(match reason {
+                    ConversionFallbackReason::Unsupported => {
+                        ImageWriteWarning::ConversionSkipped { base_name, format }
+                    }
+                    ConversionFallbackReason::Failed(detail) => {
+                        ImageWriteWarning::ConversionFailed { base_name, detail }
+                    }
+                });
+                PreparedImage {
+                    data,
+                    format,
+                    role: EmittedImageRole::ConversionSkipped,
+                }
+            }
         };
 
         self.stage_prepared(prepared)
@@ -549,19 +531,23 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     ///
     /// Returns an error if switching to multiple naming cannot emit either prepared image.
     fn stage_prepared(&mut self, prepared: PreparedImage<'policy>) -> Result<()> {
-        if let Some(mut emission) = self.multiple_emission.take() {
-            self.emit_prepared(&mut emission, prepared)?;
-            self.multiple_emission = Some(emission);
-            return Ok(());
-        }
-
-        if let Some(first) = self.pending_first.take() {
-            let mut emission = ImageFileEmission::new(self.base_name, true);
-            self.emit_prepared(&mut emission, first)?;
-            self.emit_prepared(&mut emission, prepared)?;
-            self.multiple_emission = Some(emission);
-        } else {
-            self.pending_first = Some(prepared);
+        // The state is taken out so emission can borrow the visitor mutably. An
+        // emission error leaves it `Undecided`, which nothing reads again: the
+        // traversal aborts on that error and the visitor becomes a failure.
+        match std::mem::replace(&mut self.naming, NormalImageNaming::Undecided) {
+            NormalImageNaming::Undecided => {
+                self.naming = NormalImageNaming::Pending(prepared);
+            }
+            NormalImageNaming::Pending(first) => {
+                let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Numbered);
+                self.emit_prepared(&mut emission, first)?;
+                self.emit_prepared(&mut emission, prepared)?;
+                self.naming = NormalImageNaming::Numbering(emission);
+            }
+            NormalImageNaming::Numbering(mut emission) => {
+                self.emit_prepared(&mut emission, prepared)?;
+                self.naming = NormalImageNaming::Numbering(emission);
+            }
         }
 
         Ok(())
@@ -584,8 +570,10 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     ///
     /// Returns an error if the lone pending image cannot be emitted.
     fn finish(mut self) -> ImageWriteOutcome {
-        if let Some(prepared) = self.pending_first.take() {
-            let mut emission = ImageFileEmission::new(self.base_name, false);
+        if let NormalImageNaming::Pending(prepared) =
+            std::mem::replace(&mut self.naming, NormalImageNaming::Undecided)
+        {
+            let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Singular);
             if let Err(error) = self.emit_prepared(&mut emission, prepared) {
                 return Err(self.into_failure(error));
             }
@@ -615,17 +603,15 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     }
 }
 
-/// Applies one statically selected purpose's conversion decision before a file write.
+/// Applies Image write policy's GIF routing and conversion to one accepted image.
 ///
-/// Conversion warning facts are appended in accepted-source order. `None` is
-/// returned only when required-cover conversion completes without emission.
-fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
+/// Purpose-free: a conversion that cannot produce requested bytes is reported as
+/// [`ImagePreparation::ConversionFellBack`] for the calling visitor to resolve,
+/// and no warning fact is produced here.
+fn prepare_image_for_write(
     image: AcceptedImage,
-    base_name: &str,
-    policy: &'policy ImageWritePolicy,
-    purpose: &P,
-    warnings: &mut Vec<ImageWriteWarning>,
-) -> Option<PreparedImage<'policy>> {
+    policy: &ImageWritePolicy,
+) -> ImagePreparation<'_> {
     // Routing is decided together with the destination it needs, so emission
     // never has to ask the policy a second question it could answer differently.
     let routed_destination = if image.format == ImageFormat::Gif {
@@ -636,48 +622,43 @@ fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
 
     if let Some(conversion) = &policy.conversion {
         if let Some(destination) = routed_destination {
-            return Some(PreparedImage {
+            return ImagePreparation::Prepared(PreparedImage {
                 data: image.data,
                 format: image.format,
                 role: EmittedImageRole::RoutedGif(destination),
             });
         }
 
-        let (original_format, decision) = match conversion.convert(&image.data, image.format) {
+        match conversion.convert(&image.data, image.format) {
             Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                return Some(PreparedImage {
+                ImagePreparation::Prepared(PreparedImage {
                     data: converted_bytes,
                     format,
                     role: EmittedImageRole::Converted,
-                });
+                })
             }
             Ok(ConversionOutcome::PreservedMatchingSource) => {
-                return Some(PreparedImage {
+                ImagePreparation::Prepared(PreparedImage {
                     data: image.data,
                     format: image.format,
                     role: EmittedImageRole::Preserved,
-                });
+                })
             }
-            Ok(ConversionOutcome::UnsupportedSource(original_format)) => (
-                original_format,
-                purpose.unsupported_conversion(base_name, original_format),
-            ),
-            Err(error) => (image.format, purpose.failed_conversion(base_name, &error)),
-        };
-
-        if let Some(warning) = decision.warning {
-            warnings.push(warning);
-        }
-        match decision.action {
-            ConversionAction::PreserveOriginal => Some(PreparedImage {
+            Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
+                ImagePreparation::ConversionFellBack {
+                    data: image.data,
+                    format: original_format,
+                    reason: ConversionFallbackReason::Unsupported,
+                }
+            }
+            Err(error) => ImagePreparation::ConversionFellBack {
                 data: image.data,
-                format: original_format,
-                role: EmittedImageRole::ConversionSkipped,
-            }),
-            ConversionAction::CompleteWithoutEmission => None,
+                format: image.format,
+                reason: ConversionFallbackReason::Failed(error.to_string()),
+            },
         }
     } else {
-        Some(PreparedImage {
+        ImagePreparation::Prepared(PreparedImage {
             data: image.data,
             format: image.format,
             role: match routed_destination {

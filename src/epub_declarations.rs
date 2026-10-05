@@ -37,6 +37,28 @@ impl EpubDeclarations {
         })
     }
 
+    /// Returns the retained declarations, asking `source` for `path` only when none were retained.
+    ///
+    /// This is the single home of ADR-0002's rule: once retained, declarations are the
+    /// authoritative facts for the Extraction run and are never re-read, so a retained
+    /// value is returned without consulting `source`. Taking the source as a parameter
+    /// keeps that rule here while ADR-0008 lets Document selection substitute *how*
+    /// declarations are acquired.
+    ///
+    /// # Errors
+    ///
+    /// Returns the acquisition error when nothing was retained and `source` cannot read `path`.
+    pub(crate) fn retained_or_acquire(
+        retained: Option<Self>,
+        path: &Path,
+        source: &dyn EpubDeclarationSource,
+    ) -> Result<Self, EpubDeclarationError> {
+        match retained {
+            Some(declarations) => Ok(declarations),
+            None => source.acquire(path),
+        }
+    }
+
     /// Returns the declared title when present.
     pub(crate) fn title(&self) -> Option<&str> {
         self.title.as_deref()

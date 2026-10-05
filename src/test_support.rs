@@ -29,8 +29,10 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
@@ -40,6 +42,81 @@ use crate::document_search_surface::{
 };
 use crate::epub_declarations::{EpubDeclarationError, EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
+use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+
+/// A temporary test path, removed when a passing test drops it.
+///
+/// A failing test keeps whatever it left at the path: the drop sees the thread
+/// unwinding and leaves the tree alone, because a failure is exactly when someone
+/// wants to go and look. A passing test's path is removed, directory or file, and
+/// nothing having been created there is fine.
+///
+/// A removal that fails on the success path fails the test, as the trailing
+/// `remove_dir_all(...).expect(...)` each test used to end with did, so a passing
+/// test cannot quietly leave its tree behind. That is not a check for leaked file
+/// handles: the standard library opens files shareable for deletion, and Windows
+/// removes such a file while it is still open. Panicking here is safe only because
+/// the unwinding case returned first; panicking again while unwinding would abort
+/// the whole test process.
+///
+/// It dereferences to [`Path`], so it can be joined, borrowed and created like the
+/// path it wraps; [`Path::to_path_buf`] gives an owned copy where one must move.
+#[derive(Debug)]
+pub(crate) struct TempTestPath {
+    path: PathBuf,
+}
+
+impl Deref for TempTestPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempTestPath {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+// Lets `&TempTestPath` convert into a `PathBuf` through the standard library's
+// `From<&T: AsRef<OsStr>>`, so call sites taking `impl Into<PathBuf>` accept the
+// guard exactly as they accepted the path it replaced.
+impl AsRef<OsStr> for TempTestPath {
+    fn as_ref(&self) -> &OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl Drop for TempTestPath {
+    /// Removes the path after a passing test, and keeps it after a failing one.
+    ///
+    /// # Panics
+    ///
+    /// When the test passed but the path exists and cannot be removed.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+
+        // Metadata of the path itself, not a link target: a test that left a
+        // link here wants the link removed, not whatever it points at.
+        let removal = match fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => Err(error),
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&self.path),
+            Ok(_) => fs::remove_file(&self.path),
+        };
+        if let Err(error) = removal {
+            panic!(
+                "temporary test path {} should be removable: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
 
 /// One node in a declared Document search surface.
 #[derive(Debug, Clone)]
@@ -488,7 +565,8 @@ impl DocumentSearchTraversal for DeclaredTraversal {
 /// `area` names the module under test and only makes the path readable when a
 /// failing test leaves its directory behind; the process id and nanosecond stamp
 /// are what actually keep concurrent tests from colliding. The directory is not
-/// created — callers that need it on disk create it themselves.
+/// created — callers that need it on disk create it themselves. The returned
+/// guard removes it once a passing test is done with it; see [`TempTestPath`].
 ///
 /// # `!path.exists()` is not evidence of non-emission
 ///
@@ -502,7 +580,14 @@ impl DocumentSearchTraversal for DeclaredTraversal {
 /// The assertion is only meaningful once something is known to have created a
 /// directory here, which is why a test that writes to one subdirectory may
 /// legitimately assert a sibling was never created.
-pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
+pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> TempTestPath {
+    TempTestPath {
+        path: unique_temp_path(area, test_name),
+    }
+}
+
+/// Builds the unique, uncreated path both temporary-path helpers hand out.
+fn unique_temp_path(area: &str, test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after Unix epoch")
@@ -513,21 +598,76 @@ pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     ))
 }
 
+/// A PNG small enough to inline whose magic bytes still identify it as one.
+///
+/// The signature and one complete IHDR chunk, and nothing more: there is no image
+/// data, so it is deliberately not decodable. Use it wherever a payload only has to
+/// be recognised as a PNG; a test that needs conversion to succeed wants
+/// [`valid_png`]. Byte-identical to the integration-test constant of the same name,
+/// because one name meaning two fixtures is a trap for whichever test first
+/// depends on the difference.
+pub(crate) const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+
+/// Encodes a 1x1 RGBA PNG that decodes, for tests whose images must convert.
+pub(crate) fn valid_png() -> Vec<u8> {
+    let mut cursor = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("test PNG should encode");
+    cursor.into_inner()
+}
+
+/// Builds an Image write pipeline that accepts `formats` and does nothing else.
+///
+/// No Conversion policy and no GIF destination: the shape nearly every pipeline
+/// test wants, so a call site names only the formats its test is about. A test
+/// that configures conversion or GIF routing spells out both constructors, which
+/// keeps what is unusual about it visible.
+pub(crate) fn pipeline_accepting(
+    formats: impl IntoIterator<Item = ImageFormat>,
+) -> ImageWritePipeline {
+    ImageWritePipeline::new(ImageWritePolicy::new(
+        formats.into_iter().collect(),
+        None,
+        None,
+    ))
+}
+
+/// Fallback-directory resolver for intake calls that must never need one.
+///
+/// Extraction run intake resolves the current directory only when no input was
+/// named, and only once the conversion request has validated. A test that names
+/// its inputs, or expects intake to fail on conversion first, passes this so that
+/// consulting the resolver anyway fails the test instead of quietly reading the
+/// process working directory.
+///
+/// # Panics
+///
+/// Always, when called.
+pub(crate) fn no_fallback_directory() -> io::Result<PathBuf> {
+    panic!(
+        "a run that names its inputs, or fails intake first, must not resolve the current directory"
+    )
+}
+
 /// Returns an unused temporary `.epub` file path for one test.
 ///
 /// `area` means what it does in [`temp_test_dir`]. Used by tests that want a single
-/// archive file rather than a directory to fill.
-pub(crate) fn temp_epub_path(area: &str, test_name: &str) -> PathBuf {
+/// archive file rather than a directory to fill. The returned guard removes the file
+/// once a passing test is done with it, as [`TempTestPath`] describes.
+pub(crate) fn temp_epub_path(area: &str, test_name: &str) -> TempTestPath {
     // Appended rather than set with `with_extension`, which would truncate at the last
     // `.` — an `area` or `test_name` containing one would silently eat the stamp that
     // makes the path unique.
-    let path = temp_test_dir(area, test_name);
+    let path = unique_temp_path(area, test_name);
     let mut file_name = path
         .file_name()
         .expect("generated temporary path should have a file name")
         .to_os_string();
     file_name.push(".epub");
-    path.with_file_name(file_name)
+    TempTestPath {
+        path: path.with_file_name(file_name),
+    }
 }
 
 /// Creates a directory link used to exercise the platform filesystem through selection.
@@ -1039,3 +1179,6 @@ pub(crate) fn write_sparse_epub(path: &Path) {
         &[],
     );
 }
+
+#[cfg(test)]
+mod tests;

@@ -8,8 +8,8 @@ use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
-    SilentExtractionRunObserver, temp_test_dir, write_docx, write_epub_fixture, write_epub_image,
-    write_epub_with_resources,
+    SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_docx, write_epub_fixture,
+    write_epub_image, write_epub_with_resources,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -112,8 +112,6 @@ fn failed_extraction_retains_document_extraction_facts() {
             .contains("Failed to create output directory")
     );
     assert!(output_dir.join("sample_1.png").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -163,8 +161,6 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
             "Skipping conversion for sample (svg format not supported for conversion)",
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -186,11 +182,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
     );
     let unidentified_extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let unidentified = select_one_document(&unidentified_path, &unidentified_output);
     let DocumentExtractionOutcome::Completed(unidentified_facts) =
@@ -220,11 +212,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
     );
     let filtered_extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let filtered = select_one_document(&filtered_path, &filtered_output);
     let DocumentExtractionOutcome::Completed(filtered_facts) =
@@ -246,8 +234,6 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         filtered_facts.get_output_purpose(),
         DocumentOutputPurpose::NothingEmitted
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -337,8 +323,6 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         failed_facts.get_output_purpose(),
         DocumentOutputPurpose::NothingEmitted
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -363,11 +347,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
     );
     let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverThenNormalImages),
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -388,8 +368,6 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
             "Magic detection failed for OEBPS/images/page.png; falling back to .png extension",
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -406,11 +384,7 @@ fn epub_cover_output_is_classified_as_covers_only() {
     );
     let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -424,8 +398,6 @@ fn epub_cover_output_is_classified_as_covers_only() {
         DocumentOutputPurpose::CoversOnly
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -437,11 +409,7 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
     write_epub_image(&input_path, "images/interior.jpg", None, b"\xFF\xD8\xFF");
     let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverThenNormalImages),
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -455,8 +423,6 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
         DocumentOutputPurpose::IncludedNormalImages
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -471,14 +437,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         Some("cover-image"),
         b"\xFF\xD8\xFF",
     );
-    let extraction = DocumentExtraction::new(
-        None,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
     let document = select_one_document(&input_path, &output_dir);
 
     let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
@@ -491,8 +450,6 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         DocumentOutputPurpose::IncludedNormalImages
     );
     assert!(output_dir.join("Test.jpg").exists());
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -532,14 +489,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         None,
         &archive_resources,
     );
-    let extraction = DocumentExtraction::new(
-        None,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
 
     let document = selected
         .into_iter()
@@ -554,8 +504,6 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         fs::read(output_dir.join("Test.jpg")).expect("selected image should be readable"),
         selected_payload
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -587,14 +535,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         None,
         b"\xFF\xD8\xFFrecovered",
     );
-    let extraction = DocumentExtraction::new(
-        None,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
 
     let document = selected
         .into_iter()
@@ -609,6 +550,4 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
         b"\xFF\xD8\xFFrecovered"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }

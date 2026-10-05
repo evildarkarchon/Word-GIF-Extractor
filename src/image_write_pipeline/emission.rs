@@ -9,19 +9,28 @@ use crate::image_format::ImageFormat;
 
 const MAX_COLLISION_ATTEMPTS: u32 = 1000;
 
+/// How one pipeline invocation names the images it emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OutputNaming {
+    /// The invocation emits exactly one image, named after the base name alone.
+    Singular,
+    /// The invocation emits several images, numbered from 1 in emission order.
+    Numbered,
+}
+
 /// Emits one pipeline invocation's images without overwriting existing output.
 pub(super) struct ImageFileEmission<'name> {
     base_name: &'name str,
-    multiple_images: bool,
+    naming: OutputNaming,
     next_ordinal: usize,
 }
 
 impl<'name> ImageFileEmission<'name> {
-    /// Starts Image file emission after singular versus multiple naming is known.
-    pub(super) fn new(base_name: &'name str, multiple_images: bool) -> Self {
+    /// Starts Image file emission after singular versus numbered naming is known.
+    pub(super) fn new(base_name: &'name str, naming: OutputNaming) -> Self {
         Self {
             base_name,
-            multiple_images,
+            naming,
             next_ordinal: 1,
         }
     }
@@ -44,15 +53,14 @@ impl<'name> ImageFileEmission<'name> {
             )
         })?;
 
-        let output_filename = if self.multiple_images {
-            format!(
+        let output_filename = match self.naming {
+            OutputNaming::Numbered => format!(
                 "{}_{}.{}",
                 self.base_name,
                 self.next_ordinal,
                 format.extension()
-            )
-        } else {
-            format!("{}.{}", self.base_name, format.extension())
+            ),
+            OutputNaming::Singular => format!("{}.{}", self.base_name, format.extension()),
         };
         self.next_ordinal += 1;
 

@@ -5,15 +5,15 @@ mod resource_archive;
 
 use anyhow::Result;
 use std::collections::HashSet;
-use std::path::Path;
 
 use super::EpubCoverPolicy;
 use crate::document_selection::SelectedEpub;
-use crate::epub_declarations::EpubDeclarations;
+use crate::epub_declarations::{EpubDeclarations, EpubFileDeclarations};
 use crate::image_write_pipeline::{
     ArchiveImageSource, ArchiveImageVisitor, ImageWriteOutcome, ImageWritePipeline,
-    ImageWriteRequest, RequiredCoverWriteOutcome, RequiredCoverWriteRequest,
+    RequiredCoverWriteOutcome,
 };
+use crate::output_placement::OutputPlacement;
 
 use self::cover_extraction::{CoverAttempts, CoverCandidate};
 use self::resource_archive::{
@@ -40,36 +40,25 @@ pub(super) fn extract(
     cover_policy: Option<EpubCoverPolicy>,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
-    let (target, retained_declarations) = document.into_extraction_inputs();
-    let input_path = target.get_source();
-    let output_dir = target.get_placement().get_dir();
-    let base_name = target.get_placement().get_base_name();
-    let acquired_declarations;
-    let declarations = match retained_declarations.as_ref() {
-        Some(declarations) => declarations,
-        None => {
-            acquired_declarations =
-                EpubDeclarations::acquire(input_path).map_err(anyhow::Error::new)?;
-            &acquired_declarations
-        }
-    };
+    let (input_path, placement, retained_declarations) = document.into_extraction_parts();
+    // ADR-0008 leaves this reacquisition on the real file reader: extraction opens
+    // the archive for payloads under ADR-0001 regardless, so a substitute buys nothing.
+    let declarations = EpubDeclarations::retained_or_acquire(
+        retained_declarations,
+        &input_path,
+        &EpubFileDeclarations,
+    )
+    .map_err(anyhow::Error::new)?;
     // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
     // even when declaration facts were retained earlier by Document selection.
-    EpubResourceArchive::open(input_path, declarations.resources(), |mut archive| {
+    EpubResourceArchive::open(&input_path, declarations.resources(), |mut archive| {
         let plan = archive
             .resources()
             .iter()
             .map(EpubImagePlan::from_catalog)
             .collect::<Vec<_>>();
         match cover_policy {
-            None => extract_all_images(
-                &mut archive,
-                &plan,
-                &HashSet::new(),
-                output_dir,
-                base_name,
-                pipeline,
-            ),
+            None => extract_all_images(&mut archive, &plan, &HashSet::new(), &placement, pipeline),
             Some(cover_policy) => {
                 // ADR-0005 keeps cover extraction taking a plain bool rather than a
                 // Document extraction type, so the fallback decision is flattened here.
@@ -79,8 +68,7 @@ pub(super) fn extract(
                 let mut attempts = EpubCoverAttempts {
                     archive: &mut archive,
                     plan: &plan,
-                    output_base_dir: output_dir,
-                    base_name,
+                    placement: &placement,
                     pipeline,
                 };
                 cover_extraction::extract_required_cover(
@@ -123,11 +111,6 @@ impl<'session> EpubImagePlan<'session> {
     fn normal_source(&self) -> ArchiveImageSource {
         ArchiveImageSource::named(&self.manifest_path).with_mime(&self.mime)
     }
-
-    /// Builds the required-cover source facts used by the cover Image write purpose.
-    fn required_cover_source(&self) -> ArchiveImageSource {
-        ArchiveImageSource::required_cover(&self.manifest_path, &self.mime)
-    }
 }
 
 /// Extracts every non-excluded planned resource in deterministic resolved-path order.
@@ -144,22 +127,18 @@ fn extract_all_images<'session>(
     archive: &mut EpubResourceArchiveSession<'session>,
     plan: &[EpubImagePlan<'session>],
     excluded_identities: &HashSet<ArchiveResourceIdentity<'session>>,
-    output_base_dir: &Path,
-    base_name: &str,
+    placement: &OutputPlacement,
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
-    pipeline.write_from(
-        ImageWriteRequest::normal_images(output_base_dir, base_name),
-        |visitor| {
-            for candidate in plan {
-                if excluded_identities.contains(&candidate.identity) {
-                    continue;
-                }
-                visit_resource(archive, candidate, visitor)?;
+    pipeline.write_from(placement, |visitor| {
+        for candidate in plan {
+            if excluded_identities.contains(&candidate.identity) {
+                continue;
             }
-            Ok(())
-        },
-    )
+            visit_resource(archive, candidate, visitor)?;
+        }
+        Ok(())
+    })
 }
 
 /// Copies the session-local plan into the cover candidates EPUB cover extraction orders.
@@ -191,8 +170,7 @@ fn cover_candidates<'session>(
 struct EpubCoverAttempts<'attempts, 'session> {
     archive: &'attempts mut EpubResourceArchiveSession<'session>,
     plan: &'attempts [EpubImagePlan<'session>],
-    output_base_dir: &'attempts Path,
-    base_name: &'attempts str,
+    placement: &'attempts OutputPlacement,
     pipeline: &'attempts ImageWritePipeline,
 }
 
@@ -209,30 +187,34 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
         &mut self,
         candidate: &CoverCandidate<ArchiveResourceIdentity<'session>>,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        // Destructured so the traversal closure's mutable archive borrow stays
-        // disjoint from the plan and pipeline borrows taken around it.
+        // Destructured so the acquisition closure's plan and pipeline borrows stay
+        // disjoint from the mutable archive borrow `acquire` takes around it.
         let Self {
             archive,
             plan,
-            output_base_dir,
-            base_name,
+            placement,
             pipeline,
         } = self;
         let resource = &plan[candidate.position()];
 
-        pipeline.write_required_cover(
-            RequiredCoverWriteRequest::new(output_base_dir, base_name),
-            |visitor| {
-                let source = resource.required_cover_source();
-                let acquisition = archive.acquire(resource.key, |mut payload| {
-                    visitor.visit(source.clone(), &mut payload)
-                })?;
-                if let ResourceAcquisition::Unavailable(error) = acquisition {
-                    visitor.unreadable(source, error)?;
-                }
-                Ok(())
-            },
-        )
+        // The consumer never fails: the pipeline's whole outcome, including an
+        // emission failure and the facts it retains, travels back as the acquired
+        // value. `acquire` can therefore only return `Ok` here, and `?` exists to
+        // satisfy its signature rather than to handle a reachable error.
+        let acquisition = archive.acquire(resource.key, |mut payload| {
+            Ok(pipeline.write_required_cover(
+                placement,
+                &resource.manifest_path,
+                &resource.mime,
+                &mut payload,
+            ))
+        })?;
+        match acquisition {
+            ResourceAcquisition::Acquired(outcome) => outcome,
+            ResourceAcquisition::Unavailable(error) => {
+                Ok(pipeline.required_cover_unavailable(&resource.manifest_path, error))
+            }
+        }
     }
 
     /// Runs normal-image traversal over the same plan, skipping attempted payloads.
@@ -244,8 +226,7 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
             self.archive,
             self.plan,
             excluded_identities,
-            self.output_base_dir,
-            self.base_name,
+            self.placement,
             self.pipeline,
         )
     }

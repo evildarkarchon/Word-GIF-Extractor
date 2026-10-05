@@ -63,8 +63,6 @@ fn warns_when_deduplication_uses_filename_after_declaration_failure() {
         stderr.contains("during deduplication; using filename fallback"),
         "standard error did not contain the deduplication fallback warning: {stderr}"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -82,7 +80,6 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
     assert_single_discovery_warning(&capture, &broken_link);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a nested non-recursive inspection failure renders once before normal completion.
@@ -90,7 +87,7 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
 /// This is also the contrast case for
 /// [`warns_once_for_broken_nested_link_during_recursive_discovery`]: non-recursive
 /// discovery raises no scan spinner, so the run below has no progress display at all and
-/// its counters stay at zero.
+/// draws nothing.
 #[test]
 fn warns_once_for_broken_nested_link_during_non_recursive_discovery() {
     let temp_dir = temp_test_dir("selection-diagnostic", "broken-nested-link");
@@ -109,25 +106,21 @@ fn warns_once_for_broken_nested_link_during_non_recursive_discovery() {
     result.expect("intake should accept a named directory input");
     assert_single_discovery_warning(&capture, &broken_link);
     assert_eq!(
-        (capture.clear_lines(), capture.writes()),
-        (0, 0),
+        capture.progress_text(),
+        "",
         "a non-recursive run raises no progress display for the warning to suspend"
     );
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a recursive warning renders once and leaves normal run completion intact.
 ///
 /// Recursive discovery runs behind a live scan spinner, and this is where that matters:
 /// presentation suspends the spinner around the warning, so the display clears its drawn
-/// lines and redraws them afterwards rather than painting over the message. Both
-/// counters are cumulative lower bounds — attributing them to the one suspend is only
-/// possible from inside the crate, where
-/// `recursive_discovery_diagnostic_suspends_active_scan_spinner` does exactly that. What
-/// this test adds is the other half of the same claim from outside: a display was live
-/// and drawing, and the warning still arrived as one intact line.
+/// lines and redraws them afterwards rather than painting over the message. The capture
+/// records every sink in one order, so that is asserted from outside exactly: the warning
+/// line sits between a clear and a redraw, and it still arrived as one intact line.
 #[test]
 fn warns_once_for_broken_nested_link_during_recursive_discovery() {
     let temp_dir = temp_test_dir("selection-diagnostic", "recursive-broken-nested-link");
@@ -148,15 +141,15 @@ fn warns_once_for_broken_nested_link_during_recursive_discovery() {
 
     result.expect("intake should accept a named directory input with --recursive");
     assert_single_discovery_warning(&capture, &broken_link);
+    let stderr = capture.stderr();
+    let warning = stderr
+        .lines()
+        .next()
+        .expect("the discovery warning was asserted above");
     assert!(
-        capture.clear_lines() > 0,
-        "the scan spinner should have cleared its drawn lines around the warning"
-    );
-    assert!(
-        capture.writes() > 0,
-        "the scan spinner should have drawn to the progress display"
+        capture.suspended_around(warning),
+        "the scan spinner should have cleared before the warning and redrawn after it"
     );
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
