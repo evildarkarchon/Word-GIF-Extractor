@@ -51,3 +51,35 @@ fn compiled_binary_extracts_and_exits_successfully() {
         output_dir.display()
     );
 }
+
+/// Verifies a run whose document fails to extract exits with the failure status.
+///
+/// The document is selected by its extension and then cannot be opened as an archive,
+/// so the run reports it as an error and carries on to its summary. Only the process
+/// exit status says whether the run as a whole succeeded, which is why this lives in
+/// the one file that drives the compiled binary.
+#[test]
+fn compiled_binary_exits_with_failure_when_a_document_fails() {
+    let temp_dir = temp_test_dir("binary-smoke", "failed-document-exit");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    let docx_path = temp_dir.join("broken.docx");
+    fs::write(&docx_path, b"not a zip archive").expect("broken DOCX should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"))
+        .arg(&docx_path)
+        .arg("--output")
+        .arg(temp_dir.join("output"))
+        .output()
+        .expect("extractor binary should run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error processing"),
+        "the failed document should be reported as an error: {stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a run with a failed document should exit with status 1\nstderr: {stderr}"
+    );
+}
