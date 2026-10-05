@@ -2,15 +2,16 @@
 
 use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
-use crate::document_extraction::DocumentExtractionFacts;
+use crate::document_extraction::{DocumentExtractionError, DocumentExtractionFacts};
 use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWriteCounts, ImageWriteResult, NormalImageOutput};
+use crate::image_write_pipeline::{
+    ImageWriteCounts, ImageWriteResult, ImageWriteWarning, NormalImageOutput,
+};
 use crate::test_support::{
     DeclaredEpubDeclarations, InMemorySearchSurface, RecordingRunObserver,
-    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, valid_png, write_docx,
-    write_epub_document,
+    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, write_epub_document,
 };
 use clap::Parser;
 use std::collections::BTreeMap;
@@ -35,13 +36,6 @@ fn prepare_request_from(args: Args) -> ExtractionRunRequest {
 /// convert to [`prepare_request_from`] separately, one behaviour at a time.
 fn prepare_request(arguments: Vec<String>) -> ExtractionRunRequest {
     prepare_request_from(Args::try_parse_from(arguments).expect("test arguments should parse"))
-}
-
-/// Executes one production-built request with a recording observer.
-fn execute(arguments: Vec<String>) -> ExtractionRunOutcome {
-    let request = prepare_request(arguments);
-    let mut observer = RecordingRunObserver::default();
-    run(request, &mut observer)
 }
 
 /// Borrows produced-output facts from one semantic run outcome.
@@ -164,22 +158,73 @@ fn default_image_write_policy() -> ImageWritePolicy {
     ImageWritePolicy::new(ImageFormat::all_set(), None, None)
 }
 
-/// Fabricates a completed outcome from Image write counts, through Document extraction's own translation.
+/// Returns the conversion policy `--convert jpg` yields, with no quality or lossless flag.
+fn jpg_conversion() -> ConversionPolicy {
+    ConversionPolicy::try_from(ConversionRequest {
+        target: ConversionTarget::Jpg,
+        quality: None,
+        lossless: false,
+    })
+    .expect("test conversion policy should be valid")
+}
+
+/// Returns Image write counts for a document that emitted `extracted` images and nothing else.
+fn emitted(extracted: usize) -> ImageWriteCounts {
+    ImageWriteCounts {
+        extracted,
+        ..ImageWriteCounts::default()
+    }
+}
+
+/// Returns the warning the Image write pipeline records when magic detection fails for one archive entry.
+///
+/// Built as an Image write pipeline fact rather than as wording, so the stable message
+/// stays owned by Document extraction's translation.
+fn extension_fallback(source_name: &str) -> ImageWriteWarning {
+    ImageWriteWarning::ExtensionFallback {
+        source_name: source_name.to_string(),
+        format: ImageFormat::Png,
+    }
+}
+
+/// Fabricates Document extraction facts from Image write facts, through Document extraction's own translation.
 ///
 /// Going through the test entry point rather than around it means the partition
 /// guard checks these counts as it would a real result's (ADR-0016).
+fn facts(
+    counts: ImageWriteCounts,
+    warnings: Vec<ImageWriteWarning>,
+    normal_image_output: NormalImageOutput,
+) -> DocumentExtractionFacts {
+    DocumentExtractionFacts::fabricated(ImageWriteResult::new(
+        counts,
+        warnings,
+        normal_image_output,
+    ))
+}
+
+/// Fabricates a completed outcome from Image write counts, with no warnings.
 fn completed(
     counts: ImageWriteCounts,
     normal_image_output: NormalImageOutput,
 ) -> DocumentExtractionOutcome {
-    DocumentExtractionOutcome::Completed(DocumentExtractionFacts::fabricated(
-        ImageWriteResult::new(counts, Vec::new(), normal_image_output),
-    ))
+    DocumentExtractionOutcome::Completed(facts(counts, Vec::new(), normal_image_output))
 }
 
 /// Fabricates the completed outcome of a document that emitted nothing, such as a DOCX without media.
 fn completed_without_images() -> DocumentExtractionOutcome {
     completed(ImageWriteCounts::default(), NormalImageOutput::Absent)
+}
+
+/// Fabricates a failed outcome retaining `facts`, whose error is sealed from `cause`.
+///
+/// The cause is the test's own wording, not Document extraction's: the run only
+/// transports the error's display, so a test compares against what it scripted.
+fn failed(facts: DocumentExtractionFacts, cause: &str) -> DocumentExtractionOutcome {
+    DocumentExtractionOutcome::Failed {
+        facts,
+        error: DocumentExtractionError::fabricated(anyhow::Error::msg(cause.to_string())),
+    }
 }
 
 /// Runs the inner function with in-memory selection inputs and scripted extraction.
@@ -236,17 +281,11 @@ fn select_docx_from_surface(surface: &InMemorySearchSurface, path: &str) -> Sele
 /// Verifies the scripted adapter answers cover intent and outcome facts from its real policies.
 #[test]
 fn scripted_document_extraction_delegates_policy_facts_to_real_document_extraction() {
-    let conversion = ConversionPolicy::try_from(ConversionRequest {
-        target: ConversionTarget::Jpg,
-        quality: None,
-        lossless: false,
-    })
-    .expect("test conversion policy should be valid");
     let extraction = ScriptedDocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
         ImageWritePolicy::new(
             ImageFormat::all_set(),
-            Some(conversion),
+            Some(jpg_conversion()),
             Some(PathBuf::from("gifs")),
         ),
     );
@@ -522,23 +561,20 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
     );
 }
 
+/// Verifies a selected document that emits nothing classifies as image no-output.
 #[test]
 fn selected_document_without_images_returns_image_no_output() {
-    let temp_dir = temp_test_dir("run", "image-no-output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("empty.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(&input_path, &[]);
+    let surface = InMemorySearchSurface::new().with_file("empty.docx");
+    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+        .with_outcome("empty.docx", completed_without_images());
 
-    let request = prepare_request(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
-
-    let outcome = run(request, &mut observer);
+    let (outcome, observer) = run_scripted(
+        &["empty.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
 
     assert_eq!(
         outcome,
@@ -550,24 +586,27 @@ fn selected_document_without_images_returns_image_no_output() {
     assert_single_terminal_observation(&observer, &outcome);
 }
 
+/// Verifies a cover-only run whose EPUB has no cover classifies as cover no-output.
 #[test]
 fn selected_epub_without_a_cover_returns_cover_no_output() {
-    let temp_dir = temp_test_dir("run", "cover-no-output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("empty.epub");
-    let output_dir = temp_dir.join("output");
-    write_epub_document(&input_path, "Test Creator", "No Cover", None);
+    let surface = InMemorySearchSurface::new().with_file("empty.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "empty.epub",
+        Some("Test Creator"),
+        Some("No Cover"),
+    );
+    // A missing required cover under `CoverOnly` emits nothing, which is all
+    // Document extraction reports for it.
+    let mut document_extraction = ScriptedDocumentExtraction::for_covers()
+        .with_outcome("empty.epub", completed_without_images());
 
-    let request = prepare_request(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--cover-only".to_string(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
-
-    let outcome = run(request, &mut observer);
+    let (outcome, observer) = run_scripted(
+        &["empty.epub"],
+        false,
+        &surface,
+        &declarations,
+        &mut document_extraction,
+    );
 
     assert_eq!(
         outcome,
@@ -652,26 +691,22 @@ fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
     assert_single_terminal_observation(&observer, &outcome);
 }
 
+/// Verifies one emitted normal image classifies as produced images with no optional facts.
 #[test]
 fn normal_document_output_returns_produced_images() {
-    let temp_dir = temp_test_dir("run", "normal-output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("sample.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(
-        &input_path,
-        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
+    let surface = InMemorySearchSurface::new().with_file("sample.docx");
+    let mut document_extraction = ScriptedDocumentExtraction::for_images().with_outcome(
+        "sample.docx",
+        completed(emitted(1), NormalImageOutput::Present),
     );
 
-    let request = prepare_request(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
-
-    let outcome = run(request, &mut observer);
+    let (outcome, observer) = run_scripted(
+        &["sample.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
     let output = produced(&outcome);
 
     assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
@@ -682,27 +717,33 @@ fn normal_document_output_returns_produced_images() {
     assert_single_terminal_observation(&observer, &outcome);
 }
 
+/// Verifies an EPUB that fell back to normal images classifies a cover run's output as images.
 #[test]
 fn epub_normal_fallback_is_classified_as_images() {
-    let temp_dir = temp_test_dir("run", "normal-fallback-output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("fallback.epub");
-    let output_dir = temp_dir.join("output");
-    write_epub_document(
-        &input_path,
-        "Test Creator",
-        "Fallback",
-        Some(("interior.jpg", b"\xFF\xD8\xFFinterior", false)),
+    let surface = InMemorySearchSurface::new().with_file("fallback.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "fallback.epub",
+        Some("Test Creator"),
+        Some("Fallback"),
+    );
+    // `--cover-only --cover-fallback` binds `CoverThenNormalImages`; an EPUB
+    // with no required cover then emits its interior image as a normal image.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverThenNormalImages),
+        default_image_write_policy(),
+    )
+    .with_outcome(
+        "fallback.epub",
+        completed(emitted(1), NormalImageOutput::Present),
     );
 
-    let outcome = execute(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--cover-only".to_string(),
-        "--cover-fallback".to_string(),
-    ]);
+    let (outcome, _) = run_scripted(
+        &["fallback.epub"],
+        false,
+        &surface,
+        &declarations,
+        &mut document_extraction,
+    );
 
     assert_eq!(
         produced(&outcome).output_kind(),
@@ -710,25 +751,28 @@ fn epub_normal_fallback_is_classified_as_images() {
     );
 }
 
+/// Verifies requested conversion is reported even when nothing was converted or skipped.
 #[test]
 fn requested_conversion_retains_valid_zero_totals() {
-    let temp_dir = temp_test_dir("run", "zero-conversion-totals");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("matching.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(
-        &input_path,
-        &[("word/media/image.jpg", b"\xFF\xD8\xFFmatching")],
+    let surface = InMemorySearchSurface::new().with_file("matching.docx");
+    // A JPG already in the `--convert jpg` target is emitted as-is: neither
+    // converted nor skipped, so both conversion counts stay at zero.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        None,
+        ImageWritePolicy::new(ImageFormat::all_set(), Some(jpg_conversion()), None),
+    )
+    .with_outcome(
+        "matching.docx",
+        completed(emitted(1), NormalImageOutput::Present),
     );
 
-    let outcome = execute(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--convert".to_string(),
-        "jpg".to_string(),
-    ]);
+    let (outcome, _) = run_scripted(
+        &["matching.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
 
     assert_eq!(
         produced(&outcome).conversion(),
@@ -736,23 +780,36 @@ fn requested_conversion_retains_valid_zero_totals() {
     );
 }
 
+/// Verifies a routed GIF keeps its count and the policy's destination in the outcome.
 #[test]
 fn routed_gif_retains_its_count_and_destination() {
-    let temp_dir = temp_test_dir("run", "gif-routing");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("animation.docx");
-    let output_dir = temp_dir.join("output");
-    let gif_destination = temp_dir.join("gifs");
-    write_docx(&input_path, &[("word/media/animation.gif", b"GIF89a")]);
+    let gif_destination = PathBuf::from("gifs");
+    let surface = InMemorySearchSurface::new().with_file("animation.docx");
+    // The destination comes from the policy, as production's does; the scripted
+    // outcome only says one emitted image was the routed GIF.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        None,
+        ImageWritePolicy::new(ImageFormat::all_set(), None, Some(gif_destination.clone())),
+    )
+    .with_outcome(
+        "animation.docx",
+        completed(
+            ImageWriteCounts {
+                extracted: 1,
+                gifs_routed: 1,
+                ..ImageWriteCounts::default()
+            },
+            NormalImageOutput::Present,
+        ),
+    );
 
-    let outcome = execute(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--gif-output".to_string(),
-        gif_destination.to_string_lossy().into_owned(),
-    ]);
+    let (outcome, _) = run_scripted(
+        &["animation.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
     let output = produced(&outcome);
     let gif_routing = output
         .gif_routing()
@@ -763,37 +820,48 @@ fn routed_gif_retains_its_count_and_destination() {
     assert_eq!(gif_routing.destination(), gif_destination);
 }
 
+/// Verifies conversion and GIF-routing facts from one document survive together.
 #[test]
 fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
-    let temp_dir = temp_test_dir("run", "document-fact-aggregation");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("sample.docx");
-    let output_dir = temp_dir.join("output");
-    let gif_output = temp_dir.join("gifs");
-    let png = valid_png();
-    write_docx(
-        &input_path,
-        &[
-            ("word/media/image.png", &png),
-            ("word/media/animation.gif", b"GIF89a"),
-            ("word/media/vector.svg", b"<svg/>"),
-        ],
+    let gif_output = PathBuf::from("gifs");
+    let surface = InMemorySearchSurface::new().with_file("sample.docx");
+    // One PNG converted, one SVG skipped and one GIF routed: three emitted
+    // images, each in exactly one role. The partition guard therefore sees this
+    // boundary case at equality, through the fabrication entry point.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        None,
+        ImageWritePolicy::new(
+            ImageFormat::all_set(),
+            Some(jpg_conversion()),
+            Some(gif_output.clone()),
+        ),
+    )
+    .with_outcome(
+        "sample.docx",
+        DocumentExtractionOutcome::Completed(facts(
+            ImageWriteCounts {
+                extracted: 3,
+                gifs_routed: 1,
+                converted: 1,
+                skipped: 1,
+            },
+            // The skipped SVG warns, as a real run does, though nothing here
+            // asserts on it.
+            vec![ImageWriteWarning::ConversionSkipped {
+                base_name: "sample".to_string(),
+                format: ImageFormat::Svg,
+            }],
+            NormalImageOutput::Present,
+        )),
     );
-    let request = prepare_request(vec![
-        "test".to_string(),
-        input_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--formats".to_string(),
-        "png,gif,svg".to_string(),
-        "--convert".to_string(),
-        "jpg".to_string(),
-        "--gif-output".to_string(),
-        gif_output.to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
 
-    let outcome = run(request, &mut observer);
+    let (outcome, _) = run_scripted(
+        &["sample.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
     let output = produced(&outcome);
 
     assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
@@ -891,19 +959,27 @@ fn epub_identity_is_consistent_across_normal_and_cover_runs() {
 /// failure count is what now tells them apart.
 #[test]
 fn failed_document_without_output_is_counted_in_no_output() {
-    let temp_dir = temp_test_dir("run", "failed-without-output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let broken_path = temp_dir.join("broken.docx");
-    fs::write(&broken_path, b"not a zip archive").expect("broken DOCX should be writable");
-    let request = prepare_request(vec![
-        "test".to_string(),
-        broken_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        temp_dir.join("output").to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
+    let surface = InMemorySearchSurface::new().with_file("broken.docx");
+    // A DOCX that is not a ZIP archive fails before writing anything.
+    let mut document_extraction = ScriptedDocumentExtraction::for_images().with_outcome(
+        "broken.docx",
+        failed(
+            facts(
+                ImageWriteCounts::default(),
+                Vec::new(),
+                NormalImageOutput::Absent,
+            ),
+            "scripted archive failure",
+        ),
+    );
 
-    let outcome = run(request, &mut observer);
+    let (outcome, _) = run_scripted(
+        &["broken.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
 
     assert_eq!(
         outcome,
@@ -914,42 +990,52 @@ fn failed_document_without_output_is_counted_in_no_output() {
     );
 }
 
+/// Verifies a failed document's partial facts are kept and later documents still run.
 #[test]
 fn run_retains_partial_facts_and_continues_after_document_failure() {
-    let temp_dir = temp_test_dir("run", "partial-failure-continuation");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let failing_path = temp_dir.join("failing.docx");
-    let succeeding_path = temp_dir.join("succeeding.docx");
-    let output_dir = temp_dir.join("output");
-    let blocked_gif_output = temp_dir.join("blocked-gifs");
-    fs::write(&blocked_gif_output, b"not a directory")
-        .expect("blocked GIF destination should be creatable");
-    write_docx(
-        &failing_path,
-        &[
-            ("word/media/first.png", b"not actually a png"),
-            ("word/media/second.png", b"also not actually a png"),
-            ("word/media/third.gif", b"GIF89a"),
-        ],
+    let failing_path = PathBuf::from("failing.docx");
+    let succeeding_path = PathBuf::from("succeeding.docx");
+    let failure_cause = "scripted failure routing third.gif";
+    let surface = InMemorySearchSurface::new()
+        .with_file(failing_path.clone())
+        .with_file(succeeding_path.clone());
+    // The failing document wrote two PNGs, each by extension fallback, before
+    // routing its GIF failed. GIF routing is configured, so its fact group
+    // applies, but no GIF was routed and the outcome omits it.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        None,
+        ImageWritePolicy::new(
+            ImageFormat::all_set(),
+            None,
+            Some(PathBuf::from("blocked-gifs")),
+        ),
+    )
+    .with_outcome(
+        failing_path.clone(),
+        failed(
+            facts(
+                emitted(2),
+                vec![
+                    extension_fallback("word/media/first.png"),
+                    extension_fallback("word/media/second.png"),
+                ],
+                NormalImageOutput::Present,
+            ),
+            failure_cause,
+        ),
+    )
+    .with_outcome(
+        succeeding_path.clone(),
+        completed(emitted(1), NormalImageOutput::Present),
     );
-    write_docx(
-        &succeeding_path,
-        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
-    );
-    let request = prepare_request(vec![
-        "test".to_string(),
-        failing_path.to_string_lossy().into_owned(),
-        succeeding_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-        "--formats".to_string(),
-        "png,gif".to_string(),
-        "--gif-output".to_string(),
-        blocked_gif_output.to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
 
-    let outcome = run(request, &mut observer);
+    let (outcome, observer) = run_scripted(
+        &["failing.docx", "succeeding.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
     let output = produced(&outcome);
 
     assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
@@ -969,9 +1055,16 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
         )
         .expect("expected outcome should be semantically valid")
     );
-    assert!(output_dir.join("failing_1.png").exists());
-    assert!(output_dir.join("failing_2.png").exists());
-    assert!(output_dir.join("succeeding.png").exists());
+    // Deliberate departure from ADR-0016's "assertions unchanged", as in
+    // `cover_only_run_skips_requested_docx_and_diagnoses_it`: this test used to
+    // assert that `failing_1.png`, `failing_2.png` and `succeeding.png` existed,
+    // and that the error contained "Failed to create output directory". Scripted
+    // extraction writes no files, and that wording belongs to the Image write
+    // pipeline. The run-level half stays — emitted images and documents with
+    // output above, and the error carrying the scripted cause below. Partial
+    // output on disk and the wording stay checked in place by
+    // `document_extraction::tests::failed_extraction_retains_document_extraction_facts`,
+    // and a completed DOCX's output on disk by `tests/binary_smoke.rs`.
 
     let failing_start = observer
         .observations
@@ -1001,7 +1094,7 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     let error_index = observer
         .observations
         .iter()
-        .position(|observation| matches!(observation, ExtractionRunObservation::DocumentError { path, message } if path == &failing_path && message.contains("Failed to create output directory")))
+        .position(|observation| matches!(observation, ExtractionRunObservation::DocumentError { path, message } if path == &failing_path && message.contains(failure_cause)))
         .expect("failed document error should be emitted");
     let failing_finish_indices: Vec<_> = observer
         .observations
@@ -1043,32 +1136,42 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
 /// carried value, its path, its multiplicity, and its observation position.
 #[test]
 fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
-    let temp_dir = temp_test_dir("run", "opaque-warning-transport");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let first_path = temp_dir.join("first.docx");
-    let second_path = temp_dir.join("second.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(
-        &first_path,
-        &[
-            ("word/media/alpha.png", b"not actually a png"),
-            ("word/media/beta.png", b"also not actually a png"),
-        ],
-    );
+    let first_path = PathBuf::from("first.docx");
+    let second_path = PathBuf::from("second.docx");
+    let surface = InMemorySearchSurface::new()
+        .with_file(first_path.clone())
+        .with_file(second_path.clone());
     // The shared entry name makes the second document reproduce the first
     // document's second warning value, which anchors intra-document order
     // below without any test knowing the stable wording.
-    write_docx(&second_path, &[("word/media/beta.png", b"still not a png")]);
-    let request = prepare_request(vec![
-        "test".to_string(),
-        first_path.to_string_lossy().into_owned(),
-        second_path.to_string_lossy().into_owned(),
-        "--output".to_string(),
-        output_dir.to_string_lossy().into_owned(),
-    ]);
-    let mut observer = RecordingRunObserver::default();
+    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+        .with_outcome(
+            first_path.clone(),
+            DocumentExtractionOutcome::Completed(facts(
+                emitted(2),
+                vec![
+                    extension_fallback("word/media/alpha.png"),
+                    extension_fallback("word/media/beta.png"),
+                ],
+                NormalImageOutput::Present,
+            )),
+        )
+        .with_outcome(
+            second_path.clone(),
+            DocumentExtractionOutcome::Completed(facts(
+                emitted(1),
+                vec![extension_fallback("word/media/beta.png")],
+                NormalImageOutput::Present,
+            )),
+        );
 
-    let outcome = run(request, &mut observer);
+    let (outcome, observer) = run_scripted(
+        &["first.docx", "second.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
     let output = produced(&outcome);
 
     assert_eq!(output.emitted_images(), 3);
