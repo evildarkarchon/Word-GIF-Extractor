@@ -50,6 +50,4 @@ fn compiled_binary_extracts_and_exits_successfully() {
         "expected the extracted PNG in {}",
         output_dir.display()
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

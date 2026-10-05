@@ -48,6 +48,4 @@ fn extracts_beside_input_when_output_omitted() {
         !capture.progress_text().is_empty(),
         "the run summary should have been drawn on the progress display"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

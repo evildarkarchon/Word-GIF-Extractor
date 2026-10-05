@@ -63,8 +63,6 @@ fn warns_when_deduplication_uses_filename_after_metadata_failure() {
         stderr.contains("during deduplication; using filename fallback"),
         "standard error did not contain the deduplication fallback warning: {stderr}"
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -82,7 +80,6 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
     assert_single_discovery_warning(&capture, &broken_link);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a nested non-recursive inspection failure renders once before normal completion.
@@ -115,7 +112,6 @@ fn warns_once_for_broken_nested_link_during_non_recursive_discovery() {
     );
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a recursive warning renders once and leaves normal run completion intact.
@@ -156,5 +152,4 @@ fn warns_once_for_broken_nested_link_during_recursive_discovery() {
     );
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

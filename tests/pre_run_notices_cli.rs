@@ -46,6 +46,4 @@ fn renders_ordered_pre_run_notices_on_existing_streams() {
             "Warning: Unrecognized format 'second' ignored",
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

@@ -57,8 +57,6 @@ fn matching_jpeg_is_preserved_when_quality_is_implicit() {
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable"),
         original
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 #[test]
@@ -80,8 +78,6 @@ fn matching_jpeg_is_reencoded_when_quality_is_explicit() {
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable");
     assert_ne!(converted, original);
     image::load_from_memory(&converted).expect("converted JPEG should remain decodable");
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
 
 /// Verifies a policy `clap` accepts but intake refuses arrives as the returned error.
