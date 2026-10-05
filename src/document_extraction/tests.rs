@@ -6,7 +6,9 @@ use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
 use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+use crate::image_write_pipeline::{
+    ImageWriteCounts, ImageWritePipeline, ImageWritePolicy, NormalImageOutput,
+};
 use crate::test_support::{
     SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_docx, write_epub_fixture,
     write_epub_image, write_epub_with_resources,
@@ -549,5 +551,76 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
     assert_eq!(
         fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
         b"\xFF\xD8\xFFrecovered"
+    );
+}
+
+/// Verifies fabricated facts pass through the production translation rather than around it.
+///
+/// The purpose is derived by the translation from the emitted count and the
+/// normal-image flag, and the warning arrives as the same value the warning entry
+/// point builds, so the test asserts both without restating any wording.
+#[test]
+fn fabricated_facts_pass_through_the_production_translation() {
+    let warning = ImageWriteWarning::archive_image_acquisition_failed("images/a.png", "unreadable");
+    let facts = DocumentExtractionFacts::fabricated(ImageWriteResult::new(
+        ImageWriteCounts {
+            extracted: 2,
+            converted: 1,
+            ..ImageWriteCounts::default()
+        },
+        vec![warning.clone()],
+        NormalImageOutput::Absent,
+    ));
+
+    let totals = facts.get_emitted_image_totals();
+    assert_eq!(totals.get_emitted_images(), 2);
+    assert_eq!(totals.get_converted_images(), 1);
+    assert_eq!(totals.get_routed_gifs(), 0);
+    assert_eq!(totals.get_skipped_conversions(), 0);
+    assert_eq!(
+        facts.get_output_purpose(),
+        DocumentOutputPurpose::CoversOnly
+    );
+    assert_eq!(
+        facts.get_warnings(),
+        [DocumentExtractionWarning::fabricated(warning)]
+    );
+}
+
+/// Verifies the partition guard ADR-0007 kept also checks fabricated facts.
+///
+/// The guard is a debug assertion, so the test exists only where it can fire.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "classified more images than it emitted")]
+fn fabricated_facts_are_checked_by_the_partition_guard() {
+    DocumentExtractionFacts::fabricated(ImageWriteResult::new(
+        ImageWriteCounts {
+            extracted: 1,
+            converted: 1,
+            gifs_routed: 1,
+            ..ImageWriteCounts::default()
+        },
+        Vec::new(),
+        NormalImageOutput::Present,
+    ));
+}
+
+/// Verifies a fabricated error keeps its contextual source chain, as an extracted one does.
+#[test]
+fn fabricated_error_preserves_its_source_chain() {
+    let error = DocumentExtractionError::fabricated(
+        anyhow::anyhow!("archive vanished").context("Failed to open document"),
+    );
+
+    assert_eq!(error.to_string(), "Failed to open document");
+    let chain = std::iter::successors(Some(&error as &dyn std::error::Error), |error| {
+        error.source()
+    })
+    .map(ToString::to_string)
+    .collect::<Vec<_>>();
+    assert!(
+        chain.iter().any(|message| message == "archive vanished"),
+        "the underlying cause should stay reachable: {chain:?}"
     );
 }

@@ -30,10 +30,10 @@ The first users are two Extraction run presentation tests that currently run the
 
 ## Acceptance criteria
 
-- [ ] The three test entry points delegate to the existing private conversions; none constructs a value directly
-- [ ] Facts fabricated through the entry point are checked by the partition guard
-- [ ] The entry points are compiled only in test builds; production visibility is unchanged
-- [ ] The discovery-failure suspension test no longer touches the filesystem; its suspension assertion is unchanged
-- [ ] The warning-presentation test no longer writes or extracts a DOCX; its prefix and suspension assertions are unchanged, and it restates no warning wording owned by Document extraction
-- [ ] No other presentation test, and nothing under `tests/`, is edited
-- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+- [x] The three test entry points delegate to the existing private conversions; none constructs a value directly
+- [x] Facts fabricated through the entry point are checked by the partition guard
+- [x] The entry points are compiled only in test builds; production visibility is unchanged
+- [x] The discovery-failure suspension test no longer touches the filesystem; its suspension assertion is unchanged
+- [x] The warning-presentation test no longer writes or extracts a DOCX; its prefix and suspension assertions are unchanged, and it restates no warning wording owned by Document extraction
+- [x] No other presentation test, and nothing under `tests/`, is edited
+- [x] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
