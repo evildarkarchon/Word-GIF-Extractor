@@ -4,7 +4,7 @@ use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_extraction::{DocumentExtractionError, DocumentExtractionFacts};
 use crate::extraction_run_intake::{self, Args};
-use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
+use crate::extraction_run_observation::{DocumentDiscoveryScope, GifRoutingFacts, ProducedOutput};
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{
     ImageWriteCounts, ImageWriteResult, ImageWriteWarning, NormalImageOutput,
@@ -1226,5 +1226,344 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
     assert!(finished_at(&first_path) < started_at(&second_path));
     assert!(started_at(&second_path) < warnings[2].0);
     assert!(warnings[2].0 < finished_at(&second_path));
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+// Classification branches no run test reached before the run took Document
+// extraction through a seam. They follow the moved tests rather than joining
+// them, so the moved tests stay unedited (ADR-0016).
+
+/// Fabricates the completed outcome of an EPUB whose required cover was written.
+///
+/// One emitted image with no normal-image output is what a written required
+/// cover looks like to Document extraction, as in
+/// `cover_only_run_skips_requested_docx_and_diagnoses_it`.
+fn completed_with_cover() -> DocumentExtractionOutcome {
+    completed(emitted(1), NormalImageOutput::Absent)
+}
+
+/// Returns the display names of started documents, in the order the run started them.
+///
+/// Classification across documents depends on fold order, so a test that
+/// scripts an order checks that the run honoured it.
+fn started_display_names(observer: &RecordingRunObserver) -> Vec<&str> {
+    observer
+        .observations
+        .iter()
+        .filter_map(|observation| match observation {
+            ExtractionRunObservation::DocumentStarted { display_name, .. } => {
+                Some(display_name.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Verifies a cover-only run that wrote one cover and nothing else produces a Covers outcome.
+///
+/// The whole outcome is pinned: a Covers outcome carries no conversion, GIF
+/// routing or failure facts here, and the EPUB that emitted nothing is not a
+/// document with output. Which of the two documents comes last does not change
+/// the kind, because a cover-only run is Covers unless normal images were
+/// included, and neither document included any.
+#[test]
+fn cover_only_run_with_a_written_cover_and_an_empty_epub_produces_covers() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("covered.epub")
+        .with_file("bare.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("covered.epub", Some("Test Creator"), Some("Covered"))
+        .with_declarations("bare.epub", Some("Test Creator"), Some("Bare"));
+    let mut document_extraction = ScriptedDocumentExtraction::for_covers()
+        .with_outcome("covered.epub", completed_with_cover())
+        .with_outcome("bare.epub", completed_without_images());
+
+    let (outcome, observer) = run_scripted(
+        &["covered.epub", "bare.epub"],
+        false,
+        &surface,
+        &declarations,
+        &mut document_extraction,
+    );
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Covers,
+            NonZeroUsize::new(1).expect("one is nonzero"),
+            NonZeroUsize::new(1).expect("one is nonzero"),
+            None,
+            None,
+            None,
+        )
+        .expect("expected outcome should be semantically valid")
+    );
+    assert_eq!(
+        started_display_names(&observer),
+        vec!["Test Creator - Covered", "Test Creator - Bare"]
+    );
+    assert!(
+        observer
+            .observations
+            .contains(&ExtractionRunObservation::ExtractionStarted {
+                total: 2,
+                cover_only: true,
+            })
+    );
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+/// Verifies one document's normal images make a cover run's merged output Images, in either order.
+///
+/// `--cover-only --cover-fallback` binds `CoverThenNormalImages`, so one EPUB
+/// can write its cover while another falls back to its interior images. Both
+/// orders run: the merge has to let normal images absorb a later cover, not
+/// only a later cover give way to them.
+#[test]
+fn cover_run_merging_covers_with_fallback_images_classifies_as_images_in_either_order() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("Test Creator"), Some("First"))
+        .with_declarations("second.epub", Some("Test Creator"), Some("Second"));
+    let fallback_images = || completed(emitted(1), NormalImageOutput::Present);
+    let scripted_orders = [
+        (
+            "covers then fallback",
+            completed_with_cover(),
+            fallback_images(),
+        ),
+        (
+            "fallback then covers",
+            fallback_images(),
+            completed_with_cover(),
+        ),
+    ];
+
+    for (order, first_outcome, second_outcome) in scripted_orders {
+        let mut document_extraction = ScriptedDocumentExtraction::new(
+            Some(EpubCoverPolicy::CoverThenNormalImages),
+            default_image_write_policy(),
+        )
+        .with_outcome("first.epub", first_outcome)
+        .with_outcome("second.epub", second_outcome);
+
+        let (outcome, observer) = run_scripted(
+            &["first.epub", "second.epub"],
+            false,
+            &surface,
+            &declarations,
+            &mut document_extraction,
+        );
+
+        assert_eq!(
+            outcome,
+            ExtractionRunOutcome::try_produced(
+                ExtractionOutputKind::Images,
+                NonZeroUsize::new(2).expect("two is nonzero"),
+                NonZeroUsize::new(2).expect("two is nonzero"),
+                None,
+                None,
+                None,
+            )
+            .expect("expected outcome should be semantically valid"),
+            "{order}"
+        );
+        assert_eq!(
+            started_display_names(&observer),
+            vec!["Test Creator - First", "Test Creator - Second"],
+            "{order}"
+        );
+        assert!(
+            observer
+                .observations
+                .contains(&ExtractionRunObservation::ExtractionStarted {
+                    total: 2,
+                    cover_only: true,
+                }),
+            "{order}"
+        );
+        assert_single_terminal_observation(&observer, &outcome);
+    }
+}
+
+/// Verifies conversion and GIF-routing totals are summed across documents.
+///
+/// The middle document emits nothing, so it adds to no total and is not a
+/// document with output.
+#[test]
+fn produced_outcome_sums_conversion_and_gif_routing_totals_across_documents() {
+    let gif_destination = PathBuf::from("gifs");
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.docx")
+        .with_file("empty.docx")
+        .with_file("last.docx");
+    // Each document's converted, skipped and routed counts stay within its own
+    // emitted count, so the partition guard accepts both.
+    let mut document_extraction = ScriptedDocumentExtraction::new(
+        None,
+        ImageWritePolicy::new(
+            ImageFormat::all_set(),
+            Some(jpg_conversion()),
+            Some(gif_destination.clone()),
+        ),
+    )
+    .with_outcome(
+        "first.docx",
+        completed(
+            ImageWriteCounts {
+                extracted: 2,
+                gifs_routed: 1,
+                converted: 1,
+                skipped: 0,
+            },
+            NormalImageOutput::Present,
+        ),
+    )
+    .with_outcome("empty.docx", completed_without_images())
+    .with_outcome(
+        "last.docx",
+        completed(
+            ImageWriteCounts {
+                extracted: 3,
+                gifs_routed: 1,
+                converted: 1,
+                skipped: 1,
+            },
+            NormalImageOutput::Present,
+        ),
+    );
+
+    let (outcome, observer) = run_scripted(
+        &["first.docx", "empty.docx", "last.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Images,
+            NonZeroUsize::new(5).expect("five is nonzero"),
+            NonZeroUsize::new(2).expect("two is nonzero"),
+            Some(ConversionFacts::new(2, 1)),
+            Some(GifRoutingFacts::new(
+                NonZeroUsize::new(2).expect("two is nonzero"),
+                gif_destination,
+            )),
+            None,
+        )
+        .expect("expected outcome should be semantically valid")
+    );
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+/// Verifies every failed document is counted, whether or not it wrote anything first.
+#[test]
+fn every_failed_document_is_counted_in_the_outcome() {
+    let partial_path = PathBuf::from("partial.docx");
+    let broken_path = PathBuf::from("broken.docx");
+    let surface = InMemorySearchSurface::new()
+        .with_file(partial_path.clone())
+        .with_file(broken_path.clone())
+        .with_file("succeeding.docx");
+    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+        .with_outcome(
+            partial_path.clone(),
+            failed(
+                facts(emitted(1), Vec::new(), NormalImageOutput::Present),
+                "scripted failure after one image",
+            ),
+        )
+        .with_outcome(
+            broken_path.clone(),
+            failed(
+                facts(
+                    ImageWriteCounts::default(),
+                    Vec::new(),
+                    NormalImageOutput::Absent,
+                ),
+                "scripted failure before any image",
+            ),
+        )
+        .with_outcome(
+            "succeeding.docx",
+            completed(emitted(1), NormalImageOutput::Present),
+        );
+
+    let (outcome, observer) = run_scripted(
+        &["partial.docx", "broken.docx", "succeeding.docx"],
+        false,
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Images,
+            NonZeroUsize::new(2).expect("two is nonzero"),
+            NonZeroUsize::new(2).expect("two is nonzero"),
+            None,
+            None,
+            NonZeroUsize::new(2),
+        )
+        .expect("expected outcome should be semantically valid")
+    );
+    // The outcome counts a failure exactly where the stream reports one.
+    assert_eq!(
+        observer
+            .observations
+            .iter()
+            .filter_map(|observation| match observation {
+                ExtractionRunObservation::DocumentError { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![partial_path, broken_path]
+    );
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+/// Verifies a cover-only run whose only EPUB fails reports that failure in cover no-output.
+#[test]
+fn failed_epub_in_cover_only_run_is_counted_in_cover_no_output() {
+    let surface = InMemorySearchSurface::new().with_file("broken.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "broken.epub",
+        Some("Test Creator"),
+        Some("Broken"),
+    );
+    let mut document_extraction = ScriptedDocumentExtraction::for_covers().with_outcome(
+        "broken.epub",
+        failed(
+            facts(
+                ImageWriteCounts::default(),
+                Vec::new(),
+                NormalImageOutput::Absent,
+            ),
+            "scripted archive failure",
+        ),
+    );
+
+    let (outcome, observer) = run_scripted(
+        &["broken.epub"],
+        false,
+        &surface,
+        &declarations,
+        &mut document_extraction,
+    );
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: NonZeroUsize::new(1),
+        }
+    );
     assert_single_terminal_observation(&observer, &outcome);
 }
