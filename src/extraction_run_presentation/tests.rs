@@ -1,19 +1,34 @@
 use super::*;
 
 use std::fs;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser};
 
 use crate::conversion::ConversionTarget;
+use crate::document_extraction::{ApplicableOutcomeFacts, DocumentExtractionFacts};
+use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
-use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
+use crate::extraction_run_observation::{ConversionFacts, ExtractionRunOutcomeAccumulator};
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{no_fallback_directory, temp_test_dir};
 
-/// Builds one state-valid produced outcome through the production constructor.
+/// Builds one produced outcome of the given shape through the outcome accumulator.
+///
+/// The accumulator is the only constructor of a produced outcome, so a test can
+/// never hold one production could not produce (ADR-0017). The shape is turned
+/// back into documents: one role per emitted image (converted, then
+/// conversion-skipped, then routed GIFs, then preserved images for the rest) is
+/// dealt round-robin across `documents_with_output` tallies, so each document
+/// emits at least one image. A covers outcome records covers and finishes with
+/// cover intent. Conversion and GIF-routing facts apply exactly when the caller
+/// passes them, through the Applicable outcome facts the accumulator is seeded with.
+///
+/// Panics on a shape the fold cannot express: zero images, documents or routed
+/// GIFs, more documents than images, or more classified images than emitted
+/// ones. It does not police pipeline rules beyond that, such as covers never
+/// being conversion-skipped; callers pass shapes a run produces.
 fn produced_outcome(
     output_kind: ExtractionOutputKind,
     emitted_images: usize,
@@ -21,20 +36,58 @@ fn produced_outcome(
     conversion: Option<ConversionFacts>,
     gif_routing: Option<(usize, PathBuf)>,
 ) -> ExtractionRunOutcome {
-    ExtractionRunOutcome::try_produced(
-        output_kind,
-        NonZeroUsize::new(emitted_images).expect("produced output must be positive"),
-        NonZeroUsize::new(documents_with_output).expect("documents with output must be positive"),
-        conversion,
-        gif_routing.map(|(routed_gifs, destination)| {
-            GifRoutingFacts::new(
-                NonZeroUsize::new(routed_gifs).expect("routed GIF count must be positive"),
-                destination,
-            )
-        }),
-        None,
-    )
-    .expect("terminal test outcome should be semantically valid")
+    assert!(
+        documents_with_output > 0,
+        "documents with output must be positive"
+    );
+    assert!(
+        documents_with_output <= emitted_images,
+        "every document with output must emit at least one image"
+    );
+    let (converted, skipped) = conversion.map_or((0, 0), |facts| {
+        (facts.converted_images(), facts.skipped_conversions())
+    });
+    let routed_gifs = gif_routing.as_ref().map_or(0, |(routed_gifs, _)| {
+        assert!(*routed_gifs > 0, "routed GIF count must be positive");
+        *routed_gifs
+    });
+    let classified = converted + skipped + routed_gifs;
+    assert!(
+        classified <= emitted_images,
+        "classified images cannot exceed the emitted images"
+    );
+
+    let roles = std::iter::repeat_n(TallyRole::Converted, converted)
+        .chain(std::iter::repeat_n(TallyRole::ConversionSkipped, skipped))
+        .chain(std::iter::repeat_n(TallyRole::RoutedGif, routed_gifs))
+        .chain(std::iter::repeat_n(
+            TallyRole::Preserved,
+            emitted_images - classified,
+        ));
+    let covers = output_kind == ExtractionOutputKind::Covers;
+    let mut tallies = vec![EmittedImageTally::default(); documents_with_output];
+    for (image, role) in roles.enumerate() {
+        let tally = &mut tallies[image % documents_with_output];
+        if covers {
+            tally.record_cover(role);
+        } else {
+            tally.record_normal_image(role);
+        }
+    }
+
+    let mut accumulator = ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(
+        conversion.is_some(),
+        gif_routing.map(|(_, destination)| destination),
+    ));
+    for tally in tallies {
+        accumulator.fold(&DocumentExtractionFacts::fabricated(tally, Vec::new()));
+    }
+    let outcome = accumulator.finish(covers);
+    assert!(
+        matches!(outcome, ExtractionRunOutcome::ProducedOutput(_)),
+        "a shape with emitted images should produce output, got {outcome:?}"
+    );
+    outcome
 }
 
 /// Verifies one non-empty terminal outcome is rendered onto the progress display.
