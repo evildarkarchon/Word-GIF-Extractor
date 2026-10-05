@@ -34,10 +34,34 @@ selection and real extraction.
 
 ## Acceptance criteria
 
-- [ ] All ten listed tests call the inner function with the three test adapters and write nothing to disk
-- [ ] Their assertions are unchanged — a needed assertion change is evidence of a behaviour change, not a test to fix
-- [ ] No moved test restates wording owned by Document extraction or presentation
-- [ ] The EPUB identity-consistency test still runs through the public entry against real files
-- [ ] The command-line entry point's three run tests and the whole `tests/` suite are unedited
-- [ ] No production code changes in this ticket
-- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+- [x] All ten listed tests call the inner function with the three test adapters and write nothing to disk
+- [x] Their assertions are unchanged — a needed assertion change is evidence of a behaviour change, not a test to fix — except four in the partial-failure test; see Notes
+- [x] No moved test restates wording owned by Document extraction or presentation
+- [x] The EPUB identity-consistency test still runs through the public entry against real files
+- [x] The command-line entry point's three run tests and the whole `tests/` suite are unedited
+- [x] No production code changes in this ticket
+- [x] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+
+## Notes
+
+- `run_retains_partial_facts_and_continues_after_document_failure` could not keep four of its
+  assertions literally. Three asserted that `failing_1.png`, `failing_2.png` and `succeeding.png`
+  existed, and scripted extraction writes no files. The fourth matched the error against
+  "Failed to create output directory", which is Image write pipeline wording the second and third
+  criteria above forbid restating. The file checks are dropped, since emitted images, documents
+  with output and the exact outcome already state the run-level half. The error now has to contain
+  the test's own scripted cause. A failed document's partial output on disk and that wording stay
+  checked in place by
+  `document_extraction::tests::failed_extraction_retains_document_extraction_facts`. A completed
+  DOCX's output on disk stays checked end to end by `tests/binary_smoke.rs`. The deviation is
+  called out in the test, as ticket 03's was.
+- The "retires the plain file staged where a GIF destination directory is expected" note sits on
+  the failed-without-output test in the list above, but that staging lived in the partial-failure
+  test. It is retired there. The failed-without-output test used a non-ZIP DOCX, which it no
+  longer writes either.
+- Policies are built only for the facts the run reads. The combined-facts and partial-failure
+  tests used `--formats` on disk, but the format set never reaches the run, so their scripted
+  policies keep every format.
+- The ten moved tests were checked against two temporary production mutations. Dropping
+  `record_failed_document` and forwarding only a document's first warning each failed the expected
+  tests, and the mutations were reverted before commit.
