@@ -2,12 +2,14 @@
 
 use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
-use crate::document_extraction::{DocumentExtractionError, DocumentExtractionFacts};
+use crate::document_extraction::{
+    DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionWarning,
+};
 use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, GifRoutingFacts, ProducedOutput};
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWriteResult, ImageWriteWarning};
+use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
     DeclaredEpubDeclarations, InMemorySearchSurface, RecordingRunObserver,
     SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, write_epub_document,
@@ -199,12 +201,19 @@ fn extension_fallback(source_name: &str) -> ImageWriteWarning {
     }
 }
 
-/// Fabricates Document extraction facts from a tally and Image write warnings, through Document extraction's own translation.
+/// Fabricates Document extraction facts from a tally and Image write warnings.
 ///
-/// Going through the test entry point rather than around it means these facts
-/// are translated exactly as a real result's are (ADR-0016).
+/// Each warning goes through Document extraction's warning entry point, so its
+/// wording is translated exactly as a real one's is (ADR-0016). The tally needs
+/// no translation: Document extraction hands it over as it is (ADR-0017).
 fn facts(tally: EmittedImageTally, warnings: Vec<ImageWriteWarning>) -> DocumentExtractionFacts {
-    DocumentExtractionFacts::fabricated(ImageWriteResult::new(tally, warnings))
+    DocumentExtractionFacts::fabricated(
+        tally,
+        warnings
+            .into_iter()
+            .map(DocumentExtractionWarning::fabricated)
+            .collect(),
+    )
 }
 
 /// Fabricates a completed outcome from a tally, with no warnings.

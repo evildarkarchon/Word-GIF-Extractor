@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::document_selection::SelectedDocument;
+use crate::emitted_image_tally::EmittedImageTally;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWriteWarning};
 
 /// The per-run choice to extract a required EPUB cover, and its fallback.
@@ -112,146 +113,24 @@ impl ApplicableOutcomeFacts {
     }
 }
 
-/// The emitted-image counts retained by one Document extraction outcome.
-///
-/// The four counts are one value rather than four accessors because every
-/// caller wants the whole counter shape: naming it once here is what stops a
-/// caller from re-spelling it field by field, and what makes adding a fifth
-/// counter a change to this type alone.
-///
-/// The converted, conversion-skipped and GIF-routed counts never together
-/// exceed the emitted count, because the Image write pipeline places each
-/// emitted image in exactly one of those roles.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct EmittedImageTotals {
-    emitted_images: usize,
-    routed_gifs: usize,
-    converted_images: usize,
-    skipped_conversions: usize,
-}
-
-impl EmittedImageTotals {
-    /// Returns the number of images successfully emitted before the outcome ended.
-    pub(crate) fn get_emitted_images(self) -> usize {
-        self.emitted_images
-    }
-
-    /// Returns the number of emitted GIFs routed to the configured destination.
-    pub(crate) fn get_routed_gifs(self) -> usize {
-        self.routed_gifs
-    }
-
-    /// Returns the number of images successfully converted before emission.
-    pub(crate) fn get_converted_images(self) -> usize {
-        self.converted_images
-    }
-
-    /// Returns the number of conversion attempts skipped while preserving source bytes.
-    pub(crate) fn get_skipped_conversions(self) -> usize {
-        self.skipped_conversions
-    }
-}
-
-/// What one document's emitted output was for.
-///
-/// The three states are closed and mutually exclusive, which is what a
-/// normal-image boolean could not express: a document that emitted nothing and a
-/// document that emitted covers only both denied that boolean, so a caller could
-/// not tell them apart. This type is owned by Document extraction rather than
-/// reusing the run-level [`crate::extraction_run_observation::ExtractionOutputKind`],
-/// because that type lives in a module that already depends on this one and
-/// importing it back would close the cycle ADR-0004 removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DocumentOutputPurpose {
-    /// Every emitted file came from required-cover extraction.
-    CoversOnly,
-    /// At least one emitted file came from normal-image extraction.
-    IncludedNormalImages,
-    /// The document emitted no files at all.
-    NothingEmitted,
-}
-
-impl DocumentOutputPurpose {
-    /// Combines this classification with a later document's, most inclusive winning.
-    ///
-    /// `NothingEmitted` is the identity because a document that emitted nothing
-    /// cannot change what a run's output was for, and `IncludedNormalImages`
-    /// absorbs because one normal image anywhere in a run means the run did not
-    /// produce covers only. The combination rule lives here, with the variants it
-    /// orders; the accumulator that applies it across documents does not, so
-    /// Document extraction stays stateless across documents.
-    pub(crate) fn merged_with(self, later: Self) -> Self {
-        match (self, later) {
-            (Self::IncludedNormalImages, _) | (_, Self::IncludedNormalImages) => {
-                Self::IncludedNormalImages
-            }
-            (Self::CoversOnly, _) | (_, Self::CoversOnly) => Self::CoversOnly,
-            (Self::NothingEmitted, Self::NothingEmitted) => Self::NothingEmitted,
-        }
-    }
-}
-
 /// Opaque facts retained by one completed or failed Document extraction.
 ///
-/// The value translates Image write pipeline accounting and warnings at the
-/// Document extraction seam so callers do not depend on inner pipeline types.
+/// The facts are the document's Emitted image tally and its ordered Document
+/// extraction warnings, and nothing derived from them: what the document's output
+/// was for is read off the tally's normal-image and cover totals by whoever needs
+/// it (ADR-0017). Only the warnings are translated at this seam, so callers do not
+/// depend on inner pipeline warning types.
 #[derive(Debug)]
 pub(crate) struct DocumentExtractionFacts {
-    emitted_image_totals: EmittedImageTotals,
-    output_purpose: DocumentOutputPurpose,
+    tally: EmittedImageTally,
     warnings: Vec<DocumentExtractionWarning>,
 }
 
 impl DocumentExtractionFacts {
-    /// Translates inner Image write facts at the Document extraction seam.
-    ///
-    /// A debug assertion pins the emitted-image partition where the pipeline's
-    /// counts cross into Document extraction; see the comment on it. The
-    /// translation itself is infallible.
+    /// Hands over the pipeline's tally and translates its warnings at the Document extraction seam.
     fn from_image_write_result(result: ImageWriteResult) -> Self {
-        let tally = result.tally;
-
-        // Tripwire kept from ADR-0007, now unable to fire. It guarded results
-        // assembled through `ImageWriteResult::new` from hand-built counts, but
-        // that constructor now takes an Emitted image tally, which can only grow
-        // by recording images and so satisfies the partition however it was
-        // built (ADR-0017). It stays until Document extraction facts carry the
-        // tally directly, when it is deleted rather than moved.
-        //
-        // The sum saturates rather than wrapping so the tripwire fails closed:
-        // a build with debug assertions but no overflow checks would otherwise
-        // wrap a bogus total back under the emitted count and stay silent.
-        debug_assert!(
-            tally
-                .converted()
-                .saturating_add(tally.conversion_skipped())
-                .saturating_add(tally.gifs_routed())
-                <= tally.emitted(),
-            "Image write pipeline classified more images than it emitted: \
-             converted {} + skipped {} + routed {} > emitted {}",
-            tally.converted(),
-            tally.conversion_skipped(),
-            tally.gifs_routed(),
-            tally.emitted(),
-        );
-
-        // The tally keeps normal images and covers apart, so the purpose is read
-        // off its two totals: nothing emitted, any normal image, or covers only.
-        let output_purpose = if tally.emitted() == 0 {
-            DocumentOutputPurpose::NothingEmitted
-        } else if tally.normal_images() > 0 {
-            DocumentOutputPurpose::IncludedNormalImages
-        } else {
-            DocumentOutputPurpose::CoversOnly
-        };
         Self {
-            emitted_image_totals: EmittedImageTotals {
-                emitted_images: tally.emitted(),
-                routed_gifs: tally.gifs_routed(),
-                converted_images: tally.converted(),
-                skipped_conversions: tally.conversion_skipped(),
-            },
-            output_purpose,
+            tally: result.tally,
             warnings: result
                 .warnings
                 .into_iter()
@@ -260,25 +139,23 @@ impl DocumentExtractionFacts {
         }
     }
 
-    /// Builds facts from fabricated Image write facts, for tests that script an outcome.
+    /// Builds facts from a tally and Document extraction warnings, for tests that script an outcome.
     ///
-    /// Delegates to the production translation rather than assembling the value,
-    /// so a test's facts are translated exactly as a real result's are (ADR-0016).
-    /// The partition guard it once routed them through can no longer fire, because
-    /// the result now carries an Emitted image tally (ADR-0017).
+    /// Nothing is bypassed by assembling the value directly: a tally can only grow
+    /// by recording images, so it carries no invariant left to check, and the
+    /// warnings come from [`DocumentExtractionWarning::fabricated`], which keeps
+    /// their wording owned by the production translation (ADR-0017).
     #[cfg(test)]
-    pub(crate) fn fabricated(result: ImageWriteResult) -> Self {
-        Self::from_image_write_result(result)
+    pub(crate) fn fabricated(
+        tally: EmittedImageTally,
+        warnings: Vec<DocumentExtractionWarning>,
+    ) -> Self {
+        Self { tally, warnings }
     }
 
-    /// Returns the emitted, GIF-routed, converted and conversion-skipped counts together.
-    pub(crate) fn get_emitted_image_totals(&self) -> EmittedImageTotals {
-        self.emitted_image_totals
-    }
-
-    /// Returns what this document's emitted output was for.
-    pub(crate) fn get_output_purpose(&self) -> DocumentOutputPurpose {
-        self.output_purpose
+    /// Returns every image this document emitted before the outcome ended, by purpose and role.
+    pub(crate) fn get_tally(&self) -> EmittedImageTally {
+        self.tally
     }
 
     /// Returns ordered non-fatal warnings produced before the outcome ended.

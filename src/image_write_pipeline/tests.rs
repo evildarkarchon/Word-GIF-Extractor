@@ -100,8 +100,9 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     assert_eq!(result.tally.converted(), 0);
     assert_eq!(result.tally.conversion_skipped(), 0);
     // Recorded as a cover, not as a normal image: that pair is exactly what
-    // Document extraction reads off the tally to classify a document as
-    // covers-only (`document_extraction.rs`, `DocumentOutputPurpose`). It holds
+    // the outcome accumulator reads off the folded tallies to classify a
+    // cover-only run's output as covers (`extraction_run_observation.rs`,
+    // `ExtractionRunOutcomeAccumulator::finish`). It holds
     // because the required-cover path records covers, so a change that recorded
     // this image as a normal image would misreport the document as containing
     // normal images — which is what these assertions are here to catch. Do not

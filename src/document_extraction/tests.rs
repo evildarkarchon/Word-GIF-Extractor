@@ -4,7 +4,6 @@ use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
-use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
@@ -33,6 +32,15 @@ fn warning_messages(facts: &DocumentExtractionFacts) -> Vec<&str> {
         .iter()
         .map(DocumentExtractionWarning::get_message)
         .collect()
+}
+
+/// Returns the document's normal-image and cover totals, which together say what its output was for.
+///
+/// `(n, 0)` with `n > 0` is output that included normal images, `(0, n)` is
+/// covers only, and `(0, 0)` is nothing emitted (ADR-0017).
+fn normal_images_and_covers(facts: &DocumentExtractionFacts) -> (usize, usize) {
+    let tally = facts.get_tally();
+    (tally.normal_images(), tally.covers())
 }
 
 /// Obtains one extraction handoff through the production Document selection operation.
@@ -94,11 +102,7 @@ fn failed_extraction_retains_document_extraction_facts() {
         panic!("blocked GIF destination should fail Document extraction");
     };
 
-    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        facts.get_output_purpose(),
-        DocumentOutputPurpose::IncludedNormalImages
-    );
+    assert_eq!(normal_images_and_covers(&facts), (1, 0));
     assert_eq!(
         facts
             .get_warnings()
@@ -148,10 +152,10 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
         panic!("warning-producing DOCX extraction should complete");
     };
 
-    let totals = facts.get_emitted_image_totals();
-    assert_eq!(totals.get_emitted_images(), 4);
-    assert_eq!(totals.get_converted_images(), 0);
-    assert_eq!(totals.get_skipped_conversions(), 4);
+    let tally = facts.get_tally();
+    assert_eq!(tally.emitted(), 4);
+    assert_eq!(tally.converted(), 0);
+    assert_eq!(tally.conversion_skipped(), 4);
     assert_eq!(
         warning_messages(&facts),
         vec![
@@ -197,12 +201,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
             "Cover image MIME 'application/x-cover-art' could not be identified; defaulting to .jpg extension."
         ]
     );
-    assert_eq!(
-        unidentified_facts
-            .get_emitted_image_totals()
-            .get_emitted_images(),
-        1
-    );
+    assert_eq!(normal_images_and_covers(&unidentified_facts), (0, 1));
 
     let filtered_path = temp_dir.join("filtered.epub");
     let filtered_output = temp_dir.join("filtered-output");
@@ -225,16 +224,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         warning_messages(&filtered_facts),
         vec!["Cover image format 'png' not in allowed formats, skipping."]
     );
-    assert_eq!(
-        filtered_facts
-            .get_emitted_image_totals()
-            .get_emitted_images(),
-        0
-    );
-    assert_eq!(
-        filtered_facts.get_output_purpose(),
-        DocumentOutputPurpose::NothingEmitted
-    );
+    assert_eq!(normal_images_and_covers(&filtered_facts), (0, 0));
 }
 
 #[test]
@@ -278,16 +268,7 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         warning_messages(&unsupported_facts),
         vec!["Cover image format 'svg' not supported for conversion, skipping cover."]
     );
-    assert_eq!(
-        unsupported_facts
-            .get_emitted_image_totals()
-            .get_emitted_images(),
-        0
-    );
-    assert_eq!(
-        unsupported_facts.get_output_purpose(),
-        DocumentOutputPurpose::NothingEmitted
-    );
+    assert_eq!(normal_images_and_covers(&unsupported_facts), (0, 0));
 
     let failed_path = temp_dir.join("failed.epub");
     let failed_output = temp_dir.join("failed-output");
@@ -316,14 +297,7 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         warning_messages(&failed_facts),
         vec!["Cover conversion failed: Failed to decode image"]
     );
-    assert_eq!(
-        failed_facts.get_emitted_image_totals().get_emitted_images(),
-        0
-    );
-    assert_eq!(
-        failed_facts.get_output_purpose(),
-        DocumentOutputPurpose::NothingEmitted
-    );
+    assert_eq!(normal_images_and_covers(&failed_facts), (0, 0));
 }
 
 #[test]
@@ -356,11 +330,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
         panic!("unreadable cover candidates should allow normal-image fallback");
     };
 
-    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        facts.get_output_purpose(),
-        DocumentOutputPurpose::IncludedNormalImages
-    );
+    assert_eq!(normal_images_and_covers(&facts), (1, 0));
     assert_eq!(
         warning_messages(&facts),
         vec![
@@ -393,11 +363,7 @@ fn epub_cover_output_is_classified_as_covers_only() {
         panic!("valid EPUB cover extraction should complete");
     };
 
-    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        result.get_output_purpose(),
-        DocumentOutputPurpose::CoversOnly
-    );
+    assert_eq!(normal_images_and_covers(&result), (0, 1));
     assert!(output_dir.join("Test.jpg").exists());
 }
 
@@ -418,11 +384,7 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
         panic!("EPUB cover fallback should complete");
     };
 
-    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        result.get_output_purpose(),
-        DocumentOutputPurpose::IncludedNormalImages
-    );
+    assert_eq!(normal_images_and_covers(&result), (1, 0));
     assert!(output_dir.join("Test.jpg").exists());
 }
 
@@ -445,11 +407,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         panic!("normal EPUB extraction should complete");
     };
 
-    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        result.get_output_purpose(),
-        DocumentOutputPurpose::IncludedNormalImages
-    );
+    assert_eq!(normal_images_and_covers(&result), (1, 0));
     assert!(output_dir.join("Test.jpg").exists());
 }
 
@@ -500,7 +458,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         panic!("retained EPUB declarations should support extraction");
     };
 
-    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
+    assert_eq!(normal_images_and_covers(&result), (1, 0));
     assert_eq!(
         fs::read(output_dir.join("Test.jpg")).expect("selected image should be readable"),
         selected_payload
@@ -546,39 +504,10 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         panic!("Document extraction should retry unavailable EPUB declarations");
     };
 
-    assert_eq!(result.get_emitted_image_totals().get_emitted_images(), 1);
+    assert_eq!(normal_images_and_covers(&result), (1, 0));
     assert_eq!(
         fs::read(output_dir.join("sample.jpg")).expect("recovered image should be readable"),
         b"\xFF\xD8\xFFrecovered"
-    );
-}
-
-/// Verifies fabricated facts pass through the production translation rather than around it.
-///
-/// The purpose is derived by the translation from the tally's cover and
-/// normal-image totals, and the warning arrives as the same value the warning entry
-/// point builds, so the test asserts both without restating any wording.
-#[test]
-fn fabricated_facts_pass_through_the_production_translation() {
-    let warning = ImageWriteWarning::archive_image_acquisition_failed("images/a.png", "unreadable");
-    let mut tally = EmittedImageTally::default();
-    tally.record_cover(TallyRole::Converted);
-    tally.record_cover(TallyRole::Preserved);
-    let facts =
-        DocumentExtractionFacts::fabricated(ImageWriteResult::new(tally, vec![warning.clone()]));
-
-    let totals = facts.get_emitted_image_totals();
-    assert_eq!(totals.get_emitted_images(), 2);
-    assert_eq!(totals.get_converted_images(), 1);
-    assert_eq!(totals.get_routed_gifs(), 0);
-    assert_eq!(totals.get_skipped_conversions(), 0);
-    assert_eq!(
-        facts.get_output_purpose(),
-        DocumentOutputPurpose::CoversOnly
-    );
-    assert_eq!(
-        facts.get_warnings(),
-        [DocumentExtractionWarning::fabricated(warning)]
     );
 }
 
