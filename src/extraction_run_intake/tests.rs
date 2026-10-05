@@ -7,13 +7,11 @@ use crate::extraction_run_observation::{
     ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput,
 };
 use crate::test_support::{
-    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, write_docx,
+    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, valid_png, write_docx,
 };
 use clap::Parser;
-use image::DynamicImage;
 use std::cell::Cell;
 use std::fs;
-use std::io::Cursor;
 
 /// Fallback directory the resolver in [`prepare_from`] hands to intake.
 ///
@@ -70,14 +68,6 @@ fn produced(outcome: ExtractionRunOutcome) -> ProducedOutput {
             panic!("expected produced output, got {other:?}");
         }
     }
-}
-
-fn valid_png() -> Vec<u8> {
-    let mut cursor = Cursor::new(Vec::new());
-    DynamicImage::new_rgba8(1, 1)
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .expect("test PNG should encode");
-    cursor.into_inner()
 }
 
 #[test]

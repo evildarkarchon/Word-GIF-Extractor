@@ -5,12 +5,10 @@ use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
 use crate::test_support::{
     RecordingRunObserver, create_directory_link, no_fallback_directory, remove_directory_link,
-    temp_test_dir, write_docx, write_epub_document,
+    temp_test_dir, valid_png, write_docx, write_epub_document,
 };
 use clap::Parser;
-use image::DynamicImage;
 use std::fs;
-use std::io::Cursor;
 
 /// Prepares one production request from directly built options.
 ///
@@ -69,13 +67,6 @@ fn assert_single_terminal_observation(
 }
 
 /// Encodes a valid PNG payload for run-level conversion assertions.
-fn valid_png() -> Vec<u8> {
-    let mut cursor = Cursor::new(Vec::new());
-    DynamicImage::new_rgba8(1, 1)
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .expect("test PNG should encode");
-    cursor.into_inner()
-}
 
 #[test]
 fn no_selected_documents_returns_no_documents_outcome() {

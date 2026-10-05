@@ -40,6 +40,10 @@ use zip::write::SimpleFileOptions;
 use word_image_extractor::{Args, Capture, TerminalOutput, run_cli};
 
 /// A PNG small enough to inline whose magic bytes still identify it as one.
+///
+/// Byte-identical to the crate-private constant of the same name, deliberately, for
+/// the reason the DOCX fallback helper below is: a shared name that meant a subtly
+/// different fixture would be a trap.
 const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 
 /// Drives the library entry point once, with a destination that captures everything.

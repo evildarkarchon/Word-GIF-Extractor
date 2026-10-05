@@ -8,13 +8,11 @@ use crate::document_selection::{
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_epub_with_one_image,
-    write_stored_epub_fixture,
+    MINIMAL_PNG, SilentExtractionRunObserver, pipeline_accepting, temp_test_dir,
+    write_epub_with_one_image, write_stored_epub_fixture,
 };
 use std::fs;
 use std::path::Path;
-
-const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 
 /// Obtains one owned EPUB handoff through the production Document selection operation.
 fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {

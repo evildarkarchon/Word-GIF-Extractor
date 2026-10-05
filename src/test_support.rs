@@ -67,6 +67,25 @@ pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     ))
 }
 
+/// A PNG small enough to inline whose magic bytes still identify it as one.
+///
+/// The signature and one complete IHDR chunk, and nothing more: there is no image
+/// data, so it is deliberately not decodable. Use it wherever a payload only has to
+/// be recognised as a PNG; a test that needs conversion to succeed wants
+/// [`valid_png`]. Byte-identical to the integration-test constant of the same name,
+/// because one name meaning two fixtures is a trap for whichever test first
+/// depends on the difference.
+pub(crate) const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+
+/// Encodes a 1x1 RGBA PNG that decodes, for tests whose images must convert.
+pub(crate) fn valid_png() -> Vec<u8> {
+    let mut cursor = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("test PNG should encode");
+    cursor.into_inner()
+}
+
 /// Builds an Image write pipeline that accepts `formats` and does nothing else.
 ///
 /// No Conversion policy and no GIF destination: the shape nearly every pipeline

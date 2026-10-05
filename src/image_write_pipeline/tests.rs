@@ -2,12 +2,10 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
-use crate::test_support::{FailAfterReader, pipeline_accepting, temp_test_dir};
+use crate::test_support::{FailAfterReader, MINIMAL_PNG, pipeline_accepting, temp_test_dir};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
-
-const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR";
 
 struct AssertOutputBeforeTailReader {
     cursor: Cursor<Vec<u8>>,
