@@ -31,10 +31,7 @@ use crate::extraction_run_observation::{ConversionFacts, ExtractionOutputKind};
 /// Extraction run consumes this request by value and asks Document extraction
 /// for the derived facts when it needs them.
 pub struct ExtractionRunRequest {
-    inputs: Vec<PathBuf>,
-    recursive: bool,
-    output: Option<PathBuf>,
-    epub_filter: EpubFilter,
+    selection_inputs: RunSelectionInputs,
     document_extraction: DocumentExtraction,
 }
 
@@ -51,60 +48,22 @@ impl ExtractionRunRequest {
         let image_write_pipeline = ImageWritePipeline::new(image_write_policy);
 
         Self {
-            inputs,
-            recursive,
-            output,
-            epub_filter,
+            selection_inputs: RunSelectionInputs {
+                inputs,
+                recursive,
+                output,
+                epub_filter,
+            },
             document_extraction: DocumentExtraction::new(epub_cover_policy, image_write_pipeline),
         }
     }
 }
 
-/// Document extraction as the Extraction run uses it.
-///
-/// The run owns this seam, so Document extraction's imports never name run
-/// vocabulary — the rule ADR-0005 applies. It covers exactly what the run reads:
-/// cover intent, the Applicable outcome facts and per-document extraction. The
-/// first two stay behind the seam rather than arriving as copied values, so the
-/// Image write policy remains their single owner (ADR-0006, ADR-0016).
-///
-/// Extraction takes `&mut self` because Document extraction outcomes are not
-/// `Clone`: a scripted adapter hands each one out by value, and `&self` would
-/// force interior mutability on it for no production benefit.
-pub(crate) trait RunDocumentExtraction {
-    /// Reports whether EPUB cover extraction is configured for this run.
-    fn is_epub_cover_extraction_configured(&self) -> bool;
-
-    /// Reports which optional outcome fact groups the bound workflow permits.
-    fn applicable_outcome_facts(&self) -> ApplicableOutcomeFacts;
-
-    /// Consumes one Selected document into its Document extraction outcome.
-    fn extract(&mut self, document: SelectedDocument) -> DocumentExtractionOutcome;
-}
-
-/// Production Document extraction forwards to the methods it already has.
-///
-/// The calls name the type explicitly: with `self: &mut DocumentExtraction`,
-/// method-call syntax would resolve `extract` to this trait's `&mut self` method
-/// before the inherent `&self` one, and the forwarding would recurse forever.
-impl RunDocumentExtraction for DocumentExtraction {
-    fn is_epub_cover_extraction_configured(&self) -> bool {
-        DocumentExtraction::is_epub_cover_extraction_configured(self)
-    }
-
-    fn applicable_outcome_facts(&self) -> ApplicableOutcomeFacts {
-        DocumentExtraction::applicable_outcome_facts(self)
-    }
-
-    fn extract(&mut self, document: SelectedDocument) -> DocumentExtractionOutcome {
-        DocumentExtraction::extract(self, document)
-    }
-}
-
 /// What the run hands Document selection, apart from cover intent.
 ///
-/// Cover intent is absent on purpose: the run asks Document extraction for it,
-/// so it can never disagree with the extraction that honours it.
+/// Cover intent is absent on purpose: [`run`] reads it from the request's own
+/// Document extraction, so it can never disagree with the extraction that
+/// honours it.
 struct RunSelectionInputs {
     inputs: Vec<PathBuf>,
     recursive: bool,
@@ -127,31 +86,40 @@ pub fn run(
     observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {
     let ExtractionRunRequest {
-        inputs,
-        recursive,
-        output,
-        epub_filter,
-        mut document_extraction,
+        selection_inputs,
+        document_extraction,
     } = request;
+    // Both facts are read from their single owner here, before the inner
+    // function receives anything that can extract, so they are fixed at the
+    // moment the run begins rather than cached in the request (ADR-0006,
+    // ADR-0018).
+    let cover_only = document_extraction.is_epub_cover_extraction_configured();
+    let applicable_outcome_facts = document_extraction.applicable_outcome_facts();
     run_with(
-        RunSelectionInputs {
-            inputs,
-            recursive,
-            output,
-            epub_filter,
-        },
+        selection_inputs,
+        cover_only,
+        applicable_outcome_facts,
         &FilesystemSearchSurface,
         &EpubFileDeclarations,
-        &mut document_extraction,
+        &mut |document| document_extraction.extract(document),
         observer,
     )
 }
 
 /// Sequences one Extraction run against whichever collaborators it is given.
 ///
+/// `cover_only` and `applicable_outcome_facts` arrive as values that [`run`]
+/// read from Document extraction, their single owner, before calling this
+/// function. They stay separate parameters because cover intent is
+/// classification input, not an Applicable outcome fact group (ADR-0006).
+///
 /// `surface` and `declarations` are passed to Document selection unchanged, as
 /// the two separate seams ADR-0008 chose over a bundle; selection itself stays
-/// real. Every selected document is handed to `document_extraction` exactly once.
+/// real. Every selected document is passed to `extract` exactly once. `extract`
+/// is `FnMut` because Document extraction outcomes are not `Clone`: a scripted
+/// adapter hands each one out by value, and `Fn` would force interior
+/// mutability on it for no production benefit.
+///
 /// The contract on observations and the returned outcome is the one documented
 /// on [`run`], which is this function's only production caller.
 ///
@@ -159,9 +127,11 @@ pub fn run(
 /// second seam, so the run never transports selection facts it does not read.
 fn run_with(
     selection_inputs: RunSelectionInputs,
+    cover_only: bool,
+    applicable_outcome_facts: ApplicableOutcomeFacts,
     surface: &dyn DocumentSearchSurface,
     declarations: &dyn EpubDeclarationSource,
-    document_extraction: &mut impl RunDocumentExtraction,
+    extract: &mut impl FnMut(SelectedDocument) -> DocumentExtractionOutcome,
     observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {
     let RunSelectionInputs {
@@ -170,7 +140,6 @@ fn run_with(
         output,
         epub_filter,
     } = selection_inputs;
-    let cover_only = document_extraction.is_epub_cover_extraction_configured();
     let selected_documents = document_selection::select_documents(
         DocumentSelectionOptions {
             inputs: &inputs,
@@ -194,8 +163,7 @@ fn run_with(
         total: selected_documents.len(),
         cover_only,
     });
-    let mut outcome_accumulator =
-        ExtractionRunOutcomeAccumulator::new(document_extraction.applicable_outcome_facts());
+    let mut outcome_accumulator = ExtractionRunOutcomeAccumulator::new(applicable_outcome_facts);
 
     for selected_document in selected_documents {
         // The run retains only observer-facing facts before transferring the
@@ -207,7 +175,7 @@ fn run_with(
             display_name,
         });
 
-        let (facts, error) = match document_extraction.extract(selected_document) {
+        let (facts, error) = match extract(selected_document) {
             DocumentExtractionOutcome::Completed(facts) => (facts, None),
             DocumentExtractionOutcome::Failed { facts, error } => (facts, Some(error)),
         };

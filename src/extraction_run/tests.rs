@@ -1,7 +1,6 @@
 //! Tests for the extraction run workflow.
 
 use super::*;
-use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_extraction::{
     DocumentExtractionError, DocumentExtractionFacts, DocumentExtractionWarning,
 };
@@ -70,43 +69,25 @@ fn assert_single_terminal_observation(
 
 /// Document extraction scripted by document path, for run tests whose subject is not archives.
 ///
-/// Cover intent and the Applicable outcome facts are delegated to a real
-/// [`DocumentExtraction`] built from real policies, so a test that needs
-/// conversion to apply builds a policy with conversion, as production does; only
-/// `extract` is scripted (ADR-0016). Each scripted outcome can be taken once.
+/// Only per-document extraction is scripted here. Cover intent and the
+/// Applicable outcome facts reach the inner function as values the test seeds
+/// directly, just as `run` reads them from Document extraction before the inner
+/// function starts (ADR-0018). Each scripted outcome can be taken once.
 /// Extracting a path twice, or a path nobody scripted, panics: that is what turns
 /// the request's "consumed exactly once" into something a test enforces, since
 /// ownership alone guarantees one move per handoff but not one per path.
 struct ScriptedDocumentExtraction {
-    real_extraction: DocumentExtraction,
     /// A path whose slot is `None` has already been extracted, which is what
     /// tells a repeat apart from a path that was never scripted at all.
     outcomes: BTreeMap<PathBuf, Option<DocumentExtractionOutcome>>,
 }
 
 impl ScriptedDocumentExtraction {
-    /// Wraps a real Document extraction bound to these policies, with nothing scripted yet.
-    fn new(cover_policy: Option<EpubCoverPolicy>, image_write_policy: ImageWritePolicy) -> Self {
+    /// Starts an adapter with nothing scripted yet.
+    fn new() -> Self {
         Self {
-            real_extraction: DocumentExtraction::new(
-                cover_policy,
-                ImageWritePipeline::new(image_write_policy),
-            ),
             outcomes: BTreeMap::new(),
         }
-    }
-
-    /// Binds the policies a run with no flags gets: normal images, no conversion, no GIF routing.
-    fn for_images() -> Self {
-        Self::new(None, default_image_write_policy())
-    }
-
-    /// Binds the policies a `--cover-only` run gets, with no conversion or GIF routing.
-    fn for_covers() -> Self {
-        Self::new(
-            Some(EpubCoverPolicy::CoverOnly),
-            default_image_write_policy(),
-        )
     }
 
     /// Scripts the outcome that extracting `path` returns.
@@ -129,17 +110,13 @@ impl ScriptedDocumentExtraction {
         );
         self
     }
-}
 
-impl RunDocumentExtraction for ScriptedDocumentExtraction {
-    fn is_epub_cover_extraction_configured(&self) -> bool {
-        self.real_extraction.is_epub_cover_extraction_configured()
-    }
-
-    fn applicable_outcome_facts(&self) -> ApplicableOutcomeFacts {
-        self.real_extraction.applicable_outcome_facts()
-    }
-
+    /// Hands out the outcome scripted for `document`'s path, exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the path was never scripted, or when its outcome was already
+    /// taken by an earlier extraction.
     fn extract(&mut self, document: SelectedDocument) -> DocumentExtractionOutcome {
         let path = document.get_path();
         match self.outcomes.get_mut(path) {
@@ -154,19 +131,14 @@ impl RunDocumentExtraction for ScriptedDocumentExtraction {
     }
 }
 
-/// Returns the Image write policy intake builds when no image flag is given.
-fn default_image_write_policy() -> ImageWritePolicy {
-    ImageWritePolicy::new(ImageFormat::all_set(), None, None)
-}
-
-/// Returns the conversion policy `--convert jpg` yields, with no quality or lossless flag.
-fn jpg_conversion() -> ConversionPolicy {
-    ConversionPolicy::try_from(ConversionRequest {
-        target: ConversionTarget::Jpg,
-        quality: None,
-        lossless: false,
-    })
-    .expect("test conversion policy should be valid")
+/// Returns the Applicable outcome facts a run with no image flags gets: no conversion, no GIF routing.
+///
+/// These are what Document extraction reports from the default Image write
+/// policy, which
+/// `document_extraction::tests::reports_cover_intent_and_applicable_outcome_facts_from_its_policies`
+/// pins against real policies.
+fn default_applicable_outcome_facts() -> ApplicableOutcomeFacts {
+    ApplicableOutcomeFacts::fabricated(false, None)
 }
 
 /// Returns the tally of a document that wrote `count` normal images as extracted.
@@ -242,10 +214,14 @@ fn failed(facts: DocumentExtractionFacts, cause: &str) -> DocumentExtractionOutc
 /// Document selection stays real, so selection diagnostics and extraction
 /// observations interleave exactly as the two modules produce them together.
 /// Inputs carry no output directory and no EPUB filter: placement is consumed
-/// only by extraction, which is scripted here.
+/// only by extraction, which is scripted here. `cover_only` and
+/// `applicable_outcome_facts` are seeded as the values `run` would have read
+/// from Document extraction.
 fn run_scripted(
     inputs: &[&str],
     recursive: bool,
+    cover_only: bool,
+    applicable_outcome_facts: ApplicableOutcomeFacts,
     surface: &InMemorySearchSurface,
     declarations: &DeclaredEpubDeclarations,
     document_extraction: &mut ScriptedDocumentExtraction,
@@ -258,9 +234,11 @@ fn run_scripted(
             output: None,
             epub_filter: EpubFilter::default(),
         },
+        cover_only,
+        applicable_outcome_facts,
         surface,
         declarations,
-        document_extraction,
+        &mut |document| document_extraction.extract(document),
         &mut observer,
     );
     (outcome, observer)
@@ -288,40 +266,13 @@ fn select_docx_from_surface(surface: &InMemorySearchSurface, path: &str) -> Sele
     selected.remove(0)
 }
 
-/// Verifies the scripted adapter answers cover intent and outcome facts from its real policies.
-#[test]
-fn scripted_document_extraction_delegates_policy_facts_to_real_document_extraction() {
-    let extraction = ScriptedDocumentExtraction::new(
-        Some(EpubCoverPolicy::CoverOnly),
-        ImageWritePolicy::new(
-            ImageFormat::all_set(),
-            Some(jpg_conversion()),
-            Some(PathBuf::from("gifs")),
-        ),
-    );
-
-    assert!(extraction.is_epub_cover_extraction_configured());
-    let applicable = extraction.applicable_outcome_facts();
-    assert!(applicable.is_conversion_applicable());
-    assert_eq!(
-        applicable.into_gif_destination(),
-        Some(PathBuf::from("gifs"))
-    );
-
-    let images = ScriptedDocumentExtraction::for_images();
-    assert!(!images.is_epub_cover_extraction_configured());
-    let applicable = images.applicable_outcome_facts();
-    assert!(!applicable.is_conversion_applicable());
-    assert_eq!(applicable.into_gif_destination(), None);
-}
-
 /// Verifies the scripted adapter refuses to hand one path's outcome out twice.
 #[test]
 #[should_panic(expected = "was extracted more than once")]
 fn scripted_document_extraction_panics_when_a_path_is_extracted_twice() {
     let surface = InMemorySearchSurface::new().with_file("sample.docx");
-    let mut extraction = ScriptedDocumentExtraction::for_images()
-        .with_outcome("sample.docx", completed_without_images());
+    let mut extraction =
+        ScriptedDocumentExtraction::new().with_outcome("sample.docx", completed_without_images());
 
     let _ = extraction.extract(select_docx_from_surface(&surface, "sample.docx"));
     let _ = extraction.extract(select_docx_from_surface(&surface, "sample.docx"));
@@ -336,9 +287,11 @@ fn scripted_document_extraction_panics_on_an_unscripted_path() {
     let _ = run_scripted(
         &["sample.docx"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
-        &mut ScriptedDocumentExtraction::for_images(),
+        &mut ScriptedDocumentExtraction::new(),
     );
 }
 
@@ -350,9 +303,11 @@ fn no_selected_documents_returns_no_documents_outcome() {
     let (outcome, observer) = run_scripted(
         &["empty"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
-        &mut ScriptedDocumentExtraction::for_images(),
+        &mut ScriptedDocumentExtraction::new(),
     );
 
     assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
@@ -378,9 +333,11 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
     let (outcome, observer) = run_scripted(
         &["first-input.docx", "second-input.epub"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
-        &mut ScriptedDocumentExtraction::for_images(),
+        &mut ScriptedDocumentExtraction::new(),
     );
 
     assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
@@ -423,12 +380,14 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
         .with_directory("requested")
         .with_link(broken_link.clone(), None)
         .with_file("readable.docx");
-    let mut document_extraction = ScriptedDocumentExtraction::for_images()
-        .with_outcome("readable.docx", completed_without_images());
+    let mut document_extraction =
+        ScriptedDocumentExtraction::new().with_outcome("readable.docx", completed_without_images());
 
     let (outcome, observer) = run_scripted(
         &["requested", "readable.docx"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -466,12 +425,14 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
         .with_directory("requested")
         .with_link(broken_link.clone(), None)
         .with_file("readable.docx");
-    let mut document_extraction = ScriptedDocumentExtraction::for_images()
-        .with_outcome("readable.docx", completed_without_images());
+    let mut document_extraction =
+        ScriptedDocumentExtraction::new().with_outcome("readable.docx", completed_without_images());
 
     let (outcome, observer) = run_scripted(
         &["requested", "readable.docx"],
         true,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -518,12 +479,14 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
     let missing_path = PathBuf::from("missing.docx");
     let input_path = PathBuf::from("sample.docx");
     let surface = InMemorySearchSurface::new().with_file(input_path.clone());
-    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+    let mut document_extraction = ScriptedDocumentExtraction::new()
         .with_outcome(input_path.clone(), completed_without_images());
 
     let (outcome, observer) = run_scripted(
         &["missing.docx", "sample.docx"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -582,12 +545,14 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
     );
     // A missing required cover under `CoverOnly` emits nothing, which is all
     // Document extraction reports for it.
-    let mut document_extraction = ScriptedDocumentExtraction::for_covers()
-        .with_outcome("empty.epub", completed_without_images());
+    let mut document_extraction =
+        ScriptedDocumentExtraction::new().with_outcome("empty.epub", completed_without_images());
 
     let (outcome, observer) = run_scripted(
         &["empty.epub"],
         false,
+        true,
+        default_applicable_outcome_facts(),
         &surface,
         &declarations,
         &mut document_extraction,
@@ -623,12 +588,14 @@ fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
     );
     // Only the EPUB is scripted, so the DOCX reaching extraction would panic
     // rather than emit anything; the EPUB writes its one required cover.
-    let mut document_extraction = ScriptedDocumentExtraction::for_covers()
-        .with_outcome(epub_path.clone(), completed(one_cover()));
+    let mut document_extraction =
+        ScriptedDocumentExtraction::new().with_outcome(epub_path.clone(), completed(one_cover()));
 
     let (outcome, observer) = run_scripted(
         &["sample.docx", "book.epub"],
         false,
+        true,
+        default_applicable_outcome_facts(),
         &surface,
         &declarations,
         &mut document_extraction,
@@ -673,15 +640,14 @@ fn requested_conversion_retains_valid_zero_totals() {
     let surface = InMemorySearchSurface::new().with_file("matching.docx");
     // A JPG already in the `--convert jpg` target is emitted as-is: neither
     // converted nor skipped, so both conversion counts stay at zero.
-    let mut document_extraction = ScriptedDocumentExtraction::new(
-        None,
-        ImageWritePolicy::new(ImageFormat::all_set(), Some(jpg_conversion()), None),
-    )
-    .with_outcome("matching.docx", completed(normal_images(1)));
+    let mut document_extraction = ScriptedDocumentExtraction::new()
+        .with_outcome("matching.docx", completed(normal_images(1)));
 
     let (outcome, _) = run_scripted(
         &["matching.docx"],
         false,
+        false,
+        ApplicableOutcomeFacts::fabricated(true, None),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -783,32 +749,27 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     // The failing document wrote two PNGs, each by extension fallback, before
     // routing its GIF failed. GIF routing is configured, so its fact group
     // applies, but no GIF was routed and the outcome omits it.
-    let mut document_extraction = ScriptedDocumentExtraction::new(
-        None,
-        ImageWritePolicy::new(
-            ImageFormat::all_set(),
-            None,
-            Some(PathBuf::from("blocked-gifs")),
-        ),
-    )
-    .with_outcome(
-        failing_path.clone(),
-        failed(
-            facts(
-                normal_images(2),
-                vec![
-                    extension_fallback("word/media/first.png"),
-                    extension_fallback("word/media/second.png"),
-                ],
+    let mut document_extraction = ScriptedDocumentExtraction::new()
+        .with_outcome(
+            failing_path.clone(),
+            failed(
+                facts(
+                    normal_images(2),
+                    vec![
+                        extension_fallback("word/media/first.png"),
+                        extension_fallback("word/media/second.png"),
+                    ],
+                ),
+                failure_cause,
             ),
-            failure_cause,
-        ),
-    )
-    .with_outcome(succeeding_path.clone(), completed(normal_images(1)));
+        )
+        .with_outcome(succeeding_path.clone(), completed(normal_images(1)));
 
     let (outcome, observer) = run_scripted(
         &["failing.docx", "succeeding.docx"],
         false,
+        false,
+        ApplicableOutcomeFacts::fabricated(false, Some(PathBuf::from("blocked-gifs"))),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -912,7 +873,7 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
     // The shared entry name makes the second document reproduce the first
     // document's second warning value, which anchors intra-document order
     // below without any test knowing the stable wording.
-    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+    let mut document_extraction = ScriptedDocumentExtraction::new()
         .with_outcome(
             first_path.clone(),
             DocumentExtractionOutcome::Completed(facts(
@@ -934,6 +895,8 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
     let (outcome, observer) = run_scripted(
         &["first.docx", "second.docx"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
@@ -1004,7 +967,7 @@ fn every_failed_document_is_counted_in_the_outcome() {
         .with_file(partial_path.clone())
         .with_file(broken_path.clone())
         .with_file("succeeding.docx");
-    let mut document_extraction = ScriptedDocumentExtraction::for_images()
+    let mut document_extraction = ScriptedDocumentExtraction::new()
         .with_outcome(
             partial_path.clone(),
             failed(
@@ -1024,6 +987,8 @@ fn every_failed_document_is_counted_in_the_outcome() {
     let (outcome, observer) = run_scripted(
         &["partial.docx", "broken.docx", "succeeding.docx"],
         false,
+        false,
+        default_applicable_outcome_facts(),
         &surface,
         &DeclaredEpubDeclarations::new(),
         &mut document_extraction,
