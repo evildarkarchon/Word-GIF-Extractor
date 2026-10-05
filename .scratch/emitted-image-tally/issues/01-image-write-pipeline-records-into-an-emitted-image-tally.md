@@ -39,25 +39,29 @@ removes this bridge.
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** done
 
 Spec: `.scratch/emitted-image-tally/spec.md` (ADR-0017). User stories 1–9 and 30, and the
 "Mechanical rewrites" testing decision.
 
 ## Acceptance criteria
 
-- [ ] A new crate-private leaf module owns the Emitted image tally and its four-way role, with the interface above and nothing else. Every new item has a doc comment
-- [ ] The tally module imports nothing from the crate. The pipeline, Document extraction and the Extraction run observation module may import it
-- [ ] The role mapping (pipeline Emitted image role → tally role) stays in the one counting function, replacing its per-role increments. Each of that function's two callers records under its own statically known Image write purpose: the normal-image visitor records normal images, the required-cover path records covers. No runtime purpose value is introduced, and no second counting site exists
-- [ ] Normal images and required covers record through separate operations. A routed-GIF required cover records as a routed cover and still counts toward the GIF-routed total
-- [ ] The routed GIF destination stays bound to the routing decision inside the pipeline. The tally's role carries no destination
-- [ ] An image write result is a tally plus warnings. The four-count type and the normal-image-output marker are deleted. Append and prepend keep their ordering semantics
-- [ ] Document extraction derives its existing totals and output purpose from the tally. Its public-to-crate interface, the accumulator and the partition debug assertion are unchanged in this ticket
-- [ ] Image write pipeline tests, EPUB and DOCX adapter tests, and EPUB cover extraction tests read tally totals instead of count fields, and no asserted value changes
-- [ ] EPUB cover extraction's scripted-attempt helpers record a cover or normal images into a tally instead of hand-building counts. The ADR-0005 seam itself is unchanged
-- [ ] The pipeline test that hand-builds results to check they carry their facts through the fold builds them from tallies
-- [ ] The Extraction run tests' scripted-facts helpers build their pipeline results from tallies ("one cover written", "two normal images, one converted"). No run-test assertion changes
-- [ ] Comments that name the deleted count type or marker, or that translate counts into "a written cover", are updated rather than dropped. Each removed or rewritten comment is called out in the change description
-- [ ] ADR-0007's counts paragraph gets a status note pointing to ADR-0017
-- [ ] Nothing under `tests/` is edited
-- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+- [x] A new crate-private leaf module owns the Emitted image tally and its four-way role, with the interface above and nothing else. Every new item has a doc comment
+- [x] The tally module imports nothing from the crate. The pipeline, Document extraction and the Extraction run observation module may import it
+- [x] The role mapping (pipeline Emitted image role → tally role) stays in the one counting function, replacing its per-role increments. Each of that function's two callers records under its own statically known Image write purpose: the normal-image visitor records normal images, the required-cover path records covers. No runtime purpose value is introduced, and no second counting site exists
+- [x] Normal images and required covers record through separate operations. A routed-GIF required cover records as a routed cover and still counts toward the GIF-routed total
+- [x] The routed GIF destination stays bound to the routing decision inside the pipeline. The tally's role carries no destination
+- [x] An image write result is a tally plus warnings. The four-count type and the normal-image-output marker are deleted. Append and prepend keep their ordering semantics
+- [x] Document extraction derives its existing totals and output purpose from the tally. Its public-to-crate interface, the accumulator and the partition debug assertion are unchanged in this ticket
+- [x] Image write pipeline tests, EPUB and DOCX adapter tests, and EPUB cover extraction tests read tally totals instead of count fields, and no asserted value changes
+- [x] EPUB cover extraction's scripted-attempt helpers record a cover or normal images into a tally instead of hand-building counts. The ADR-0005 seam itself is unchanged
+- [x] The pipeline test that hand-builds results to check they carry their facts through the fold builds them from tallies
+- [x] The Extraction run tests' scripted-facts helpers build their pipeline results from tallies ("one cover written", "two normal images, one converted"). No run-test assertion changes
+- [x] Comments that name the deleted count type or marker, or that translate counts into "a written cover", are updated rather than dropped. Each removed or rewritten comment is called out in the change description
+- [x] ADR-0007's counts paragraph gets a status note pointing to ADR-0017
+- [x] Nothing under `tests/` is edited
+- [x] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+
+## Comments
+
+- Landed in e64f41b, merged through PR #69. The commit message lists its deviations from "no asserted value changes", including deleting the partition-guard test here rather than in ticket 02.
