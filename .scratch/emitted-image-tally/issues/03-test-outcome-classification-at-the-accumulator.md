@@ -43,21 +43,21 @@ routing facts. Today only the staying partial-facts run test pins this, and only
 
 **Blocked by:** 02 — Document extraction facts carry the tally; the outcome accumulator folds tallies
 
-**Status:** ready-for-agent
+**Status:** done
 
 Spec: `.scratch/emitted-image-tally/spec.md` (ADR-0017). User stories 20–28, and the "Run-test
 verdicts" and "Folding duplicates at the accumulator" testing decisions.
 
 ## Acceptance criteria
 
-- [ ] Applicable outcome facts have a `cfg(test)` constructor taking conversion applicability and an optional GIF destination, with a doc comment
-- [ ] Accumulator tests live beside the outcome types in the observation module's test file. They feed tallies and failures into the accumulator and assert on the finished outcome through accessors, or against an outcome built the same way
-- [ ] Every run test marked "Moves down" in the spec's verdict table is removed from the run tests, and its assertion exists at the accumulator. Each pinned case is still named, either in its own test or as a named case in a folded test
-- [ ] The four intent × failure combinations over zero facts are one case table
-- [ ] A new accumulator test pins that GIF routing applies, nothing is routed, and the outcome has no routing facts
-- [ ] The four staying run tests keep their subjects and compare outcomes through accessors. No run test builds a produced outcome by hand
-- [ ] Run tests marked "Unaffected" keep their assertions
-- [ ] ADR-0016's classification-test-level decision gets a status note pointing to ADR-0017
-- [ ] Removed or rewritten comments are called out in the change description
-- [ ] Nothing under `tests/` is edited
-- [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+- [x] Applicable outcome facts have a `cfg(test)` constructor taking conversion applicability and an optional GIF destination, with a doc comment
+- [x] Accumulator tests live beside the outcome types in the observation module's test file. They feed tallies and failures into the accumulator and assert on the finished outcome through accessors, or against an outcome built the same way
+- [x] Every run test marked "Moves down" in the spec's verdict table is removed from the run tests, and its assertion exists at the accumulator. Each pinned case is still named, either in its own test or as a named case in a folded test
+- [x] The four intent × failure combinations over zero facts are one case table
+- [x] A new accumulator test pins that GIF routing applies, nothing is routed, and the outcome has no routing facts
+- [x] The four staying run tests keep their subjects and compare outcomes through accessors. No run test builds a produced outcome by hand
+- [x] Run tests marked "Unaffected" keep their assertions
+- [x] ADR-0016's classification-test-level decision gets a status note pointing to ADR-0017
+- [x] Removed or rewritten comments are called out in the change description
+- [x] Nothing under `tests/` is edited
+- [x] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass

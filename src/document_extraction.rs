@@ -102,6 +102,20 @@ pub(crate) struct ApplicableOutcomeFacts {
 }
 
 impl ApplicableOutcomeFacts {
+    /// Builds the facts directly, for tests that seed the outcome accumulator without a policy.
+    ///
+    /// Nothing is bypassed: whether conversion applies and where routed GIFs go are
+    /// independent facts, so there is no invariant between them for a policy to
+    /// uphold. Production still reads both from the Image write policy through
+    /// [`DocumentExtraction::applicable_outcome_facts`] (ADR-0017).
+    #[cfg(test)]
+    pub(crate) fn fabricated(conversion: bool, gif_destination: Option<PathBuf>) -> Self {
+        Self {
+            conversion,
+            gif_destination,
+        }
+    }
+
     /// Returns whether the eventual outcome may carry conversion facts.
     pub(crate) fn is_conversion_applicable(&self) -> bool {
         self.conversion
