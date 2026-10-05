@@ -1,6 +1,7 @@
 //! Document selection for turning requested input paths into extraction work.
 
 mod discovery;
+mod document_identity;
 mod progress;
 
 use std::collections::HashMap;
@@ -11,22 +12,10 @@ use crate::extraction_run_observation::{
     EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
 
+use self::document_identity::{DedupeKey, DocumentIdentity, EpubFilterTerms};
 use self::progress::{
     DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
 };
-
-/// Sanitizes declared document text for use as an output filename.
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-            character if character.is_control() => '_',
-            character => character,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -189,7 +178,7 @@ impl DocumentCandidate {
 /// Selects documents for extraction while reporting live progress snapshots and diagnostics.
 ///
 /// Selection owns document discovery, EPUB declaration filtering, EPUB dedupe,
-/// display identity, and per-document output placement. Returned documents are
+/// Document identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
 /// filters. Missing inputs, requested-root inspection failures, and unreadable
 /// EPUB declarations are reported as structured, non-fatal diagnostics through
@@ -233,6 +222,7 @@ fn filter_epub_files(
     // Separate EPUB files from other document types.
     let (epub_files, other_files): (Vec<_>, Vec<_>) = files.into_iter().partition(is_epub);
     let total = epub_files.len();
+    let terms = EpubFilterTerms::new(filter);
 
     lifecycle.filtering(!epub_files.is_empty(), filter, total, |progress| {
         let mut matching_epubs = Vec::new();
@@ -242,7 +232,10 @@ fn filter_epub_files(
                 continue;
             };
             let outcome = match EpubDeclarations::acquire(&path) {
-                Ok(declarations) if matches_filter(&declarations, filter) => {
+                Ok(declarations)
+                    if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
+                        .matches(&terms) =>
+                {
                     matching_epubs.push(DocumentCandidate::Epub {
                         path,
                         epub_declarations: Some(declarations),
@@ -273,8 +266,8 @@ fn filter_epub_files(
 /// Deduplicates EPUB files based on their creator and title declarations.
 ///
 /// Keeps the first occurrence of each unique (author, title) combination.
-/// Non-EPUB files are passed through unchanged. EPUBs without those declarations are
-/// deduplicated by filename.
+/// Non-EPUB files are passed through unchanged. EPUBs without a non-blank creator or
+/// title declaration are deduplicated by filename.
 fn deduplicate_epubs_by_declarations(
     files: Vec<DocumentCandidate>,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
@@ -283,9 +276,9 @@ fn deduplicate_epubs_by_declarations(
     let total = epub_files.len();
 
     lifecycle.deduplicating(!epub_files.is_empty(), total, |progress| {
-        // Use a HashMap to track seen (author, title) combinations.
-        // Key: (lowercase author, lowercase title) for case-insensitive deduplication.
-        let mut seen: HashMap<(String, String), PathBuf> = HashMap::new();
+        // Track the Document identity keys already seen. Keys are case-insensitive,
+        // and declared keys never equal filename keys.
+        let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
         let mut unique_epubs = Vec::new();
 
         for candidate in epub_files {
@@ -309,14 +302,8 @@ fn deduplicate_epubs_by_declarations(
                 }
             }
 
-            let key = match epub_declarations.as_ref() {
-                Some(declarations)
-                    if declarations.creator().is_some() || declarations.title().is_some() =>
-                {
-                    epub_dedupe_key(declarations)
-                }
-                _ => filename_dedupe_key(&path),
-            };
+            let key = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
+                .dedupe_key();
 
             // Only add if we haven't seen this combination before.
             let outcome = if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key)
@@ -340,45 +327,6 @@ fn deduplicate_epubs_by_declarations(
     })
 }
 
-/// Builds the case-insensitive dedupe key from retained EPUB declarations.
-fn epub_dedupe_key(declarations: &EpubDeclarations) -> (String, String) {
-    let creator_key = declarations
-        .creator()
-        .map(|value| value.trim().to_lowercase())
-        .unwrap_or_default();
-    let title_key = declarations
-        .title()
-        .map(|value| value.trim().to_lowercase())
-        .unwrap_or_default();
-    (creator_key, title_key)
-}
-
-/// Builds a filename fallback dedupe key for EPUBs without usable declarations.
-fn filename_dedupe_key(path: &Path) -> (String, String) {
-    let filename = path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    (String::new(), filename)
-}
-
-/// Checks whether title and creator declarations match the case-insensitive filter.
-fn matches_filter(declarations: &EpubDeclarations, filter: &EpubFilter) -> bool {
-    let title_matches = filter.title.as_ref().is_none_or(|f| {
-        declarations
-            .title()
-            .is_some_and(|t| t.to_lowercase().contains(&f.to_lowercase()))
-    });
-
-    let author_matches = filter.author.as_ref().is_none_or(|f| {
-        declarations
-            .creator()
-            .is_some_and(|a| a.to_lowercase().contains(&f.to_lowercase()))
-    });
-
-    title_matches && author_matches
-}
-
 /// Builds one selected document from a filtered and deduplicated candidate.
 fn selected_document_from_candidate(
     candidate: DocumentCandidate,
@@ -387,45 +335,29 @@ fn selected_document_from_candidate(
     match candidate {
         DocumentCandidate::Docx { path } => {
             let output_dir = resolve_output_dir(&path, global_output);
-            let base_name = fallback_base_name(&path);
-            let display_name = fallback_display_name(&path);
-            SelectedDocument::Docx(SelectedDocx::new(path, output_dir, base_name, display_name))
+            let identity = DocumentIdentity::of_path(&path);
+            SelectedDocument::Docx(SelectedDocx::new(
+                path,
+                output_dir,
+                identity.base_name(),
+                identity.display_name(),
+            ))
         }
         DocumentCandidate::Epub {
             path,
             epub_declarations,
         } => {
             let output_dir = resolve_output_dir(&path, global_output);
-            let fallback_base_name = fallback_base_name(&path);
-            let fallback_display_name = fallback_display_name(&path);
-            let has_declaration_identity = epub_declarations.as_ref().is_some_and(|declarations| {
-                declarations
-                    .creator()
-                    .is_some_and(|creator| !creator.trim().is_empty())
-                    || declarations
-                        .title()
-                        .is_some_and(|title| !title.trim().is_empty())
-            });
-            let base_name = format_epub_base_name(
-                epub_declarations
-                    .as_ref()
-                    .and_then(EpubDeclarations::creator),
-                epub_declarations.as_ref().and_then(EpubDeclarations::title),
-                &fallback_base_name,
-            );
             // Selection fixes the run identity from retained declarations only;
             // extraction-time declaration retries cannot revise this fallback.
-            let display_name = if has_declaration_identity {
-                base_name.clone()
-            } else {
-                fallback_display_name
-            };
+            let identity =
+                DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path);
 
             SelectedDocument::Epub(SelectedEpub::new(
                 path,
                 output_dir,
-                base_name,
-                display_name,
+                identity.base_name(),
+                identity.display_name(),
                 epub_declarations,
             ))
         }
@@ -445,35 +377,6 @@ fn resolve_output_dir(input_path: &Path, global_output: Option<&Path>) -> PathBu
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from(".")),
     }
-}
-
-/// Builds the default output filename stem from a path.
-fn fallback_base_name(path: &Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Builds a fallback display name from a path.
-fn fallback_display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string())
-}
-
-/// Formats a filename from EPUB creator and title declarations.
-fn format_epub_base_name(author: Option<&str>, title: Option<&str>, fallback: &str) -> String {
-    let author = author.map(|s| s.trim()).filter(|s| !s.is_empty());
-    let title = title.map(|s| s.trim()).filter(|s| !s.is_empty());
-
-    let raw_name = match (author, title) {
-        (Some(a), Some(t)) => format!("{} - {}", a, t),
-        (None, Some(t)) => t.to_string(),
-        (Some(a), None) => a.to_string(),
-        (None, None) => fallback.to_string(),
-    };
-
-    sanitize_filename(&raw_name)
 }
 
 #[cfg(test)]

@@ -1243,39 +1243,3 @@ fn select_documents_uses_declaration_derived_display_name() {
 
     fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
-
-#[test]
-fn test_format_epub_base_name_both() {
-    let result = format_epub_base_name(Some("Stephen King"), Some("The Shining"), "fallback");
-    assert_eq!(result, "Stephen King - The Shining");
-}
-
-#[test]
-fn test_format_epub_base_name_title_only() {
-    let result = format_epub_base_name(None, Some("The Shining"), "fallback");
-    assert_eq!(result, "The Shining");
-}
-
-#[test]
-fn test_format_epub_base_name_author_only() {
-    let result = format_epub_base_name(Some("Stephen King"), None, "fallback");
-    assert_eq!(result, "Stephen King");
-}
-
-#[test]
-fn test_format_epub_base_name_neither() {
-    let result = format_epub_base_name(None, None, "fallback");
-    assert_eq!(result, "fallback");
-}
-
-#[test]
-fn test_format_epub_base_name_empty_strings() {
-    let result = format_epub_base_name(Some("  "), Some(""), "fallback");
-    assert_eq!(result, "fallback");
-}
-
-#[test]
-fn test_format_epub_base_name_sanitizes() {
-    let result = format_epub_base_name(Some("Author/Name"), Some("Title:Subtitle"), "fallback");
-    assert_eq!(result, "Author_Name - Title_Subtitle");
-}
