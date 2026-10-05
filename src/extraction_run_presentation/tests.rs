@@ -596,6 +596,26 @@ fn no_documents_terminal_outcome_is_printed_rather_than_drawn() {
     assert_eq!(capture.progress_text(), "");
 }
 
+/// Verifies a summary arriving with no live display is printed rather than lost.
+///
+/// The run always starts extraction before a non-empty outcome, so this sequence
+/// is unreachable through it today. The terminal arm must not depend on that
+/// ordering: whatever the outcome, a summary with nothing live to finish belongs
+/// on standard output, exactly as the no-documents summary does.
+#[test]
+fn terminal_summary_without_a_live_display_is_printed_rather_than_dropped() {
+    let outcome = produced_outcome(ExtractionOutputKind::Images, 1, 1, None, None);
+    let summary = final_summary_message(&outcome);
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    presentation.on_observation(ExtractionRunObservation::Terminal(outcome));
+
+    assert_eq!(capture.stdout(), format!("{summary}\n"));
+    assert_eq!(capture.stderr(), "");
+    assert_eq!(capture.progress_text(), "");
+}
+
 /// Verifies the two pre-run notices keep their existing wording and streams.
 #[test]
 fn pre_run_notices_keep_their_wording_and_streams() {
