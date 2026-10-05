@@ -61,7 +61,7 @@ impl ArchiveImageSource {
     ///
     /// Required covers use bounded byte evidence before declared MIME and never
     /// fall back to the manifest path extension.
-    pub(crate) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
+    pub(super) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
         Self {
             diagnostic_name: source_name.into(),
             path_evidence_name: None,

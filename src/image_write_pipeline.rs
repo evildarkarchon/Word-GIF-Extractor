@@ -4,7 +4,7 @@ mod discovery;
 mod emission;
 mod purpose;
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{Error, Result};
 use std::collections::HashSet;
 use std::fmt;
 use std::io::Read;
@@ -305,12 +305,6 @@ pub(crate) enum RequiredCoverWriteOutcome {
     Completed(ImageWriteResult),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum RequiredCoverWriteDisposition {
-    Retry,
-    Completed,
-}
-
 /// Immutable Image write pipeline configured for one Extraction run.
 pub(crate) struct ImageWritePipeline {
     policy: ImageWritePolicy,
@@ -332,21 +326,92 @@ impl ImageWritePipeline {
         self.policy.gif_destination()
     }
 
-    /// Discovers and writes one required EPUB cover through a scoped source reader.
+    /// Discovers and writes one required EPUB cover from its scoped payload reader.
     ///
-    /// Acquisition failures return a retry disposition. Filtering and other Image
-    /// write policy decisions complete the attempt, while emission failures retain
-    /// facts accumulated before returning the error.
+    /// Single-shot, unlike [`Self::write_from`]: a cover attempt has exactly one
+    /// source, and normal images need a traversal only because their singular versus
+    /// multiple naming waits on the next source. Taking the reader directly lets the
+    /// signature say "one" where a traversal had to check it at runtime. The source
+    /// facts are raw so the pipeline builds the cover's evidence itself, and a caller
+    /// cannot hand it a normal source that would enable path-extension fallback.
+    ///
+    /// Read failures return `Retry`, so EPUB cover extraction may try its next
+    /// candidate. Filtering, conversion fallback and successful emission return
+    /// `Completed`. Emission failures retain the facts accumulated before them.
     pub(crate) fn write_required_cover(
         &self,
         request: RequiredCoverWriteRequest<'_>,
-        traverse: impl FnOnce(&mut RequiredCoverWriteVisitor<'_, '_>) -> Result<()>,
+        manifest_path: &str,
+        mime: &str,
+        reader: &mut dyn Read,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        let mut visitor = RequiredCoverWriteVisitor::new(&self.policy, request, RequiredCover);
-        if let Err(error) = traverse(&mut visitor) {
-            return Err(visitor.into_failure(error));
+        let source = ArchiveImageSource::required_cover(manifest_path, mime);
+        let discovered = discover_image(
+            &source,
+            reader,
+            &self.policy.allowed_formats,
+            &RequiredCover,
+        );
+        let mut result = ImageWriteResult::default();
+        result.warnings.extend(discovered.warnings);
+        let image = match discovered.outcome {
+            ArchiveImageDiscoveryOutcome::Accepted(image) => image,
+            ArchiveImageDiscoveryOutcome::Completed => {
+                return Ok(RequiredCoverWriteOutcome::Completed(result));
+            }
+            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
+                return Ok(RequiredCoverWriteOutcome::Retry(result));
+            }
+        };
+
+        let prepared = match prepare_image_for_write(image, &self.policy) {
+            ImagePreparation::Prepared(prepared) => prepared,
+            // A required cover is never emitted in bytes the Conversion policy could
+            // not produce; the attempt completes with the cover-specific warning.
+            ImagePreparation::ConversionFellBack { format, reason, .. } => {
+                result.warnings.push(match reason {
+                    ConversionFallbackReason::Unsupported => {
+                        ImageWriteWarning::CoverConversionSkipped { format }
+                    }
+                    ConversionFallbackReason::Failed(detail) => {
+                        ImageWriteWarning::CoverConversionFailed { detail }
+                    }
+                });
+                return Ok(RequiredCoverWriteOutcome::Completed(result));
+            }
+        };
+        let mut emission = ImageFileEmission::new(request.base_name, false);
+        if let Err(error) = emit_prepared_image(
+            request.output_dir,
+            &mut emission,
+            prepared,
+            &mut result.counts,
+        ) {
+            return Err(ImageWriteFailure {
+                partial: result,
+                error,
+            });
         }
-        visitor.finish()
+        Ok(RequiredCoverWriteOutcome::Completed(result))
+    }
+
+    /// Records a required cover whose payload the EPUB adapter could not acquire.
+    ///
+    /// Always `Retry`: an unavailable candidate settles nothing about the cover, so
+    /// EPUB cover extraction may try its next candidate.
+    pub(crate) fn required_cover_unavailable(
+        &self,
+        manifest_path: &str,
+        error: impl fmt::Display,
+    ) -> RequiredCoverWriteOutcome {
+        let mut result = ImageWriteResult::default();
+        result
+            .warnings
+            .push(ImageWriteWarning::archive_image_acquisition_failed(
+                manifest_path,
+                error,
+            ));
+        RequiredCoverWriteOutcome::Retry(result)
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
@@ -368,133 +433,6 @@ impl ImageWritePipeline {
             return Err(visitor.into_failure(error));
         }
         visitor.finish()
-    }
-}
-
-/// Scoped authority for one required-cover acquisition and Image write decision.
-pub(crate) struct RequiredCoverWriteVisitor<'policy, 'request> {
-    policy: &'policy ImageWritePolicy,
-    request: RequiredCoverWriteRequest<'request>,
-    purpose: RequiredCover,
-    disposition: Option<RequiredCoverWriteDisposition>,
-    result: ImageWriteResult,
-}
-
-impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
-    /// Starts one required-cover attempt with no acquired source.
-    fn new(
-        policy: &'policy ImageWritePolicy,
-        request: RequiredCoverWriteRequest<'request>,
-        purpose: RequiredCover,
-    ) -> Self {
-        Self {
-            policy,
-            request,
-            purpose,
-            disposition: None,
-            result: ImageWriteResult::default(),
-        }
-    }
-
-    /// Consumes one scoped cover reader and applies required-cover Image write policy.
-    ///
-    /// Bounded evidence is read before the remaining payload. Read failures are
-    /// retryable; emission failures are returned to abort the document.
-    pub(crate) fn visit(
-        &mut self,
-        source: ArchiveImageSource,
-        reader: &mut dyn Read,
-    ) -> Result<()> {
-        self.ensure_empty()?;
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
-        self.result.warnings.extend(discovered.warnings);
-        let image = match discovered.outcome {
-            ArchiveImageDiscoveryOutcome::Accepted(image) => image,
-            ArchiveImageDiscoveryOutcome::Completed => {
-                self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-                return Ok(());
-            }
-            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
-                self.disposition = Some(RequiredCoverWriteDisposition::Retry);
-                return Ok(());
-            }
-        };
-
-        let prepared = match prepare_image_for_write(image, self.policy) {
-            ImagePreparation::Prepared(prepared) => prepared,
-            // A required cover is never emitted in bytes the Conversion policy could
-            // not produce; the attempt completes with the cover-specific warning.
-            ImagePreparation::ConversionFellBack { format, reason, .. } => {
-                self.result.warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => {
-                        ImageWriteWarning::CoverConversionSkipped { format }
-                    }
-                    ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::CoverConversionFailed { detail }
-                    }
-                });
-                self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-                return Ok(());
-            }
-        };
-        let mut emission = ImageFileEmission::new(self.request.base_name, false);
-        emit_prepared_image(
-            self.request.output_dir,
-            &mut emission,
-            prepared,
-            &mut self.result.counts,
-        )?;
-        self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-        Ok(())
-    }
-
-    /// Records a candidate that the EPUB adapter could not open.
-    pub(crate) fn unreadable(
-        &mut self,
-        source: ArchiveImageSource,
-        error: impl fmt::Display,
-    ) -> Result<()> {
-        self.ensure_empty()?;
-        self.result
-            .warnings
-            .push(ImageWriteWarning::archive_image_acquisition_failed(
-                source.diagnostic_name(),
-                error,
-            ));
-        self.disposition = Some(RequiredCoverWriteDisposition::Retry);
-        Ok(())
-    }
-
-    /// Returns an error when a traversal attempts to supply more than one cover source.
-    fn ensure_empty(&self) -> Result<()> {
-        if self.disposition.is_some() {
-            return Err(anyhow!(
-                "required-cover traversal supplied more than one source"
-            ));
-        }
-        Ok(())
-    }
-
-    /// Completes the required-cover traversal after exactly one source attempt.
-    fn finish(self) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        match self.disposition {
-            Some(RequiredCoverWriteDisposition::Retry) => {
-                Ok(RequiredCoverWriteOutcome::Retry(self.result))
-            }
-            Some(RequiredCoverWriteDisposition::Completed) => {
-                Ok(RequiredCoverWriteOutcome::Completed(self.result))
-            }
-            None => Err(self.into_failure(anyhow!("required-cover traversal supplied no source"))),
-        }
-    }
-
-    /// Retains facts accumulated before a required-cover failure.
-    fn into_failure(self, error: Error) -> ImageWriteFailure {
-        ImageWriteFailure {
-            partial: self.result,
-            error,
-        }
     }
 }
 

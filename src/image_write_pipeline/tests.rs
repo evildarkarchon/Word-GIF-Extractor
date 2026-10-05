@@ -92,12 +92,9 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.png", "application/octet-stream"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.png",
+            "application/octet-stream",
+            &mut reader,
         )
         .expect("required cover write should succeed");
 
@@ -152,12 +149,9 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.jpg", "image/jpeg"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.jpg",
+            "image/jpeg",
+            &mut reader,
         )
         .expect("format filtering should be a normal cover outcome");
 
@@ -185,12 +179,9 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.bin", "application/octet-stream"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.bin",
+            "application/octet-stream",
+            &mut reader,
         )
         .expect("a cover acquisition failure should be a typed outcome");
 
@@ -213,12 +204,9 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.svg", "image/svg+xml"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.svg",
+            "image/svg+xml",
+            &mut reader,
         )
         .expect("unsupported cover conversion should be a normal outcome");
 
@@ -248,12 +236,9 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&temp_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.png", "image/png"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.png",
+            "image/png",
+            &mut reader,
         )
         .expect("cover conversion failure should be a normal outcome");
 
@@ -284,12 +269,9 @@ fn required_gif_cover_routes_without_conversion() {
     let outcome = pipeline
         .write_required_cover(
             RequiredCoverWriteRequest::new(&output_dir, "sample"),
-            |visitor| {
-                visitor.visit(
-                    ArchiveImageSource::required_cover("OPS/cover.gif", "image/gif"),
-                    &mut reader,
-                )
-            },
+            "OPS/cover.gif",
+            "image/gif",
+            &mut reader,
         )
         .expect("routed required GIF should be emitted");
 
@@ -1203,4 +1185,29 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
             reason: ConversionFallbackReason::Failed(ref detail),
         } if data == MINIMAL_PNG && !detail.is_empty()
     ));
+}
+
+/// Proves an unavailable cover payload is a retry that carries its acquisition warning.
+///
+/// Nothing is read or written: the adapter could not open the payload, so the
+/// pipeline records why and leaves the next candidate to EPUB cover extraction.
+#[test]
+fn unavailable_required_cover_retries_with_its_acquisition_warning() {
+    let pipeline =
+        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+
+    let outcome = pipeline.required_cover_unavailable("OPS/cover.jpg", "entry is missing");
+
+    let RequiredCoverWriteOutcome::Retry(result) = outcome else {
+        panic!("an unavailable required cover should leave the cover decision open");
+    };
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
+            source_name: "OPS/cover.jpg".to_string(),
+            detail: "entry is missing".to_string(),
+        }]
+    );
+    assert_eq!(result.counts.extracted, 0);
+    assert!(!result.has_normal_image_output());
 }

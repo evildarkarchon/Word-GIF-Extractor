@@ -116,11 +116,6 @@ impl<'session> EpubImagePlan<'session> {
     fn normal_source(&self) -> ArchiveImageSource {
         ArchiveImageSource::named(&self.manifest_path).with_mime(&self.mime)
     }
-
-    /// Builds the required-cover source facts used by the cover Image write purpose.
-    fn required_cover_source(&self) -> ArchiveImageSource {
-        ArchiveImageSource::required_cover(&self.manifest_path, &self.mime)
-    }
 }
 
 /// Extracts every non-excluded planned resource in deterministic resolved-path order.
@@ -202,8 +197,8 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
         &mut self,
         candidate: &CoverCandidate<ArchiveResourceIdentity<'session>>,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
-        // Destructured so the traversal closure's mutable archive borrow stays
-        // disjoint from the plan and pipeline borrows taken around it.
+        // Destructured so the acquisition closure's plan and pipeline borrows stay
+        // disjoint from the mutable archive borrow `acquire` takes around it.
         let Self {
             archive,
             plan,
@@ -212,20 +207,26 @@ impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
             pipeline,
         } = self;
         let resource = &plan[candidate.position()];
+        let request = RequiredCoverWriteRequest::new(output_base_dir, base_name);
 
-        pipeline.write_required_cover(
-            RequiredCoverWriteRequest::new(output_base_dir, base_name),
-            |visitor| {
-                let source = resource.required_cover_source();
-                let acquisition = archive.acquire(resource.key, |mut payload| {
-                    visitor.visit(source.clone(), &mut payload)
-                })?;
-                if let ResourceAcquisition::Unavailable(error) = acquisition {
-                    visitor.unreadable(source, error)?;
-                }
-                Ok(())
-            },
-        )
+        // The consumer never fails: the pipeline's whole outcome, including an
+        // emission failure and the facts it retains, travels back as the acquired
+        // value. `acquire` can therefore only return `Ok` here, and `?` exists to
+        // satisfy its signature rather than to handle a reachable error.
+        let acquisition = archive.acquire(resource.key, |mut payload| {
+            Ok(pipeline.write_required_cover(
+                request,
+                &resource.manifest_path,
+                &resource.mime,
+                &mut payload,
+            ))
+        })?;
+        match acquisition {
+            ResourceAcquisition::Acquired(outcome) => outcome,
+            ResourceAcquisition::Unavailable(error) => {
+                Ok(pipeline.required_cover_unavailable(&resource.manifest_path, error))
+            }
+        }
     }
 
     /// Runs normal-image traversal over the same plan, skipping attempted payloads.
