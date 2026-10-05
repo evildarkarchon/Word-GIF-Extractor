@@ -12,11 +12,10 @@
 //! produces an error belongs to the Image write pipeline's own tests.
 
 use super::*;
+use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::RequiredCoverWriteOutcome::{Completed, Retry};
-use crate::image_write_pipeline::{
-    ImageWriteCounts, ImageWriteFailure, ImageWriteWarning, NormalImageOutput,
-};
+use crate::image_write_pipeline::{ImageWriteFailure, ImageWriteWarning};
 use anyhow::anyhow;
 use std::collections::VecDeque;
 
@@ -101,28 +100,21 @@ fn candidate(
 
 /// Image write facts carrying only warnings, as a non-emitting attempt produces.
 fn warned(warnings: Vec<ImageWriteWarning>) -> ImageWriteResult {
-    ImageWriteResult::new(
-        ImageWriteCounts::default(),
-        warnings,
-        NormalImageOutput::Absent,
-    )
+    ImageWriteResult::new(EmittedImageTally::default(), warnings)
 }
 
-/// Image write facts for one emitted required cover, which is not normal image output.
+/// Image write facts for one cover written as extracted.
 fn emitted_cover() -> ImageWriteResult {
-    ImageWriteResult::new(
-        ImageWriteCounts {
-            extracted: 1,
-            ..ImageWriteCounts::default()
-        },
-        Vec::new(),
-        NormalImageOutput::Absent,
-    )
+    let mut tally = EmittedImageTally::default();
+    tally.record_cover(TallyRole::Preserved);
+    ImageWriteResult::new(tally, Vec::new())
 }
 
-/// Image write facts for a normal-images invocation that emitted at least one file.
-fn normal_output(counts: ImageWriteCounts, warnings: Vec<ImageWriteWarning>) -> ImageWriteResult {
-    ImageWriteResult::new(counts, warnings, NormalImageOutput::Present)
+/// Image write facts for a normal-images invocation that wrote one image in `role`.
+fn one_normal_image(role: TallyRole, warnings: Vec<ImageWriteWarning>) -> ImageWriteResult {
+    let mut tally = EmittedImageTally::default();
+    tally.record_normal_image(role);
+    ImageWriteResult::new(tally, warnings)
 }
 
 /// One non-fatal acquisition warning fact for the named archive source.
@@ -241,9 +233,9 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
 
         assert_eq!(attempts.recorded, vec![RecordedAttempt::Cover(0)]);
         assert_eq!(result.warnings, vec![warning]);
-        assert_eq!(result.counts.extracted, 0);
-        assert_eq!(result.counts.skipped, 0);
-        assert!(!result.has_normal_image_output());
+        assert_eq!(result.tally.emitted(), 0);
+        assert_eq!(result.tally.conversion_skipped(), 0);
+        assert_eq!(result.tally.normal_images(), 0);
     }
 }
 
@@ -267,8 +259,8 @@ fn an_unreadable_declared_cover_retries_the_filename_candidate() {
         attempts.recorded,
         vec![RecordedAttempt::Cover(0), RecordedAttempt::Cover(1)]
     );
-    assert_eq!(result.counts.extracted, 1);
-    assert!(!result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.normal_images(), 0);
     assert_eq!(
         result.warnings,
         vec![acquisition_failed("OEBPS/images/missing.png")]
@@ -294,11 +286,8 @@ fn cover_retry_warnings_precede_the_normal_fallback_warning() {
             "OEBPS/images/cover.jpg",
         )]))),
     ])
-    .with_fallback(Ok(normal_output(
-        ImageWriteCounts {
-            extracted: 1,
-            ..ImageWriteCounts::default()
-        },
+    .with_fallback(Ok(one_normal_image(
+        TallyRole::Preserved,
         vec![fallback_warning.clone()],
     )));
 
@@ -321,8 +310,8 @@ fn cover_retry_warnings_precede_the_normal_fallback_warning() {
             fallback_warning,
         ]
     );
-    assert_eq!(result.counts.extracted, 1);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert!(result.tally.normal_images() > 0);
 }
 
 #[test]
@@ -341,25 +330,18 @@ fn cover_retries_precede_partial_normal_fallback_facts() {
         )]))),
     ])
     .with_fallback(Err(ImageWriteFailure {
-        partial: normal_output(
-            ImageWriteCounts {
-                extracted: 1,
-                converted: 1,
-                ..ImageWriteCounts::default()
-            },
-            Vec::new(),
-        ),
+        partial: one_normal_image(TallyRole::Converted, Vec::new()),
         error: anyhow!("Failed to create output directory"),
     }));
 
     let failure = extract_required_cover(&candidates, Some("metadata-cover"), true, &mut attempts)
         .expect_err("a fallback emission failure should retain earlier normal output");
 
-    assert_eq!(failure.partial.counts.extracted, 1);
-    assert_eq!(failure.partial.counts.converted, 1);
-    assert_eq!(failure.partial.counts.gifs_routed, 0);
-    assert_eq!(failure.partial.counts.skipped, 0);
-    assert!(failure.partial.has_normal_image_output());
+    assert_eq!(failure.partial.tally.emitted(), 1);
+    assert_eq!(failure.partial.tally.converted(), 1);
+    assert_eq!(failure.partial.tally.gifs_routed(), 0);
+    assert_eq!(failure.partial.tally.conversion_skipped(), 0);
+    assert!(failure.partial.tally.normal_images() > 0);
     assert_eq!(
         failure.partial.warnings,
         vec![
@@ -394,14 +376,7 @@ fn a_routed_gif_fact_precedes_a_later_normal_fallback_failure() {
         )]))),
     ])
     .with_fallback(Err(ImageWriteFailure {
-        partial: normal_output(
-            ImageWriteCounts {
-                extracted: 1,
-                gifs_routed: 1,
-                ..ImageWriteCounts::default()
-            },
-            Vec::new(),
-        ),
+        partial: one_normal_image(TallyRole::RoutedGif, Vec::new()),
         error: anyhow!("Failed to create output directory"),
     }));
 
@@ -409,10 +384,10 @@ fn a_routed_gif_fact_precedes_a_later_normal_fallback_failure() {
         .expect_err("a later normal emission failure should retain the routed GIF");
 
     assert!(format!("{:#}", failure.error).contains("Failed to create output directory"));
-    assert_eq!(failure.partial.counts.extracted, 1);
-    assert_eq!(failure.partial.counts.gifs_routed, 1);
-    assert_eq!(failure.partial.counts.converted, 0);
-    assert!(failure.partial.has_normal_image_output());
+    assert_eq!(failure.partial.tally.emitted(), 1);
+    assert_eq!(failure.partial.tally.gifs_routed(), 1);
+    assert_eq!(failure.partial.tally.converted(), 0);
+    assert!(failure.partial.tally.normal_images() > 0);
     assert_eq!(
         failure.partial.warnings,
         vec![
@@ -446,13 +421,7 @@ fn an_already_attempted_identity_is_not_retried() {
     let mut attempts = CannedAttempts::covers(vec![Ok(Retry(warned(vec![acquisition_failed(
         "OEBPS/images/cover%2Ejpg",
     )])))])
-    .with_fallback(Ok(normal_output(
-        ImageWriteCounts {
-            extracted: 1,
-            ..ImageWriteCounts::default()
-        },
-        Vec::new(),
-    )));
+    .with_fallback(Ok(one_normal_image(TallyRole::Preserved, Vec::new())));
 
     let result = extract_required_cover(&candidates, Some("metadata-cover"), true, &mut attempts)
         .expect("one failed resolved cover should allow normal fallback");
@@ -468,8 +437,8 @@ fn an_already_attempted_identity_is_not_retried() {
         result.warnings,
         vec![acquisition_failed("OEBPS/images/cover%2Ejpg")]
     );
-    assert_eq!(result.counts.extracted, 1);
-    assert!(result.has_normal_image_output());
+    assert_eq!(result.tally.emitted(), 1);
+    assert!(result.tally.normal_images() > 0);
 }
 
 #[test]
@@ -489,9 +458,9 @@ fn a_fatal_cover_emission_stops_the_filename_candidate_and_normal_fallback() {
         .expect_err("a fatal cover emission should abort the decision");
 
     assert_eq!(attempts.recorded, vec![RecordedAttempt::Cover(0)]);
-    assert_eq!(failure.partial.counts.extracted, 0);
-    assert_eq!(failure.partial.counts.gifs_routed, 0);
-    assert!(!failure.partial.has_normal_image_output());
+    assert_eq!(failure.partial.tally.emitted(), 0);
+    assert_eq!(failure.partial.tally.gifs_routed(), 0);
+    assert_eq!(failure.partial.tally.normal_images(), 0);
     assert!(failure.partial.warnings.is_empty());
 }
 
@@ -519,7 +488,7 @@ fn a_cover_emission_error_propagates_with_its_retained_facts() {
         .expect_err("an emission failure must abort cover extraction");
 
     assert!(format!("{:#}", failure.error).contains("Failed to create output directory"));
-    assert_eq!(failure.partial.counts.extracted, 0);
+    assert_eq!(failure.partial.tally.emitted(), 0);
     assert_eq!(
         failure.partial.warnings,
         vec![

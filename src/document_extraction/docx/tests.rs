@@ -23,7 +23,7 @@ fn returns_extension_fallback_warning_fact() {
     )
     .expect("DOCX extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 1);
+    assert_eq!(result.tally.emitted(), 1);
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::ExtensionFallback {
@@ -59,7 +59,7 @@ fn preserves_zip_order_for_numbered_outputs() {
     )
     .expect("DOCX extraction should succeed");
 
-    assert_eq!(result.counts.extracted, 2);
+    assert_eq!(result.tally.emitted(), 2);
     assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), first);
     assert_eq!(fs::read(output_dir.join("sample_2.gif")).unwrap(), second);
 }

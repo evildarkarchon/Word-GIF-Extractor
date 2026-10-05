@@ -4,11 +4,10 @@ use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
+use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{
-    ImageWriteCounts, ImageWritePipeline, ImageWritePolicy, NormalImageOutput,
-};
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
     SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_docx, write_epub_fixture,
     write_epub_image, write_epub_with_resources,
@@ -556,21 +555,17 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
 
 /// Verifies fabricated facts pass through the production translation rather than around it.
 ///
-/// The purpose is derived by the translation from the emitted count and the
-/// normal-image flag, and the warning arrives as the same value the warning entry
+/// The purpose is derived by the translation from the tally's cover and
+/// normal-image totals, and the warning arrives as the same value the warning entry
 /// point builds, so the test asserts both without restating any wording.
 #[test]
 fn fabricated_facts_pass_through_the_production_translation() {
     let warning = ImageWriteWarning::archive_image_acquisition_failed("images/a.png", "unreadable");
-    let facts = DocumentExtractionFacts::fabricated(ImageWriteResult::new(
-        ImageWriteCounts {
-            extracted: 2,
-            converted: 1,
-            ..ImageWriteCounts::default()
-        },
-        vec![warning.clone()],
-        NormalImageOutput::Absent,
-    ));
+    let mut tally = EmittedImageTally::default();
+    tally.record_cover(TallyRole::Converted);
+    tally.record_cover(TallyRole::Preserved);
+    let facts =
+        DocumentExtractionFacts::fabricated(ImageWriteResult::new(tally, vec![warning.clone()]));
 
     let totals = facts.get_emitted_image_totals();
     assert_eq!(totals.get_emitted_images(), 2);
@@ -585,25 +580,6 @@ fn fabricated_facts_pass_through_the_production_translation() {
         facts.get_warnings(),
         [DocumentExtractionWarning::fabricated(warning)]
     );
-}
-
-/// Verifies the partition guard ADR-0007 kept also checks fabricated facts.
-///
-/// The guard is a debug assertion, so the test exists only where it can fire.
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "classified more images than it emitted")]
-fn fabricated_facts_are_checked_by_the_partition_guard() {
-    DocumentExtractionFacts::fabricated(ImageWriteResult::new(
-        ImageWriteCounts {
-            extracted: 1,
-            converted: 1,
-            gifs_routed: 1,
-            ..ImageWriteCounts::default()
-        },
-        Vec::new(),
-        NormalImageOutput::Present,
-    ));
 }
 
 /// Verifies a fabricated error keeps its contextual source chain, as an extracted one does.
