@@ -38,3 +38,7 @@ Spec: `.scratch/emitted-image-tally/spec.md` (ADR-0017). User stories 18, 29, 31
 - [ ] ADR-0003 holds: every added item is crate-private and nothing new is public
 - [ ] Nothing under `tests/` was edited at any point in this feature. Check the whole feature's diff, not just this ticket's
 - [ ] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+
+## Comments
+
+- ADR-0006's tripwire-placement note already landed with ticket 02 (b26a971). Only its validating-constructor note remains for this ticket.

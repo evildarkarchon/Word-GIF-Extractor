@@ -48,6 +48,6 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 - **Resolve**: append the answer under an `## Answer` heading, set `Wayfinder: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
 
 Wayfinding state gets its own `Wayfinder:` line rather than reusing `Status:`, because `Status:`
-carries one of the five canonical triage roles and nothing else (`triage-labels.md`). The two lines
+carries one of the five canonical triage roles, or `done`, and nothing else (`triage-labels.md`). The two lines
 are independent: a wayfinder ticket may carry both, and claiming or resolving it never rewrites its
 triage role.
