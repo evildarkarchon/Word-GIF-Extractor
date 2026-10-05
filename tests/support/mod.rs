@@ -32,6 +32,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -55,15 +56,16 @@ const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01
 /// only the flags its own test is about.
 ///
 /// Both halves of the return value matter, and the split between them is narrower than
-/// it looks. The capture holds what the run said, split by stream and with the progress
-/// display's activity counted separately — that is where nearly every assertion belongs.
-/// The returned result holds only what Extraction run intake refused: an intake failure
-/// travels as the returned error and never reaches the destination, because the process
-/// exit path is what prints it. Nothing that happens after intake can make it an error,
-/// so a run that found no documents, produced nothing, or failed every document it
-/// opened still returns `Ok`. A test asserting intake wording therefore reads the error;
-/// a test asserting anything else reads the capture and the files on disk.
-pub fn run_captured(arguments: &[&str]) -> (Result<()>, Capture) {
+/// it looks. The capture holds what the run said, in one order across both streams and
+/// the progress display — that is where nearly every assertion belongs. The returned
+/// result holds what Extraction run intake refused, and otherwise the exit status: an
+/// intake failure travels as the returned error and never reaches the destination,
+/// because the process exit path is what prints it. Nothing that happens after intake
+/// can make it an error, so a run that found no documents, produced nothing, or failed
+/// every document it opened still returns `Ok`, carrying the exit status the binary
+/// would end with. A test asserting intake wording therefore reads the error; a test
+/// asserting anything else reads the capture and the files on disk.
+pub fn run_captured(arguments: &[&str]) -> (Result<ExitCode>, Capture) {
     let args = Args::try_parse_from(
         std::iter::once("word-image-extractor").chain(arguments.iter().copied()),
     )

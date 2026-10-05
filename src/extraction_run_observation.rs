@@ -172,6 +172,20 @@ pub enum ExtractionRunOutcome {
 }
 
 impl ExtractionRunOutcome {
+    /// Returns how many selected documents failed to extract, when any did.
+    ///
+    /// Always `None` for [`Self::NoDocuments`]: a run that selected nothing had
+    /// nothing to fail, which the variant states by carrying no count at all.
+    pub fn failed_documents(&self) -> Option<NonZeroUsize> {
+        match self {
+            Self::NoDocuments => None,
+            Self::NoOutput {
+                failed_documents, ..
+            } => *failed_documents,
+            Self::ProducedOutput(output) => output.failed_documents,
+        }
+    }
+
     /// Creates a produced-output outcome when all semantic totals are consistent.
     ///
     /// Positive count types prevent terminal adapters and tests from creating a

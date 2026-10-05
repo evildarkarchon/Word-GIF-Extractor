@@ -22,6 +22,7 @@
 //! behaviour depends on, which would be a behaviour change rather than a move.
 
 use std::io::{self, Write};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
@@ -43,16 +44,24 @@ use crate::extraction_run_observation::{
 /// arguments. Intake failures are returned rather than rendered here: the process
 /// exit path already prints a returned error, and returning one keeps the failure
 /// wording out of the destination a caller is capturing.
-pub fn run_cli(args: Args, output: TerminalOutput) -> Result<()> {
+///
+/// A run that got past intake returns its exit status: [`ExitCode::FAILURE`]
+/// exactly when at least one selected document failed to extract -- the same runs
+/// that printed an `Error processing` line -- and [`ExitCode::SUCCESS`] otherwise,
+/// including when no documents or no images were found. ADR-0010 records why.
+pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     let PreparedExtractionRun { request, notices } =
         crate::extraction_run_intake::prepare(args, std::env::current_dir)
             .map_err(render_intake_error)?;
 
     let mut presentation = ExtractionRunPresentation::new(output);
     presentation.render_pre_run_notices(notices);
-    crate::extraction_run::run(request, &mut presentation);
+    let outcome = crate::extraction_run::run(request, &mut presentation);
 
-    Ok(())
+    Ok(match outcome.failed_documents() {
+        Some(_) => ExitCode::FAILURE,
+        None => ExitCode::SUCCESS,
+    })
 }
 
 /// One thing a captured run did to its terminal, in the order it did it.

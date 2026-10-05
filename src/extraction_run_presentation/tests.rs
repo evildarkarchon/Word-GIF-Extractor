@@ -729,10 +729,41 @@ fn run_cli_renders_a_complete_run_into_the_supplied_destination() {
         .expect("entry point arguments should parse");
     let (output, capture) = TerminalOutput::captured();
 
-    run_cli(args, output).expect("an empty input directory is not a failure");
+    let exit = run_cli(args, output).expect("an empty input directory is not an intake failure");
 
+    // Finding nothing is an answer rather than a failure, so it exits successfully.
+    assert_eq!(exit, ExitCode::SUCCESS);
     assert_eq!(capture.stdout(), "No documents found to process.\n");
     assert_eq!(capture.stderr(), "");
+}
+
+/// Verifies a document that fails to extract makes the whole run exit with failure.
+///
+/// The exit status follows what the terminal shows: the run printed an `Error
+/// processing` line, so it reports failure even though it reached its summary.
+#[test]
+fn run_cli_exits_with_failure_when_a_document_fails() {
+    let temp_dir = temp_test_dir("presentation", "run-cli-failed-document");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let broken_path = temp_dir.join("broken.docx");
+    fs::write(&broken_path, b"not a zip archive").expect("broken DOCX should be writable");
+    let args = Args::try_parse_from([
+        "test",
+        broken_path.to_string_lossy().as_ref(),
+        "--output",
+        temp_dir.join("output").to_string_lossy().as_ref(),
+    ])
+    .expect("entry point arguments should parse");
+    let (output, capture) = TerminalOutput::captured();
+
+    let exit = run_cli(args, output).expect("a failed document is not an intake failure");
+
+    assert_eq!(exit, ExitCode::FAILURE);
+    assert!(
+        capture.stderr().contains("Error processing"),
+        "the failure should have been reported: {}",
+        capture.stderr()
+    );
 }
 
 /// Verifies intake failures are returned rather than written to the destination.

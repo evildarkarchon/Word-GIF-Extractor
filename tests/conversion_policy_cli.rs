@@ -4,6 +4,7 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::process::ExitCode;
 
 use anyhow::Result;
 use word_image_extractor::Capture;
@@ -15,7 +16,7 @@ fn run_jpeg_conversion(
     input: &Path,
     output_dir: &Path,
     quality: Option<u8>,
-) -> (Result<()>, Capture) {
+) -> (Result<ExitCode>, Capture) {
     // The three owned values are bound before the argument list so they outlive the
     // borrows in it.
     let input = input.to_string_lossy();
