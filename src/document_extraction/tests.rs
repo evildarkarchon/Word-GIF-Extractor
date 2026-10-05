@@ -64,6 +64,41 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
     .expect("document fixture should be selected")
 }
 
+/// Verifies the cover intent and Applicable outcome facts Document extraction reports from its policies.
+///
+/// Pins both report methods, including the GIF destination value, in a cover-only
+/// run with conversion and GIF routing and in a run with no image flags. These
+/// assertions were checked only through the Extraction run tests' scripted adapter,
+/// which forwarded both facts from a wrapped real Document extraction; this test
+/// replaces that run-level forwarding check (ADR-0018). Nothing is written to disk.
+#[test]
+fn reports_cover_intent_and_applicable_outcome_facts_from_its_policies() {
+    let cover_only_extraction = DocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverOnly),
+        ImageWritePipeline::new(ImageWritePolicy::new(
+            ImageFormat::all_set(),
+            Some(conversion_policy(ConversionTarget::Jpg)),
+            Some(PathBuf::from("gifs")),
+        )),
+    );
+
+    assert!(cover_only_extraction.is_epub_cover_extraction_configured());
+    let applicable = cover_only_extraction.applicable_outcome_facts();
+    assert!(applicable.is_conversion_applicable());
+    assert_eq!(
+        applicable.into_gif_destination(),
+        Some(PathBuf::from("gifs"))
+    );
+
+    let normal_images_extraction =
+        DocumentExtraction::new(None, pipeline_accepting(ImageFormat::all_set()));
+
+    assert!(!normal_images_extraction.is_epub_cover_extraction_configured());
+    let applicable = normal_images_extraction.applicable_outcome_facts();
+    assert!(!applicable.is_conversion_applicable());
+    assert_eq!(applicable.into_gif_destination(), None);
+}
+
 // `docx_uses_normal_images_when_policy_requests_an_epub_cover` lived here. It
 // handed a cover policy to a DOCX and asserted the policy was dropped; that is
 // now unconstructible, because a cover policy only reaches the EPUB arm. The
