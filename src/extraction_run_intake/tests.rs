@@ -6,15 +6,27 @@ use crate::extraction_run::run;
 use crate::extraction_run_observation::{
     ExtractionOutputKind, ExtractionRunOutcome, ProducedOutput,
 };
-use crate::test_support::{SilentExtractionRunObserver, temp_test_dir, write_docx};
+use crate::test_support::{
+    SilentExtractionRunObserver, no_fallback_directory, temp_test_dir, write_docx,
+};
 use clap::Parser;
 use image::DynamicImage;
+use std::cell::Cell;
 use std::fs;
 use std::io::Cursor;
 
+/// Fallback directory the resolver in [`prepare_from`] hands to intake.
+///
+/// Deliberately not the process working directory, so a test seeing it in a
+/// notice knows the path came from the injected resolver and not from a matching
+/// read of process state.
+const FALLBACK_DIRECTORY: &str = "fallback-directory";
+
+/// Prepares a run from argument strings with a resolver that always succeeds.
 fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
     let args = Args::try_parse_from(args).expect("test args should parse");
-    prepare(args).expect("extraction run intake should succeed")
+    prepare(args, || Ok(PathBuf::from(FALLBACK_DIRECTORY)))
+        .expect("extraction run intake should succeed")
 }
 
 /// Prepares and executes one archive-backed DOCX request through the public operation seam.
@@ -38,7 +50,8 @@ fn run_docx(
     let mut args = vec!["test".to_string(), input, "--output".to_string(), output];
     args.extend(extra_args.iter().map(|argument| (*argument).to_string()));
     let args = Args::try_parse_from(args).expect("test args should parse");
-    let prepared = prepare(args).expect("extraction run intake should succeed");
+    let prepared =
+        prepare(args, no_fallback_directory).expect("extraction run intake should succeed");
 
     (prepared, temp_dir, output_dir)
 }
@@ -85,7 +98,8 @@ fn combines_positional_and_named_inputs() {
         output_dir.to_string_lossy().as_ref(),
     ])
     .expect("test args should parse");
-    let prepared = prepare(args).expect("Extraction run intake should succeed");
+    let prepared =
+        prepare(args, no_fallback_directory).expect("Extraction run intake should succeed");
 
     assert!(prepared.notices.is_empty());
     let output = produced(execute(prepared));
@@ -98,23 +112,69 @@ fn combines_positional_and_named_inputs() {
 #[test]
 fn defaults_to_current_directory_when_inputs_are_empty() {
     let prepared = prepare_from(["test"]);
-    let cwd = std::env::current_dir().expect("current directory should be readable");
 
     assert_eq!(
         prepared.notices,
-        vec![PreRunNotice::DefaultedInput { path: cwd }]
+        vec![PreRunNotice::DefaultedInput {
+            path: PathBuf::from(FALLBACK_DIRECTORY)
+        }]
     );
+}
+
+/// Verifies an unresolvable fallback directory is reported as its own intake failure.
+#[test]
+fn reports_an_unresolvable_fallback_directory() {
+    let args = Args::try_parse_from(["test"]).expect("test args should parse");
+
+    let error = match prepare(args, || {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "working directory was removed",
+        ))
+    }) {
+        Ok(_) => panic!("an unresolvable fallback directory should fail intake"),
+        Err(error) => error,
+    };
+
+    match error {
+        ExtractionRunIntakeError::CurrentDirectory(error) => {
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            assert_eq!(error.to_string(), "working directory was removed");
+        }
+        other => panic!("expected a current-directory failure, got {other:?}"),
+    }
+}
+
+/// Verifies a run that names its input never asks for the fallback directory.
+///
+/// Every named-input test already passes a resolver that panics when called; this
+/// one states the rule outright, and counts rather than panics so that a failure
+/// reads as the rule it breaks.
+#[test]
+fn named_inputs_never_resolve_the_fallback_directory() {
+    let args = Args::try_parse_from(["test", "book.epub"]).expect("test args should parse");
+    let resolutions = Cell::new(0);
+
+    let prepared = prepare(args, || {
+        resolutions.set(resolutions.get() + 1);
+        Ok(PathBuf::from(FALLBACK_DIRECTORY))
+    })
+    .expect("extraction run intake should succeed");
+
+    assert_eq!(resolutions.get(), 0);
+    assert!(prepared.notices.is_empty());
 }
 
 #[test]
 fn returns_defaulted_input_before_ignored_format_notices() {
     let prepared = prepare_from(["test", "--formats", "unknown"]);
-    let cwd = std::env::current_dir().expect("current directory should be readable");
 
     assert_eq!(
         prepared.notices,
         vec![
-            PreRunNotice::DefaultedInput { path: cwd },
+            PreRunNotice::DefaultedInput {
+                path: PathBuf::from(FALLBACK_DIRECTORY)
+            },
             PreRunNotice::IgnoredFormat {
                 format: "unknown".to_string(),
             },
@@ -229,7 +289,7 @@ fn returns_typed_conversion_policy_error() {
     let args = Args::try_parse_from(["test", "book.epub", "--convert", "png", "--quality", "90"])
         .expect("CLI syntax should parse before semantic validation");
 
-    let error = match prepare(args) {
+    let error = match prepare(args, no_fallback_directory) {
         Ok(_) => panic!("PNG quality should be rejected by intake"),
         Err(error) => error,
     };

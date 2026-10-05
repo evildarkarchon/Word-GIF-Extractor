@@ -4,8 +4,8 @@ use super::*;
 use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
 use crate::test_support::{
-    RecordingRunObserver, create_directory_link, remove_directory_link, temp_test_dir, write_docx,
-    write_epub_document,
+    RecordingRunObserver, create_directory_link, no_fallback_directory, remove_directory_link,
+    temp_test_dir, write_docx, write_epub_document,
 };
 use clap::Parser;
 use image::DynamicImage;
@@ -18,8 +18,8 @@ use std::io::Cursor;
 /// cares about and leave the rest at their parsed-with-no-flags values. Nothing here
 /// has to know how a flag is spelled.
 fn prepare_request_from(args: Args) -> ExtractionRunRequest {
-    let prepared =
-        extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+    let prepared = extraction_run_intake::prepare(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     assert!(prepared.notices.is_empty());
     prepared.request
 }

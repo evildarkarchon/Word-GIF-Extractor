@@ -45,7 +45,8 @@ use crate::extraction_run_observation::{
 /// wording out of the destination a caller is capturing.
 pub fn run_cli(args: Args, output: TerminalOutput) -> Result<()> {
     let PreparedExtractionRun { request, notices } =
-        crate::extraction_run_intake::prepare(args).map_err(render_intake_error)?;
+        crate::extraction_run_intake::prepare(args, std::env::current_dir)
+            .map_err(render_intake_error)?;
 
     let mut presentation = ExtractionRunPresentation::new(output);
     presentation.render_pre_run_notices(notices);

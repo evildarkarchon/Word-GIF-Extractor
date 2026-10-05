@@ -65,6 +65,23 @@ pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     ))
 }
 
+/// Fallback-directory resolver for intake calls that must never need one.
+///
+/// Extraction run intake resolves the current directory only when no input was
+/// named, and only once the conversion request has validated. A test that names
+/// its inputs, or expects intake to fail on conversion first, passes this so that
+/// consulting the resolver anyway fails the test instead of quietly reading the
+/// process working directory.
+///
+/// # Panics
+///
+/// Always, when called.
+pub(crate) fn no_fallback_directory() -> io::Result<PathBuf> {
+    panic!(
+        "a run that names its inputs, or fails intake first, must not resolve the current directory"
+    )
+}
+
 /// Returns an unused temporary `.epub` file path for one test.
 ///
 /// `area` means what it does in [`temp_test_dir`]. Used by tests that want a single

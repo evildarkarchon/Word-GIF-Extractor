@@ -9,7 +9,7 @@ use clap::Parser;
 use crate::extraction_run::run as execute_extraction_run;
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
 use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
-use crate::test_support::{temp_test_dir, write_docx};
+use crate::test_support::{no_fallback_directory, temp_test_dir, write_docx};
 
 /// Delegating presentation that induces one real post-classification traversal failure.
 ///
@@ -144,7 +144,7 @@ fn terminal_epub_filter_description_preserves_existing_wording() {
 #[test]
 fn test_quality_with_png_error() {
     let args = Args::try_parse_from(["test", "--convert", "png", "--quality", "90"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("PNG quality should fail semantic intake")
@@ -159,7 +159,7 @@ fn test_quality_with_png_error() {
 #[test]
 fn test_lossless_with_jpg_error() {
     let args = Args::try_parse_from(["test", "--convert", "jpg", "--lossless"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("JPEG lossless should fail semantic intake")
@@ -174,7 +174,7 @@ fn test_lossless_with_jpg_error() {
 #[test]
 fn test_lossless_with_png_error() {
     let args = Args::try_parse_from(["test", "--convert", "png", "--lossless"]).unwrap();
-    let err_msg = prepare_extraction_run(args)
+    let err_msg = prepare_extraction_run(args, no_fallback_directory)
         .err()
         .map(render_intake_error)
         .expect("PNG lossless should fail semantic intake")
@@ -252,7 +252,8 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
     let input = requested_directory.to_string_lossy().into_owned();
     let args = Args::try_parse_from(["test", input.as_str(), "--recursive"])
         .expect("recursive arguments should parse");
-    let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
+    let prepared = prepare_extraction_run(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     let (output, capture) = TerminalOutput::captured();
     let mut observer = FilesystemPresentationObserver {
         inner: ExtractionRunPresentation::new(output),
@@ -327,7 +328,8 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
         output_dir.to_string_lossy().as_ref(),
     ])
     .expect("warning fixture arguments should parse");
-    let prepared = prepare_extraction_run(args).expect("Extraction run intake should succeed");
+    let prepared = prepare_extraction_run(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     let (output, capture) = TerminalOutput::captured();
     let mut observer = WarningPresentationObserver {
         inner: ExtractionRunPresentation::new(output),
