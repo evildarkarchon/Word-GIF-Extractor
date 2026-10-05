@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_documents};
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
@@ -42,7 +44,10 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
             recursive: false,
             output: Some(output_dir),
             epub_filter: &EpubFilter::default(),
+            epub_only: false,
         },
+        &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     )
     .into_iter()
@@ -50,38 +55,12 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
     .expect("document fixture should be selected")
 }
 
-#[test]
-fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
-    let temp_dir = temp_test_dir("document-extraction", "docx-normal-images");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let input_path = temp_dir.join("sample.docx");
-    let output_dir = temp_dir.join("output");
-    write_docx(
-        &input_path,
-        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
-    );
-
-    let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
-        pipeline_accepting([ImageFormat::Png]),
-    );
-    let document = select_one_document(&input_path, &output_dir);
-
-    let outcome = extraction.extract(document);
-
-    let DocumentExtractionOutcome::Completed(facts) = outcome else {
-        panic!("valid DOCX extraction should complete");
-    };
-    assert_eq!(facts.get_emitted_image_totals().get_emitted_images(), 1);
-    assert_eq!(
-        facts.get_output_purpose(),
-        DocumentOutputPurpose::IncludedNormalImages
-    );
-    assert!(facts.get_warnings().is_empty());
-    assert!(output_dir.join("sample.png").exists());
-}
+// `docx_uses_normal_images_when_policy_requests_an_epub_cover` lived here. It
+// handed a cover policy to a DOCX and asserted the policy was dropped; that is
+// now unconstructible, because a cover policy only reaches the EPUB arm. The
+// user-visible half of its claim — a DOCX in a cover-only run still emits its
+// normal images — moved up to `extraction_run::tests`, where a run can hold
+// both document kinds at once.
 
 #[test]
 fn failed_extraction_retains_document_extraction_facts() {
@@ -101,7 +80,7 @@ fn failed_extraction_retains_document_extraction_facts() {
     );
 
     let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::NormalImages,
+        None,
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
             None,
@@ -155,7 +134,7 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
         ],
     );
     let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::NormalImages,
+        None,
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png, ImageFormat::Svg]),
             Some(conversion_policy(ConversionTarget::Jpg)),
@@ -202,9 +181,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         &[("OEBPS/images/art.bin", b"unidentified cover bytes")],
     );
     let unidentified_extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
+        Some(EpubCoverPolicy::CoverOnly),
         pipeline_accepting([ImageFormat::Jpg]),
     );
     let unidentified = select_one_document(&unidentified_path, &unidentified_output);
@@ -234,9 +211,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         &[("OEBPS/images/art.png", b"\x89PNG\r\n\x1A\n")],
     );
     let filtered_extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
+        Some(EpubCoverPolicy::CoverOnly),
         pipeline_accepting([ImageFormat::Jpg]),
     );
     let filtered = select_one_document(&filtered_path, &filtered_output);
@@ -285,9 +260,7 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         )],
     );
     let unsupported_extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
+        Some(EpubCoverPolicy::CoverOnly),
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Svg]),
             Some(conversion_policy(ConversionTarget::Jpg)),
@@ -326,9 +299,7 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
         )],
     );
     let failed_extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
+        Some(EpubCoverPolicy::CoverOnly),
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
             Some(conversion_policy(ConversionTarget::Jpg)),
@@ -375,9 +346,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
         &[("OEBPS/images/page.png", b"extension-only page")],
     );
     let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: true,
-        },
+        Some(EpubCoverPolicy::CoverThenNormalImages),
         pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]),
     );
     let document = select_one_document(&input_path, &output_dir);
@@ -414,9 +383,7 @@ fn epub_cover_output_is_classified_as_covers_only() {
         b"\xFF\xD8\xFF",
     );
     let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: false,
-        },
+        Some(EpubCoverPolicy::CoverOnly),
         pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
@@ -441,9 +408,7 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
     let output_dir = temp_dir.join("output");
     write_epub_image(&input_path, "images/interior.jpg", None, b"\xFF\xD8\xFF");
     let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::EpubCover {
-            fallback_to_normal_images: true,
-        },
+        Some(EpubCoverPolicy::CoverThenNormalImages),
         pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
@@ -472,10 +437,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
         Some("cover-image"),
         b"\xFF\xD8\xFF",
     );
-    let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::NormalImages,
-        pipeline_accepting([ImageFormat::Jpg]),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
     let document = select_one_document(&input_path, &output_dir);
 
     let DocumentExtractionOutcome::Completed(result) = extraction.extract(document) else {
@@ -513,7 +475,10 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
             recursive: false,
             output: Some(&output_dir),
             epub_filter: &EpubFilter::default(),
+            epub_only: false,
         },
+        &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     );
     assert_eq!(selected.len(), 1);
@@ -524,10 +489,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         None,
         &archive_resources,
     );
-    let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::NormalImages,
-        pipeline_accepting([ImageFormat::Jpg]),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
 
     let document = selected
         .into_iter()
@@ -558,7 +520,10 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
             recursive: false,
             output: Some(&output_dir),
             epub_filter: &EpubFilter::default(),
+            epub_only: false,
         },
+        &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut observer,
     );
     assert_eq!(selected.len(), 1);
@@ -570,10 +535,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         None,
         b"\xFF\xD8\xFFrecovered",
     );
-    let extraction = DocumentExtraction::new(
-        DocumentExtractionPolicy::NormalImages,
-        pipeline_accepting([ImageFormat::Jpg]),
-    );
+    let extraction = DocumentExtraction::new(None, pipeline_accepting([ImageFormat::Jpg]));
 
     let document = selected
         .into_iter()

@@ -34,7 +34,7 @@ use crate::extraction_run_intake::{
     Args, ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun,
 };
 use crate::extraction_run_observation::{
-    DocumentDiscoveryScope, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunObservation,
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionOutputKind, ExtractionRunObservation,
     ExtractionRunObserver, ExtractionRunOutcome,
 };
 
@@ -48,7 +48,7 @@ use crate::extraction_run_observation::{
 /// A run that got past intake returns its exit status: [`ExitCode::FAILURE`]
 /// exactly when at least one selected document failed to extract -- the same runs
 /// that printed an `Error processing` line -- and [`ExitCode::SUCCESS`] otherwise,
-/// including when no documents or no images were found. ADR-0010 records why.
+/// including when no documents or no images were found. ADR-0014 records why.
 pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     let PreparedExtractionRun { request, notices } =
         crate::extraction_run_intake::prepare(args, std::env::current_dir)
@@ -670,12 +670,22 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             // The arms below render structured Document selection diagnostics
             // with terminal wording. Every one suspends whatever progress display
             // is live, because a diagnostic can arrive while one is drawing and
-            // the next redraw would otherwise corrupt or overwrite the line. A
-            // missing input is reported before any display exists, so for it the
-            // suspend is a direct write.
+            // the next redraw would otherwise corrupt or overwrite the line. The
+            // two that report on requested inputs arrive outside any phase, when
+            // no display is live, so for them the suspend is a direct write.
             ExtractionRunObservation::MissingInput { path } => {
                 self.print_error_suspended(&format!(
                     "Warning: Input path does not exist: {}",
+                    path.display()
+                ));
+            }
+            ExtractionRunObservation::SkippedNonEpubInput { path } => {
+                // Wording names the eligibility rule rather than the flag that
+                // caused it: selection reports that only EPUBs were eligible and
+                // does not know why, so naming --cover-only here would put a fact
+                // in the sentence that no part of the run actually asserted.
+                self.print_error_suspended(&format!(
+                    "Warning: Skipped {}: this run extracts EPUB documents only",
                     path.display()
                 ));
             }
@@ -688,19 +698,19 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     detail
                 ));
             }
-            ExtractionRunObservation::UnreadableEpubMetadata {
+            ExtractionRunObservation::UnreadableEpubDeclarations {
                 path,
                 purpose,
                 detail,
             } => match purpose {
-                EpubMetadataPurpose::Filtering => {
+                EpubDeclarationPurpose::Filtering => {
                     self.print_error_suspended(&format!(
                         "Warning: Could not read {}: {}",
                         path.display(),
                         detail
                     ));
                 }
-                EpubMetadataPurpose::Deduplication => {
+                EpubDeclarationPurpose::Deduplication => {
                     self.print_error_suspended(
                         &format!(
                             "Warning: Could not read EPUB metadata from {} during deduplication; using filename fallback: {}",

@@ -7,10 +7,10 @@
 
 use std::path::PathBuf;
 
-use crate::document_extraction::{
-    DocumentExtraction, DocumentExtractionOutcome, DocumentExtractionPolicy,
-};
+use crate::document_extraction::{DocumentExtraction, DocumentExtractionOutcome, EpubCoverPolicy};
+use crate::document_search_surface::FilesystemSearchSurface;
 use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter};
+use crate::epub_declarations::EpubFileDeclarations;
 use crate::extraction_run_observation::{
     ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
     ExtractionRunOutcomeAccumulator,
@@ -24,10 +24,10 @@ use crate::extraction_run_observation::{ConversionFacts, ExtractionOutputKind};
 
 /// Opaque, ready-to-execute handoff produced by Extraction run intake.
 ///
-/// Construction takes the two assembled policies that govern the run — the
-/// Document extraction policy and the Image write policy — and retains no facts
-/// derived from either. An Extraction run consumes this request by value and
-/// asks Document extraction for the derived facts when it needs them.
+/// Construction takes the policies that govern the run — any EPUB cover policy
+/// and the Image write policy — and retains no facts derived from either. An
+/// Extraction run consumes this request by value and asks Document extraction
+/// for the derived facts when it needs them.
 pub struct ExtractionRunRequest {
     inputs: Vec<PathBuf>,
     recursive: bool,
@@ -43,7 +43,7 @@ impl ExtractionRunRequest {
         recursive: bool,
         output: Option<PathBuf>,
         epub_filter: EpubFilter,
-        document_extraction_policy: DocumentExtractionPolicy,
+        epub_cover_policy: Option<EpubCoverPolicy>,
         image_write_policy: ImageWritePolicy,
     ) -> Self {
         let image_write_pipeline = ImageWritePipeline::new(image_write_policy);
@@ -53,10 +53,7 @@ impl ExtractionRunRequest {
             recursive,
             output,
             epub_filter,
-            document_extraction: DocumentExtraction::new(
-                document_extraction_policy,
-                image_write_pipeline,
-            ),
+            document_extraction: DocumentExtraction::new(epub_cover_policy, image_write_pipeline),
         }
     }
 }
@@ -88,7 +85,10 @@ pub fn run(
             recursive,
             output: output.as_deref(),
             epub_filter: &epub_filter,
+            epub_only: cover_only,
         },
+        &FilesystemSearchSurface,
+        &EpubFileDeclarations,
         &mut *observer,
     );
 

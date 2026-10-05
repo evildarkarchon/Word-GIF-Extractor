@@ -49,7 +49,7 @@ fn assert_single_discovery_warning(capture: &Capture, path: &Path) {
 }
 
 #[test]
-fn warns_when_deduplication_uses_filename_after_metadata_failure() {
+fn warns_when_deduplication_uses_filename_after_declaration_failure() {
     let temp_dir = temp_test_dir("selection-diagnostic", "dedupe-fallback");
     let input_path = temp_dir.join("invalid.epub");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");

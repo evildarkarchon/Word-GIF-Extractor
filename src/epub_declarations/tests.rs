@@ -54,8 +54,12 @@ fn retained_declarations_are_returned_without_reading_the_path() {
     // The path does not exist, so any read would fail: success proves none happened.
     let missing = Path::new("retained-declarations-missing.epub");
 
-    let declarations = EpubDeclarations::retained_or_acquire(Some(retained.clone()), missing)
-        .expect("retained declarations should be returned as they are");
+    let declarations = EpubDeclarations::retained_or_acquire(
+        Some(retained.clone()),
+        missing,
+        &EpubFileDeclarations,
+    )
+    .expect("retained declarations should be returned as they are");
 
     assert_eq!(declarations, retained);
 }
@@ -69,9 +73,10 @@ fn absent_declarations_are_acquired_and_report_an_unreadable_path() {
     write_epub_with_cover(&epub_path);
     fs::write(&invalid_path, b"not an epub").expect("invalid EPUB should be writable");
 
-    let acquired = EpubDeclarations::retained_or_acquire(None, &epub_path)
+    let acquired = EpubDeclarations::retained_or_acquire(None, &epub_path, &EpubFileDeclarations)
         .expect("readable EPUB declarations should be acquired");
-    let unreadable = EpubDeclarations::retained_or_acquire(None, &invalid_path);
+    let unreadable =
+        EpubDeclarations::retained_or_acquire(None, &invalid_path, &EpubFileDeclarations);
 
     assert_eq!(acquired.title(), Some("Retained Title"));
     assert!(unreadable.is_err());

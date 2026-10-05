@@ -15,7 +15,7 @@ use support::{temp_test_dir, write_png_docx};
 
 /// Verifies the shipped binary wires its arguments through and exits successfully.
 ///
-/// A successful exit means no document failed, per ADR-0010, not that anything was
+/// A successful exit means no document failed, per ADR-0014, not that anything was
 /// produced: a run that found no documents or no images also exits zero, because
 /// finding nothing is an answer rather than a failure. That is why the emitted file is
 /// asserted separately. The failure side of the contract is pinned by
