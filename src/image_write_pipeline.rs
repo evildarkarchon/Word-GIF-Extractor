@@ -16,9 +16,7 @@ use crate::image_format::ImageFormat;
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::ImageFileEmission;
-use self::purpose::{
-    ConversionAction, ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility,
-};
+use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -238,6 +236,34 @@ struct PreparedImage<'policy> {
     role: EmittedImageRole<'policy>,
 }
 
+/// Purpose-free result of applying Image write policy to one accepted image.
+///
+/// Preparation reports a conversion fallback instead of resolving it, because
+/// what a fallback means depends on the Image write purpose: a normal image is
+/// still emitted in its original bytes, while a required cover is not emitted at
+/// all. Each visitor already knows its purpose, so each resolves the fallback
+/// itself and preparation never has to return a case its caller cannot reach.
+enum ImagePreparation<'policy> {
+    /// The image is ready to emit in the role preparation decided.
+    Prepared(PreparedImage<'policy>),
+    /// The Conversion policy could not produce requested bytes; the original
+    /// bytes and the format to emit them under are returned unchanged.
+    ConversionFellBack {
+        data: Vec<u8>,
+        format: ImageFormat,
+        reason: ConversionFallbackReason,
+    },
+}
+
+/// Why the Conversion policy fell back to an image's original bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConversionFallbackReason {
+    /// The source format cannot be decoded for conversion.
+    Unsupported,
+    /// Conversion was attempted and failed, with the error's detail.
+    Failed(String),
+}
+
 /// Document-specific facts for one Image write pipeline invocation.
 pub(crate) struct ImageWriteRequest<'a> {
     output_dir: &'a Path,
@@ -395,15 +421,22 @@ impl<'policy, 'request> RequiredCoverWriteVisitor<'policy, 'request> {
             }
         };
 
-        let Some(prepared) = prepare_image_for_write(
-            image,
-            self.request.base_name,
-            self.policy,
-            &self.purpose,
-            &mut self.result.warnings,
-        ) else {
-            self.disposition = Some(RequiredCoverWriteDisposition::Completed);
-            return Ok(());
+        let prepared = match prepare_image_for_write(image, self.policy) {
+            ImagePreparation::Prepared(prepared) => prepared,
+            // A required cover is never emitted in bytes the Conversion policy could
+            // not produce; the attempt completes with the cover-specific warning.
+            ImagePreparation::ConversionFellBack { format, reason, .. } => {
+                self.result.warnings.push(match reason {
+                    ConversionFallbackReason::Unsupported => {
+                        ImageWriteWarning::CoverConversionSkipped { format }
+                    }
+                    ConversionFallbackReason::Failed(detail) => {
+                        ImageWriteWarning::CoverConversionFailed { detail }
+                    }
+                });
+                self.disposition = Some(RequiredCoverWriteDisposition::Completed);
+                return Ok(());
+            }
         };
         let mut emission = ImageFileEmission::new(self.request.base_name, false);
         emit_prepared_image(
@@ -516,14 +549,30 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
-        let Some(prepared) = prepare_image_for_write(
-            image,
-            self.base_name,
-            self.policy,
-            &self.purpose,
-            &mut self.conversion_warnings,
-        ) else {
-            unreachable!("normal-image preparation always preserves accepted bytes");
+        let prepared = match prepare_image_for_write(image, self.policy) {
+            ImagePreparation::Prepared(prepared) => prepared,
+            // A normal image is still emitted when conversion falls back: its
+            // original bytes go out as a conversion-skipped image with a warning.
+            ImagePreparation::ConversionFellBack {
+                data,
+                format,
+                reason,
+            } => {
+                let base_name = self.base_name.to_string();
+                self.conversion_warnings.push(match reason {
+                    ConversionFallbackReason::Unsupported => {
+                        ImageWriteWarning::ConversionSkipped { base_name, format }
+                    }
+                    ConversionFallbackReason::Failed(detail) => {
+                        ImageWriteWarning::ConversionFailed { base_name, detail }
+                    }
+                });
+                PreparedImage {
+                    data,
+                    format,
+                    role: EmittedImageRole::ConversionSkipped,
+                }
+            }
         };
 
         self.stage_prepared(prepared)
@@ -615,17 +664,15 @@ impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
     }
 }
 
-/// Applies one statically selected purpose's conversion decision before a file write.
+/// Applies Image write policy's GIF routing and conversion to one accepted image.
 ///
-/// Conversion warning facts are appended in accepted-source order. `None` is
-/// returned only when required-cover conversion completes without emission.
-fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
+/// Purpose-free: a conversion that cannot produce requested bytes is reported as
+/// [`ImagePreparation::ConversionFellBack`] for the calling visitor to resolve,
+/// and no warning fact is produced here.
+fn prepare_image_for_write(
     image: AcceptedImage,
-    base_name: &str,
-    policy: &'policy ImageWritePolicy,
-    purpose: &P,
-    warnings: &mut Vec<ImageWriteWarning>,
-) -> Option<PreparedImage<'policy>> {
+    policy: &ImageWritePolicy,
+) -> ImagePreparation<'_> {
     // Routing is decided together with the destination it needs, so emission
     // never has to ask the policy a second question it could answer differently.
     let routed_destination = if image.format == ImageFormat::Gif {
@@ -636,48 +683,43 @@ fn prepare_image_for_write<'policy, P: ImageWritePurpose>(
 
     if let Some(conversion) = &policy.conversion {
         if let Some(destination) = routed_destination {
-            return Some(PreparedImage {
+            return ImagePreparation::Prepared(PreparedImage {
                 data: image.data,
                 format: image.format,
                 role: EmittedImageRole::RoutedGif(destination),
             });
         }
 
-        let (original_format, decision) = match conversion.convert(&image.data, image.format) {
+        match conversion.convert(&image.data, image.format) {
             Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                return Some(PreparedImage {
+                ImagePreparation::Prepared(PreparedImage {
                     data: converted_bytes,
                     format,
                     role: EmittedImageRole::Converted,
-                });
+                })
             }
             Ok(ConversionOutcome::PreservedMatchingSource) => {
-                return Some(PreparedImage {
+                ImagePreparation::Prepared(PreparedImage {
                     data: image.data,
                     format: image.format,
                     role: EmittedImageRole::Preserved,
-                });
+                })
             }
-            Ok(ConversionOutcome::UnsupportedSource(original_format)) => (
-                original_format,
-                purpose.unsupported_conversion(base_name, original_format),
-            ),
-            Err(error) => (image.format, purpose.failed_conversion(base_name, &error)),
-        };
-
-        if let Some(warning) = decision.warning {
-            warnings.push(warning);
-        }
-        match decision.action {
-            ConversionAction::PreserveOriginal => Some(PreparedImage {
+            Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
+                ImagePreparation::ConversionFellBack {
+                    data: image.data,
+                    format: original_format,
+                    reason: ConversionFallbackReason::Unsupported,
+                }
+            }
+            Err(error) => ImagePreparation::ConversionFellBack {
                 data: image.data,
-                format: original_format,
-                role: EmittedImageRole::ConversionSkipped,
-            }),
-            ConversionAction::CompleteWithoutEmission => None,
+                format: image.format,
+                reason: ConversionFallbackReason::Failed(error.to_string()),
+            },
         }
     } else {
-        Some(PreparedImage {
+        ImagePreparation::Prepared(PreparedImage {
             data: image.data,
             format: image.format,
             role: match routed_destination {

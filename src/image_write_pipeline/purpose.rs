@@ -1,7 +1,5 @@
 //! Purpose-specific semantic decisions for the Image write pipeline.
 
-use std::fmt;
-
 use crate::image_format::ImageFormat;
 
 use super::{ArchiveImageSource, ImageWriteWarning};
@@ -28,19 +26,16 @@ pub(super) struct UnidentifiedFormatDecision {
     pub(super) warning: Option<ImageWriteWarning>,
 }
 
-/// Purpose-selected continuation after conversion cannot produce requested bytes.
-pub(super) enum ConversionAction {
-    PreserveOriginal,
-    CompleteWithoutEmission,
-}
-
-/// One typed purpose action and its optional existing warning fact.
-pub(super) struct PurposeDecision<Action> {
-    pub(super) action: Action,
-    pub(super) warning: Option<ImageWriteWarning>,
-}
-
 /// Private semantic boundary implemented by each real Image write purpose.
+///
+/// The trait holds only the decisions Archive image discovery makes partway
+/// through its flow, which is why it is a seam with two adapters rather than a
+/// closed enum: a required cover's "default unidentified evidence to JPEG" is a
+/// continuation inside `discover_image`, which is shared by both visitors.
+/// Conversion fallback is deliberately absent. Preparation reports it as a
+/// value and each visitor, which already knows its purpose, resolves it; when
+/// those two decisions lived here, every caller had to handle the other
+/// purpose's outcome and the normal-image path carried an `unreachable!`.
 pub(super) trait ImageWritePurpose {
     /// Decides whether discovery may touch the source reader.
     fn source_eligibility(&self, source: &ArchiveImageSource) -> SourceEligibility;
@@ -52,20 +47,6 @@ pub(super) trait ImageWritePurpose {
     ///
     /// Discovery always completes without emission here; only the warning varies.
     fn filtered_format(&self, format: ImageFormat) -> Option<ImageWriteWarning>;
-
-    /// Decides whether an unsupported conversion source may be emitted unchanged.
-    fn unsupported_conversion(
-        &self,
-        base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction>;
-
-    /// Decides whether bytes from a failed conversion may be emitted unchanged.
-    fn failed_conversion(
-        &self,
-        base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction>;
 }
 
 /// Statically selected purpose for plural normal-image traversal.
@@ -94,36 +75,6 @@ impl ImageWritePurpose for NormalImages {
     fn filtered_format(&self, _format: ImageFormat) -> Option<ImageWriteWarning> {
         None
     }
-
-    /// Preserves unsupported normal-image bytes and records a skipped conversion.
-    fn unsupported_conversion(
-        &self,
-        base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::PreserveOriginal,
-            warning: Some(ImageWriteWarning::ConversionSkipped {
-                base_name: base_name.to_string(),
-                format,
-            }),
-        }
-    }
-
-    /// Preserves normal-image bytes after a failed conversion and records the failure.
-    fn failed_conversion(
-        &self,
-        base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::PreserveOriginal,
-            warning: Some(ImageWriteWarning::ConversionFailed {
-                base_name: base_name.to_string(),
-                detail: error.to_string(),
-            }),
-        }
-    }
 }
 
 /// Statically selected purpose for one required EPUB cover attempt.
@@ -149,32 +100,6 @@ impl ImageWritePurpose for RequiredCover {
     /// Completes a filtered required cover with the existing unsupported warning.
     fn filtered_format(&self, format: ImageFormat) -> Option<ImageWriteWarning> {
         Some(ImageWriteWarning::UnsupportedCoverFormat { format })
-    }
-
-    /// Completes unsupported required-cover conversion without emitting original bytes.
-    fn unsupported_conversion(
-        &self,
-        _base_name: &str,
-        format: ImageFormat,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::CompleteWithoutEmission,
-            warning: Some(ImageWriteWarning::CoverConversionSkipped { format }),
-        }
-    }
-
-    /// Completes failed required-cover conversion without emitting original bytes.
-    fn failed_conversion(
-        &self,
-        _base_name: &str,
-        error: &dyn fmt::Display,
-    ) -> PurposeDecision<ConversionAction> {
-        PurposeDecision {
-            action: ConversionAction::CompleteWithoutEmission,
-            warning: Some(ImageWriteWarning::CoverConversionFailed {
-                detail: error.to_string(),
-            }),
-        }
     }
 }
 

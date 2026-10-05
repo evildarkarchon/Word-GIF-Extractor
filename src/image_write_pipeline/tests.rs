@@ -1075,3 +1075,132 @@ fn pipeline_with_conversion(
         gif_output,
     ))
 }
+
+/// Builds an Image write policy accepting every format, for direct preparation tests.
+fn preparation_policy(
+    target: Option<ConversionTarget>,
+    gif_output: Option<PathBuf>,
+) -> ImageWritePolicy {
+    let conversion = target.map(|target| {
+        ConversionPolicy::try_from(ConversionRequest {
+            target,
+            quality: None,
+            lossless: false,
+        })
+        .expect("test conversion request should be valid")
+    });
+    ImageWritePolicy::new(ImageFormat::all_set(), conversion, gif_output)
+}
+
+/// Encodes a small, fully decodable PNG so conversion has real pixels to work on.
+fn decodable_png() -> Vec<u8> {
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .expect("test PNG should encode");
+    encoded.into_inner()
+}
+
+/// Builds the accepted image preparation receives from Archive image discovery.
+fn accepted(data: &[u8], format: ImageFormat) -> AcceptedImage {
+    AcceptedImage {
+        data: data.to_vec(),
+        format,
+    }
+}
+
+#[test]
+fn preparation_routes_a_gif_to_its_destination_before_conversion() {
+    let policy = preparation_policy(Some(ConversionTarget::Png), Some(PathBuf::from("gifs")));
+
+    let prepared = prepare_image_for_write(accepted(b"GIF89a", ImageFormat::Gif), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::Prepared(PreparedImage {
+            ref data,
+            format: ImageFormat::Gif,
+            role: EmittedImageRole::RoutedGif(destination),
+        }) if data == b"GIF89a" && destination == Path::new("gifs")
+    ));
+}
+
+#[test]
+fn preparation_converts_a_decodable_source_to_the_target() {
+    let policy = preparation_policy(Some(ConversionTarget::Jpg), None);
+
+    let prepared = prepare_image_for_write(accepted(&decodable_png(), ImageFormat::Png), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::Prepared(PreparedImage {
+            ref data,
+            format: ImageFormat::Jpg,
+            role: EmittedImageRole::Converted,
+        }) if data.starts_with(b"\xFF\xD8\xFF")
+    ));
+}
+
+#[test]
+fn preparation_preserves_a_source_already_in_the_target_format() {
+    let policy = preparation_policy(Some(ConversionTarget::Png), None);
+
+    let prepared = prepare_image_for_write(accepted(MINIMAL_PNG, ImageFormat::Png), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::Prepared(PreparedImage {
+            ref data,
+            format: ImageFormat::Png,
+            role: EmittedImageRole::Preserved,
+        }) if data == MINIMAL_PNG
+    ));
+}
+
+#[test]
+fn preparation_without_a_conversion_policy_preserves_the_image() {
+    let policy = preparation_policy(None, None);
+
+    let prepared = prepare_image_for_write(accepted(MINIMAL_PNG, ImageFormat::Png), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::Prepared(PreparedImage {
+            format: ImageFormat::Png,
+            role: EmittedImageRole::Preserved,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn preparation_falls_back_to_original_bytes_for_an_unsupported_source() {
+    let policy = preparation_policy(Some(ConversionTarget::Png), None);
+
+    let prepared = prepare_image_for_write(accepted(b"<svg/>", ImageFormat::Svg), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::ConversionFellBack {
+            ref data,
+            format: ImageFormat::Svg,
+            reason: ConversionFallbackReason::Unsupported,
+        } if data == b"<svg/>"
+    ));
+}
+
+#[test]
+fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
+    let policy = preparation_policy(Some(ConversionTarget::Jpg), None);
+
+    let prepared = prepare_image_for_write(accepted(MINIMAL_PNG, ImageFormat::Png), &policy);
+
+    assert!(matches!(
+        prepared,
+        ImagePreparation::ConversionFellBack {
+            ref data,
+            format: ImageFormat::Png,
+            reason: ConversionFallbackReason::Failed(ref detail),
+        } if data == MINIMAL_PNG && !detail.is_empty()
+    ));
+}
