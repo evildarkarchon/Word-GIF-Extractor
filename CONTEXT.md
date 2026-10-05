@@ -89,7 +89,7 @@ The valid per-run choices that govern how the Image write pipeline accepts and e
 _Avoid_: Extraction config, writer options
 
 **Image write purpose**:
-The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It distinguishes cover-specific outcomes from per-run Image write policy.
+The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It decides what an Archive image source's facts mean — whether the source is eligible and whether its name counts as Image format evidence — and distinguishes cover-specific outcomes from per-run Image write policy.
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **Emitted image role**:
@@ -107,6 +107,10 @@ _Avoid_: Cover match, cover entry, candidate path
 **Archive image discovery**:
 The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
+
+**Archive image source**:
+The purpose-neutral facts a document adapter supplies about one archive resource before Archive image discovery reads it: its name and any document-declared MIME. Whether those facts make the source eligible or serve as Image format evidence is decided by the Image write purpose, never by the adapter.
+_Avoid_: Required-cover source, named source, source kind
 
 **Archive resource identity**:
 The stable identity of one archive payload across multiple document references within a single EPUB resource archive, used to recognize repeated attempts and exclusions without treating reference spelling as payload identity. It has no equality meaning across different archives or archive sessions. References that cannot be resolved to a payload remain distinct.

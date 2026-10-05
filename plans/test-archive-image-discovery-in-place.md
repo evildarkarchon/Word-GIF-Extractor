@@ -227,4 +227,4 @@ choice made without being put to the reviewer; the alternative is duplicating ~3
 
 `cargo test` green after each commit. After commit 4, confirm by inspection that no
 `assert!(!<path>.exists())` remains where `<path>` came from `temp_test_dir` without an intervening
-`create_dir_all`. Run `graphify update .` at the end.
+`create_dir_all`.
