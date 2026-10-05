@@ -18,9 +18,14 @@ pub(super) enum UnidentifiedFormatAction {
     Complete,
 }
 
-/// Purpose-selected completion after an identified format is filtered out.
-pub(super) enum FilteredFormatAction {
-    CompleteWithoutEmission,
+/// Purpose-selected continuation after unidentified evidence, with its warning fact.
+///
+/// The warning is a sibling of the action rather than part of one variant: whether a
+/// purpose warns is independent of whether it continues, as `filtered_format` shows
+/// by completing with a warning.
+pub(super) struct UnidentifiedFormatDecision {
+    pub(super) action: UnidentifiedFormatAction,
+    pub(super) warning: Option<ImageWriteWarning>,
 }
 
 /// Purpose-selected continuation after conversion cannot produce requested bytes.
@@ -41,13 +46,12 @@ pub(super) trait ImageWritePurpose {
     fn source_eligibility(&self, source: &ArchiveImageSource) -> SourceEligibility;
 
     /// Decides how discovery proceeds when available evidence identifies no format.
-    fn unidentified_format(
-        &self,
-        source: &ArchiveImageSource,
-    ) -> PurposeDecision<UnidentifiedFormatAction>;
+    fn unidentified_format(&self, source: &ArchiveImageSource) -> UnidentifiedFormatDecision;
 
-    /// Decides how discovery completes when the identified format is filtered out.
-    fn filtered_format(&self, format: ImageFormat) -> PurposeDecision<FilteredFormatAction>;
+    /// Returns the warning fact, if any, for a source whose identified format is filtered out.
+    ///
+    /// Discovery always completes without emission here; only the warning varies.
+    fn filtered_format(&self, format: ImageFormat) -> Option<ImageWriteWarning>;
 
     /// Decides whether an unsupported conversion source may be emitted unchanged.
     fn unsupported_conversion(
@@ -79,22 +83,16 @@ impl ImageWritePurpose for NormalImages {
     }
 
     /// Completes unidentified normal-image discovery without a warning.
-    fn unidentified_format(
-        &self,
-        _source: &ArchiveImageSource,
-    ) -> PurposeDecision<UnidentifiedFormatAction> {
-        PurposeDecision {
+    fn unidentified_format(&self, _source: &ArchiveImageSource) -> UnidentifiedFormatDecision {
+        UnidentifiedFormatDecision {
             action: UnidentifiedFormatAction::Complete,
             warning: None,
         }
     }
 
     /// Completes filtered normal-image discovery without a warning.
-    fn filtered_format(&self, _format: ImageFormat) -> PurposeDecision<FilteredFormatAction> {
-        PurposeDecision {
-            action: FilteredFormatAction::CompleteWithoutEmission,
-            warning: None,
-        }
+    fn filtered_format(&self, _format: ImageFormat) -> Option<ImageWriteWarning> {
+        None
     }
 
     /// Preserves unsupported normal-image bytes and records a skipped conversion.
@@ -139,11 +137,8 @@ impl ImageWritePurpose for RequiredCover {
     }
 
     /// Defaults unidentified required-cover evidence to JPEG with the existing warning.
-    fn unidentified_format(
-        &self,
-        source: &ArchiveImageSource,
-    ) -> PurposeDecision<UnidentifiedFormatAction> {
-        PurposeDecision {
+    fn unidentified_format(&self, source: &ArchiveImageSource) -> UnidentifiedFormatDecision {
+        UnidentifiedFormatDecision {
             action: UnidentifiedFormatAction::ContinueWith(ImageFormat::Jpg),
             warning: Some(ImageWriteWarning::CoverDefaultToJpeg {
                 mime: source.declared_mime().unwrap_or_default().to_string(),
@@ -152,11 +147,8 @@ impl ImageWritePurpose for RequiredCover {
     }
 
     /// Completes a filtered required cover with the existing unsupported warning.
-    fn filtered_format(&self, format: ImageFormat) -> PurposeDecision<FilteredFormatAction> {
-        PurposeDecision {
-            action: FilteredFormatAction::CompleteWithoutEmission,
-            warning: Some(ImageWriteWarning::UnsupportedCoverFormat { format }),
-        }
+    fn filtered_format(&self, format: ImageFormat) -> Option<ImageWriteWarning> {
+        Some(ImageWriteWarning::UnsupportedCoverFormat { format })
     }
 
     /// Completes unsupported required-cover conversion without emitting original bytes.

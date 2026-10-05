@@ -6,9 +6,7 @@ use std::path::Path;
 
 use crate::image_format::ImageFormat;
 
-use super::purpose::{
-    FilteredFormatAction, ImageWritePurpose, SourceEligibility, UnidentifiedFormatAction,
-};
+use super::purpose::{ImageWritePurpose, SourceEligibility, UnidentifiedFormatAction};
 use super::{AcceptedImage, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
@@ -186,11 +184,9 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
     }
 
     if !allowed_formats.contains(&format) {
-        let decision = purpose.filtered_format(format);
-        if let Some(warning) = decision.warning {
+        if let Some(warning) = purpose.filtered_format(format) {
             warnings.push(warning);
         }
-        let FilteredFormatAction::CompleteWithoutEmission = decision.action;
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,
             warnings,
