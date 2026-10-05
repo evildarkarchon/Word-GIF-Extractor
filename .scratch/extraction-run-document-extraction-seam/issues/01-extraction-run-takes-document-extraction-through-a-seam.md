@@ -26,11 +26,11 @@ This is a behaviour-preserving prefactor. Users of the command-line tool see no 
 
 ## Acceptance criteria
 
-- [ ] The seam trait lives in the Extraction run's module; Document extraction's imports never name run vocabulary
-- [ ] The trait covers exactly cover intent, Applicable outcome facts and per-document extraction — nothing more
-- [ ] Cover intent and Applicable outcome facts still come from Document extraction (ADR-0006); nothing is copied into the request or the run
-- [ ] Production Document extraction's own interface, receivers and behaviour are unchanged
-- [ ] The run's public entry keeps its signature; the command-line entry point, intake and presentation are not edited
-- [ ] Nothing outside the run's module calls the inner function
-- [ ] Every new item is crate-private or narrower; the library still exports exactly four items (ADR-0003)
-- [ ] No test file is edited, and `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+- [x] The seam trait lives in the Extraction run's module; Document extraction's imports never name run vocabulary
+- [x] The trait covers exactly cover intent, Applicable outcome facts and per-document extraction — nothing more
+- [x] Cover intent and Applicable outcome facts still come from Document extraction (ADR-0006); nothing is copied into the request or the run
+- [x] Production Document extraction's own interface, receivers and behaviour are unchanged
+- [x] The run's public entry keeps its signature; the command-line entry point, intake and presentation are not edited
+- [x] Nothing outside the run's module calls the inner function
+- [x] Every new item is crate-private or narrower; the library still exports exactly four items (ADR-0003)
+- [x] No test file is edited, and `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
