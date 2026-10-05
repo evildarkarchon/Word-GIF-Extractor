@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::image_format::ImageFormat;
+use crate::output_placement::OutputPlacement;
 
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
@@ -264,38 +265,6 @@ enum ConversionFallbackReason {
     Failed(String),
 }
 
-/// Document-specific facts for one Image write pipeline invocation.
-pub(crate) struct ImageWriteRequest<'a> {
-    output_dir: &'a Path,
-    base_name: &'a str,
-}
-
-impl<'a> ImageWriteRequest<'a> {
-    /// Creates a normal-images request whose sources will be visited in document order.
-    pub(crate) fn normal_images(output_dir: &'a Path, base_name: &'a str) -> Self {
-        Self {
-            output_dir,
-            base_name,
-        }
-    }
-}
-
-/// Output facts for one required EPUB cover attempt.
-pub(crate) struct RequiredCoverWriteRequest<'a> {
-    output_dir: &'a Path,
-    base_name: &'a str,
-}
-
-impl<'a> RequiredCoverWriteRequest<'a> {
-    /// Creates a required-cover request with singular output naming.
-    pub(crate) fn new(output_dir: &'a Path, base_name: &'a str) -> Self {
-        Self {
-            output_dir,
-            base_name,
-        }
-    }
-}
-
 /// Completion disposition for one required-cover candidate.
 #[derive(Debug)]
 pub(crate) enum RequiredCoverWriteOutcome {
@@ -335,12 +304,15 @@ impl ImageWritePipeline {
     /// facts are raw so the pipeline builds the cover's evidence itself, and a caller
     /// cannot hand it a normal source that would enable path-extension fallback.
     ///
+    /// An emitted cover is named singularly after the placement's base name, since a
+    /// cover attempt never has a second image to number against.
+    ///
     /// Read failures return `Retry`, so EPUB cover extraction may try its next
     /// candidate. Filtering, conversion fallback and successful emission return
     /// `Completed`. Emission failures retain the facts accumulated before them.
     pub(crate) fn write_required_cover(
         &self,
-        request: RequiredCoverWriteRequest<'_>,
+        placement: &OutputPlacement,
         manifest_path: &str,
         mime: &str,
         reader: &mut dyn Read,
@@ -380,9 +352,9 @@ impl ImageWritePipeline {
                 return Ok(RequiredCoverWriteOutcome::Completed(result));
             }
         };
-        let mut emission = ImageFileEmission::new(request.base_name, false);
+        let mut emission = ImageFileEmission::new(placement.base_name(), false);
         if let Err(error) = emit_prepared_image(
-            request.output_dir,
+            placement.output_dir(),
             &mut emission,
             prepared,
             &mut result.counts,
@@ -416,6 +388,8 @@ impl ImageWritePipeline {
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
     ///
+    /// Sources are numbered in the order the traversal visits them, which is the
+    /// document's own order, under the placement's directory and base name.
     /// The traversal must finish each reader before opening the next archive entry.
     /// Per-resource acquisition failures belong to the visitor and remain non-fatal;
     /// an error returned by the traversal aborts the document.
@@ -425,10 +399,10 @@ impl ImageWritePipeline {
     /// retain those facts with the error; earlier successful writes are not rolled back.
     pub(crate) fn write_from(
         &self,
-        request: ImageWriteRequest<'_>,
+        placement: &OutputPlacement,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome {
-        let mut visitor = ArchiveImageVisitor::new(&self.policy, request, NormalImages);
+        let mut visitor = ArchiveImageVisitor::new(&self.policy, placement, NormalImages);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -437,31 +411,31 @@ impl ImageWritePipeline {
 }
 
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
-pub(crate) struct ArchiveImageVisitor<'policy, 'request> {
+pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
     purpose: NormalImages,
-    output_dir: &'request Path,
-    base_name: &'request str,
+    output_dir: &'placement Path,
+    base_name: &'placement str,
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     counts: ImageWriteCounts,
     normal_image_output: NormalImageOutput,
     pending_first: Option<PreparedImage<'policy>>,
-    multiple_emission: Option<ImageFileEmission<'request>>,
+    multiple_emission: Option<ImageFileEmission<'placement>>,
 }
 
-impl<'policy, 'request> ArchiveImageVisitor<'policy, 'request> {
+impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     /// Starts one scoped Archive image discovery traversal.
     fn new(
         policy: &'policy ImageWritePolicy,
-        request: ImageWriteRequest<'request>,
+        placement: &'placement OutputPlacement,
         purpose: NormalImages,
     ) -> Self {
         Self {
             policy,
             purpose,
-            output_dir: request.output_dir,
-            base_name: request.base_name,
+            output_dir: placement.output_dir(),
+            base_name: placement.base_name(),
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             counts: ImageWriteCounts::default(),

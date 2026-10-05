@@ -11,6 +11,7 @@ use crate::epub_declarations::EpubDeclarations;
 use crate::extraction_run_observation::{
     EpubMetadataPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
+use crate::output_placement::OutputPlacement;
 
 use self::document_identity::{DedupeKey, DocumentIdentity, EpubFilterTerms};
 use self::progress::{
@@ -48,8 +49,7 @@ pub(crate) enum SelectedDocument {
 #[derive(Debug)]
 pub(crate) struct SelectedDocx {
     path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    placement: OutputPlacement,
     display_name: String,
 }
 
@@ -57,8 +57,7 @@ pub(crate) struct SelectedDocx {
 #[derive(Debug)]
 pub(crate) struct SelectedEpub {
     path: PathBuf,
-    output_dir: PathBuf,
-    base_name: String,
+    placement: OutputPlacement,
     display_name: String,
     epub_declarations: Option<EpubDeclarations>,
 }
@@ -83,18 +82,17 @@ impl SelectedDocument {
 
 impl SelectedDocx {
     /// Creates a DOCX handoff after selection has established eligibility.
-    fn new(path: PathBuf, output_dir: PathBuf, base_name: String, display_name: String) -> Self {
+    fn new(path: PathBuf, placement: OutputPlacement, display_name: String) -> Self {
         Self {
             path,
-            output_dir,
-            base_name,
+            placement,
             display_name,
         }
     }
 
     /// Consumes the DOCX payload into the facts owned by Document extraction.
-    pub(crate) fn into_extraction_parts(self) -> (PathBuf, PathBuf, String) {
-        (self.path, self.output_dir, self.base_name)
+    pub(crate) fn into_extraction_parts(self) -> (PathBuf, OutputPlacement) {
+        (self.path, self.placement)
     }
 }
 
@@ -102,15 +100,13 @@ impl SelectedEpub {
     /// Creates an EPUB handoff after selection has established eligibility.
     fn new(
         path: PathBuf,
-        output_dir: PathBuf,
-        base_name: String,
+        placement: OutputPlacement,
         display_name: String,
         epub_declarations: Option<EpubDeclarations>,
     ) -> Self {
         Self {
             path,
-            output_dir,
-            base_name,
+            placement,
             display_name,
             epub_declarations,
         }
@@ -122,13 +118,8 @@ impl SelectedEpub {
     /// reacquire declarations because selection retained none.
     pub(crate) fn into_extraction_parts(
         self,
-    ) -> (PathBuf, PathBuf, String, Option<EpubDeclarations>) {
-        (
-            self.path,
-            self.output_dir,
-            self.base_name,
-            self.epub_declarations,
-        )
+    ) -> (PathBuf, OutputPlacement, Option<EpubDeclarations>) {
+        (self.path, self.placement, self.epub_declarations)
     }
 }
 
@@ -345,29 +336,29 @@ fn selected_document_from_candidate(
 ) -> SelectedDocument {
     match candidate {
         DocumentCandidate::Docx { path } => {
-            let output_dir = resolve_output_dir(&path, global_output);
             let identity = DocumentIdentity::of_path(&path);
-            SelectedDocument::Docx(SelectedDocx::new(
-                path,
-                output_dir,
+            let placement = OutputPlacement::new(
+                resolve_output_dir(&path, global_output),
                 identity.base_name(),
-                identity.display_name(),
-            ))
+            );
+            SelectedDocument::Docx(SelectedDocx::new(path, placement, identity.display_name()))
         }
         DocumentCandidate::Epub(EpubCandidate {
             path,
             epub_declarations,
         }) => {
-            let output_dir = resolve_output_dir(&path, global_output);
             // Selection fixes the run identity from retained declarations only;
             // extraction-time declaration retries cannot revise this fallback.
             let identity =
                 DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path);
+            let placement = OutputPlacement::new(
+                resolve_output_dir(&path, global_output),
+                identity.base_name(),
+            );
 
             SelectedDocument::Epub(SelectedEpub::new(
                 path,
-                output_dir,
-                identity.base_name(),
+                placement,
                 identity.display_name(),
                 epub_declarations,
             ))

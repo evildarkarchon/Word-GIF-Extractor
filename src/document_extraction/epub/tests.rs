@@ -13,6 +13,7 @@ use crate::test_support::{
 };
 use std::collections::HashSet;
 use std::fs;
+use std::path::Path;
 
 const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 

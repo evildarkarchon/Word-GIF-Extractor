@@ -17,8 +17,7 @@ fn returns_extension_fallback_warning_fact() {
 
     let result = process_file(
         &input_path,
-        &output_dir,
-        "sample",
+        &OutputPlacement::new(&output_dir, "sample"),
         &ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
             None,
@@ -60,8 +59,7 @@ fn preserves_zip_order_for_numbered_outputs() {
 
     let result = process_file(
         &input_path,
-        &output_dir,
-        "sample",
+        &OutputPlacement::new(&output_dir, "sample"),
         &ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
             None,

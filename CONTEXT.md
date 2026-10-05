@@ -53,19 +53,23 @@ The valid per-run choices governing normal document images versus EPUB cover ext
 _Avoid_: Cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, Document identity, and per-document output placement. A selected document's Document identity is stable across Document extraction policies.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, Document identity, and per-document Output placement. A selected document's Document identity is stable across Document extraction policies.
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:
-The part of Document selection that inspects requested files and directories, reports non-fatal inspection failures, and yields supported document candidates in encounter order. It excludes EPUB filtering, deduplication, Document identity, and output placement.
+The part of Document selection that inspects requested files and directories, reports non-fatal inspection failures, and yields supported document candidates in encounter order. It excludes EPUB filtering, deduplication, Document identity, and Output placement.
 _Avoid_: File collection, directory scan, input traversal, source discovery
 
 **Selected document**:
-The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, output placement, the display name its Document identity decides, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
+The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, Output placement, the display name its Document identity decides, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
 _Avoid_: Extraction work item, selected file, document task
 
+**Output placement**:
+Where one Selected document's images are written: its output directory and the output base name its Document identity decided. Document selection fixes it when it selects the document, and it travels whole to the Image write pipeline; nothing downstream revises it.
+_Avoid_: Output target, output location, destination pair
+
 **Document identity**:
-The identity Document selection assigns one document, from which its duplicate recognition, output base name, display name, and EPUB filter match are all decided. It is declared when the document's EPUB declarations carry a non-blank creator or title, and otherwise comes from the document's path; a blank declaration counts as no declaration, and a declared identity never equals a path identity. It excludes output placement and the Archive resource identity of anything inside the document.
+The identity Document selection assigns one document, from which its duplicate recognition, output base name, display name, and EPUB filter match are all decided. It is declared when the document's EPUB declarations carry a non-blank creator or title, and otherwise comes from the document's path; a blank declaration counts as no declaration, and a declared identity never equals a path identity. It decides the base name an Output placement carries but not the output directory, and it excludes the Archive resource identity of anything inside the document.
 _Avoid_: Declared identity, display identity, metadata identity
 
 **Document selection progress**:
