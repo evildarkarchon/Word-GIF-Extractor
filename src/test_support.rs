@@ -27,20 +27,546 @@
 //! If either trade-off changes — the repository gains a second package, or the
 //! overlap grows past a few helpers — the workspace crate becomes the better option.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
+use crate::document_search_surface::{
+    DocumentSearchSurface, DocumentSearchTraversal, InspectedKind, TraversalFailure, TraversedEntry,
+};
+use crate::epub_declarations::{EpubDeclarationError, EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
+use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+
+/// A temporary test path, removed when a passing test drops it.
+///
+/// A failing test keeps whatever it left at the path: the drop sees the thread
+/// unwinding and leaves the tree alone, because a failure is exactly when someone
+/// wants to go and look. A passing test's path is removed, directory or file, and
+/// nothing having been created there is fine.
+///
+/// A removal that fails on the success path fails the test, as the trailing
+/// `remove_dir_all(...).expect(...)` each test used to end with did, so a passing
+/// test cannot quietly leave its tree behind. That is not a check for leaked file
+/// handles: the standard library opens files shareable for deletion, and Windows
+/// removes such a file while it is still open. Panicking here is safe only because
+/// the unwinding case returned first; panicking again while unwinding would abort
+/// the whole test process.
+///
+/// It dereferences to [`Path`], so it can be joined, borrowed and created like the
+/// path it wraps; [`Path::to_path_buf`] gives an owned copy where one must move.
+#[derive(Debug)]
+pub(crate) struct TempTestPath {
+    path: PathBuf,
+}
+
+impl Deref for TempTestPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempTestPath {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+// Lets `&TempTestPath` convert into a `PathBuf` through the standard library's
+// `From<&T: AsRef<OsStr>>`, so call sites taking `impl Into<PathBuf>` accept the
+// guard exactly as they accepted the path it replaced.
+impl AsRef<OsStr> for TempTestPath {
+    fn as_ref(&self) -> &OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl Drop for TempTestPath {
+    /// Removes the path after a passing test, and keeps it after a failing one.
+    ///
+    /// # Panics
+    ///
+    /// When the test passed but the path exists and cannot be removed.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+
+        // Metadata of the path itself, not a link target: a test that left a
+        // link here wants the link removed, not whatever it points at.
+        let removal = match fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => Err(error),
+            Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(&self.path),
+            Ok(_) => fs::remove_file(&self.path),
+        };
+        if let Err(error) = removal {
+            panic!(
+                "temporary test path {} should be removable: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+/// One node in a declared Document search surface.
+#[derive(Debug, Clone)]
+enum SearchNode {
+    File,
+    Directory,
+    /// A link, whose `None` target is a link whose target is gone.
+    Link {
+        target: Option<PathBuf>,
+    },
+    /// An inspectable object that is neither a file nor a directory.
+    Other,
+}
+
+/// How one declared directory fails when something tries to open it.
+#[derive(Debug, Clone)]
+struct ListingFailure {
+    kind: io::ErrorKind,
+    /// Whether a traversal failure names the directory or arrives without a path.
+    ///
+    /// A pathless failure is what forces Document discovery's nearest-parent
+    /// attribution, which no real-filesystem fixture has ever been able to stage.
+    reports_path: bool,
+}
+
+/// A Document search surface backed by a declared tree rather than the filesystem.
+///
+/// Every case Document discovery branches on is a value here: a link whose target
+/// is gone, a directory that cannot be opened, and an entry that enumerated as a
+/// directory but no longer inspects as one. Nothing touches disk, so no test using
+/// this surface needs a temporary directory, a symlink, or a teardown.
+pub(crate) struct InMemorySearchSurface {
+    nodes: BTreeMap<PathBuf, SearchNode>,
+    listing_failures: BTreeMap<PathBuf, ListingFailure>,
+    unreadable_entries: BTreeMap<PathBuf, io::ErrorKind>,
+    inspection_overrides: BTreeMap<PathBuf, Result<InspectedKind, io::ErrorKind>>,
+}
+
+impl InMemorySearchSurface {
+    /// Creates a surface on which nothing exists.
+    pub(crate) fn new() -> Self {
+        Self {
+            nodes: BTreeMap::new(),
+            listing_failures: BTreeMap::new(),
+            unreadable_entries: BTreeMap::new(),
+            inspection_overrides: BTreeMap::new(),
+        }
+    }
+
+    /// Declares one regular file.
+    pub(crate) fn with_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::File);
+        self
+    }
+
+    /// Declares one directory.
+    pub(crate) fn with_directory(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::Directory);
+        self
+    }
+
+    /// Declares one link, or a link whose target is gone when `target` is `None`.
+    pub(crate) fn with_link(mut self, path: impl Into<PathBuf>, target: Option<&str>) -> Self {
+        self.nodes.insert(
+            path.into(),
+            SearchNode::Link {
+                target: target.map(PathBuf::from),
+            },
+        );
+        self
+    }
+
+    /// Declares one inspectable object that is neither a file nor a directory.
+    pub(crate) fn with_other(mut self, path: impl Into<PathBuf>) -> Self {
+        self.nodes.insert(path.into(), SearchNode::Other);
+        self
+    }
+
+    /// Declares a directory that classifies normally but cannot be opened.
+    ///
+    /// This is the shape a directory removed between classification and opening
+    /// leaves behind, which the deleted observer-as-filesystem hook used to stage
+    /// by removing a real directory from inside a progress callback.
+    pub(crate) fn with_listing_failure(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.listing_failures.insert(
+            path,
+            ListingFailure {
+                kind: io::ErrorKind::NotFound,
+                reports_path: true,
+            },
+        );
+        self
+    }
+
+    /// Declares a directory that opens but whose listing fails on one entry.
+    ///
+    /// Opening a directory and reading one of its entries are separate operations
+    /// that fail separately, which is why [`DocumentSearchSurface::read_directory`]
+    /// returns a fallible iterator of fallible items. Document discovery reports a
+    /// per-entry failure against the directory and keeps reading the rest; without
+    /// this, only a real filesystem could produce that condition.
+    ///
+    /// The failing entry is not a node. An entry that never materialises has no
+    /// path to inspect — the failure is the only thing observable about it.
+    pub(crate) fn with_unreadable_entry(mut self, directory: impl Into<PathBuf>) -> Self {
+        let directory = directory.into();
+        self.nodes.insert(directory.clone(), SearchNode::Directory);
+        self.unreadable_entries
+            .insert(directory, io::ErrorKind::PermissionDenied);
+        self
+    }
+
+    /// Declares a directory whose traversal failure arrives without a path.
+    pub(crate) fn with_pathless_listing_failure(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.listing_failures.insert(
+            path,
+            ListingFailure {
+                kind: io::ErrorKind::PermissionDenied,
+                reports_path: false,
+            },
+        );
+        self
+    }
+
+    /// Declares a directory that a traversal enumerates but inspection reports as `kind`.
+    pub(crate) fn with_stale_directory(
+        mut self,
+        path: impl Into<PathBuf>,
+        kind: InspectedKind,
+    ) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.inspection_overrides.insert(path, Ok(kind));
+        self
+    }
+
+    /// Declares a directory that a traversal enumerates but inspection fails on.
+    pub(crate) fn with_stale_directory_inspection_failure(
+        mut self,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        let path = path.into();
+        self.nodes.insert(path.clone(), SearchNode::Directory);
+        self.inspection_overrides
+            .insert(path, Err(io::ErrorKind::PermissionDenied));
+        self
+    }
+
+    /// Builds one failure with a non-empty message, as a real inspection would carry.
+    fn failure(kind: io::ErrorKind, path: &Path) -> io::Error {
+        io::Error::new(kind, format!("declared {kind:?} for {}", path.display()))
+    }
+
+    /// Resolves one path through any links, returning the node it names.
+    ///
+    /// Links are followed wherever they appear, not only in the last position, so
+    /// a path below a link resolves the way it would on a filesystem. The bound
+    /// stops a link cycle from recursing forever; a cycle resolves to a link node,
+    /// which every caller reads as a path that is not usable.
+    fn resolve(&self, path: &Path) -> Option<(PathBuf, SearchNode)> {
+        let mut resolved = PathBuf::new();
+        for component in path.components() {
+            resolved.push(component);
+            for _ in 0..8 {
+                match self.nodes.get(&resolved) {
+                    Some(SearchNode::Link { target }) => resolved = target.clone()?,
+                    _ => break,
+                }
+            }
+        }
+        self.nodes
+            .get(&resolved)
+            .cloned()
+            .map(|node| (resolved, node))
+    }
+
+    /// Returns the direct children of one directory, in a stable order.
+    ///
+    /// Entries are named under `display_root` rather than under the resolved
+    /// directory, which is what listing a link reports: the link's own path with
+    /// the target's entry names below it.
+    fn children(&self, resolved_root: &Path, display_root: &Path) -> Vec<(PathBuf, SearchNode)> {
+        self.nodes
+            .iter()
+            .filter(|(path, _)| path.parent() == Some(resolved_root))
+            .filter_map(|(path, node)| {
+                let name = path.file_name()?;
+                Some((display_root.join(name), node.clone()))
+            })
+            .collect()
+    }
+
+    /// Flattens one recursive traversal into the items it yields, in encounter order.
+    fn traversal_items(&self, root: &Path) -> Vec<PendingItem> {
+        let mut items = Vec::new();
+        match self.resolve(root) {
+            Some((resolved, SearchNode::Directory)) => {
+                self.traverse_into(&resolved, root, 1, &mut items);
+            }
+            // A traversal of anything that is not a readable directory fails at its
+            // root, in the position the root itself would have occupied.
+            _ => items.push(PendingItem {
+                listed_directory: root.to_path_buf(),
+                item: Err(TraversalFailure::new(
+                    0,
+                    Some(root.to_path_buf()),
+                    Self::failure(io::ErrorKind::NotFound, root),
+                )),
+            }),
+        }
+        items
+    }
+
+    /// Appends one directory's entries and their descendants to a traversal.
+    fn traverse_into(
+        &self,
+        resolved_root: &Path,
+        display_root: &Path,
+        depth: usize,
+        items: &mut Vec<PendingItem>,
+    ) {
+        // Keyed on the resolved directory, because that is what a filesystem
+        // opens: a listing declared unopenable still fails when it is reached
+        // through a link. The failure itself is reported against the display
+        // path, which is the path the traversal actually tried to open.
+        if let Some(failure) = self.listing_failures.get(resolved_root) {
+            // The failure takes the directory's own depth, so truncating by it
+            // leaves the nearest confirmed parent at the top of the caller's stack.
+            items.push(PendingItem {
+                listed_directory: display_root.to_path_buf(),
+                item: Err(TraversalFailure::new(
+                    depth.saturating_sub(1),
+                    failure.reports_path.then(|| display_root.to_path_buf()),
+                    Self::failure(failure.kind, display_root),
+                )),
+            });
+            return;
+        }
+
+        for (path, node) in self.children(resolved_root, display_root) {
+            let is_directory = matches!(node, SearchNode::Directory);
+            items.push(PendingItem {
+                listed_directory: display_root.to_path_buf(),
+                item: Ok(TraversedEntry::new(path.clone(), depth, is_directory)),
+            });
+            if is_directory {
+                // Nested links are enumerated but never descended into, so a
+                // traversal cannot widen its scope through one. A directory below
+                // an already-followed root still resolves, which is why the
+                // descent takes the resolved path and the display path separately.
+                let resolved_child = self
+                    .resolve(&path)
+                    .map_or_else(|| path.clone(), |(resolved, _)| resolved);
+                self.traverse_into(&resolved_child, &path, depth + 1, items);
+            }
+        }
+    }
+}
+
+impl DocumentSearchSurface for InMemorySearchSurface {
+    fn inspect(&self, path: &Path) -> io::Result<InspectedKind> {
+        if let Some(override_result) = self.inspection_overrides.get(path) {
+            return (*override_result).map_err(|kind| Self::failure(kind, path));
+        }
+
+        match self.resolve(path) {
+            Some((_, SearchNode::File)) => Ok(InspectedKind::File),
+            Some((_, SearchNode::Directory)) => Ok(InspectedKind::Directory),
+            Some((_, SearchNode::Other)) => Ok(InspectedKind::Other),
+            // A resolved link is never itself a node; an unresolvable one reads as absent.
+            _ => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn inspect_without_following(&self, path: &Path) -> io::Result<InspectedKind> {
+        match self.nodes.get(path) {
+            Some(SearchNode::File) => Ok(InspectedKind::File),
+            Some(SearchNode::Directory) => Ok(InspectedKind::Directory),
+            // A link is neither a file nor a directory until it is followed.
+            Some(SearchNode::Link { .. }) | Some(SearchNode::Other) => Ok(InspectedKind::Other),
+            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn read_directory<'surface>(
+        &'surface self,
+        path: &Path,
+    ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
+        match self.resolve(path) {
+            Some((resolved, SearchNode::Directory)) => {
+                // Both declarations key on the resolved directory rather than on
+                // the requested path, so a request arriving through a link fails
+                // the way the filesystem would: opening the target is what fails,
+                // not naming the link.
+                if let Some(failure) = self.listing_failures.get(&resolved) {
+                    return Err(Self::failure(failure.kind, path));
+                }
+
+                let mut entries: Vec<io::Result<PathBuf>> = self
+                    .children(&resolved, path)
+                    .into_iter()
+                    .map(|(child, _)| Ok(child))
+                    .collect();
+                if let Some(kind) = self.unreadable_entries.get(&resolved) {
+                    // Placed ahead of the entries that did materialise, so that a
+                    // test asserting the listing continued past it has something
+                    // left to find. A failing entry has no name to order it by.
+                    entries.insert(0, Err(Self::failure(*kind, path)));
+                }
+                Ok(Box::new(entries.into_iter()))
+            }
+            Some(_) => Err(Self::failure(io::ErrorKind::InvalidInput, path)),
+            None => Err(Self::failure(io::ErrorKind::NotFound, path)),
+        }
+    }
+
+    fn traverse<'surface>(
+        &'surface self,
+        root: &Path,
+    ) -> Box<dyn DocumentSearchTraversal + 'surface> {
+        Box::new(DeclaredTraversal {
+            pending: self.traversal_items(root).into(),
+            last_directory: None,
+        })
+    }
+}
+
+/// A declaration source that answers from declared facts and records what it was asked.
+///
+/// The recording is what makes ADR-0002's retention rule assertable: the rule is
+/// that filtering acquires once and deduplication reuses what filtering retained,
+/// and until this existed the reuse was invisible to every test.
+pub(crate) struct DeclaredEpubDeclarations {
+    declarations: BTreeMap<PathBuf, DeclaredEpub>,
+    acquisitions: RefCell<Vec<PathBuf>>,
+}
+
+/// What one declared EPUB reports when its declarations are acquired.
+enum DeclaredEpub {
+    Readable {
+        creator: Option<String>,
+        title: Option<String>,
+    },
+    Unreadable,
+}
+
+impl DeclaredEpubDeclarations {
+    /// Creates a source that reports every EPUB as unreadable.
+    pub(crate) fn new() -> Self {
+        Self {
+            declarations: BTreeMap::new(),
+            acquisitions: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Declares the creator and title one EPUB reports.
+    pub(crate) fn with_declarations(
+        mut self,
+        path: impl Into<PathBuf>,
+        creator: Option<&str>,
+        title: Option<&str>,
+    ) -> Self {
+        self.declarations.insert(
+            path.into(),
+            DeclaredEpub::Readable {
+                creator: creator.map(str::to_string),
+                title: title.map(str::to_string),
+            },
+        );
+        self
+    }
+
+    /// Declares one EPUB whose declarations cannot be read.
+    pub(crate) fn with_unreadable(mut self, path: impl Into<PathBuf>) -> Self {
+        self.declarations
+            .insert(path.into(), DeclaredEpub::Unreadable);
+        self
+    }
+
+    /// Returns every path this source was asked about, in the order it was asked.
+    pub(crate) fn acquisitions(&self) -> Vec<PathBuf> {
+        self.acquisitions.borrow().clone()
+    }
+}
+
+impl EpubDeclarationSource for DeclaredEpubDeclarations {
+    fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError> {
+        self.acquisitions.borrow_mut().push(path.to_path_buf());
+        match self.declarations.get(path) {
+            Some(DeclaredEpub::Readable { creator, title }) => Ok(EpubDeclarations::declared(
+                creator.as_deref(),
+                title.as_deref(),
+            )),
+            // An undeclared path reads as an EPUB that will not parse, which is
+            // what an unreadable file on disk produces.
+            _ => Err(EpubDeclarationError::unreadable()),
+        }
+    }
+}
+
+/// One flattened traversal item together with the directory whose listing produced it.
+///
+/// The producing directory is what makes `skip_current_dir` exact. A failure can
+/// arrive without a path, and a predicate reading only the item's own path has
+/// nothing to test such a failure against — so it would keep it, and report a
+/// branch a real traversal skipped without ever opening. Every item belongs to a
+/// listing whether or not it can name itself, which is the fact worth recording.
+struct PendingItem {
+    listed_directory: PathBuf,
+    item: Result<TraversedEntry, TraversalFailure>,
+}
+
+/// One traversal of a declared tree, flattened ahead of time.
+struct DeclaredTraversal {
+    pending: std::collections::VecDeque<PendingItem>,
+    last_directory: Option<PathBuf>,
+}
+
+impl DocumentSearchTraversal for DeclaredTraversal {
+    fn next_entry(&mut self) -> Option<Result<TraversedEntry, TraversalFailure>> {
+        let pending = self.pending.pop_front()?;
+        self.last_directory = match &pending.item {
+            Ok(entry) if entry.is_directory() => Some(entry.path().to_path_buf()),
+            _ => None,
+        };
+        Some(pending.item)
+    }
+
+    fn skip_current_dir(&mut self) {
+        let Some(directory) = self.last_directory.take() else {
+            return;
+        };
+        // Dropping by producing directory rather than by item path drops the whole
+        // abandoned branch, including the descendant listings under it.
+        self.pending
+            .retain(|pending| !pending.listed_directory.starts_with(&directory));
+    }
+}
 
 /// Returns an unused temporary directory path for one test.
 ///
 /// `area` names the module under test and only makes the path readable when a
 /// failing test leaves its directory behind; the process id and nanosecond stamp
 /// are what actually keep concurrent tests from colliding. The directory is not
-/// created — callers that need it on disk create it themselves.
+/// created — callers that need it on disk create it themselves. The returned
+/// guard removes it once a passing test is done with it; see [`TempTestPath`].
 ///
 /// # `!path.exists()` is not evidence of non-emission
 ///
@@ -54,7 +580,14 @@ use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunO
 /// The assertion is only meaningful once something is known to have created a
 /// directory here, which is why a test that writes to one subdirectory may
 /// legitimately assert a sibling was never created.
-pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
+pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> TempTestPath {
+    TempTestPath {
+        path: unique_temp_path(area, test_name),
+    }
+}
+
+/// Builds the unique, uncreated path both temporary-path helpers hand out.
+fn unique_temp_path(area: &str, test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after Unix epoch")
@@ -65,21 +598,76 @@ pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     ))
 }
 
+/// A PNG small enough to inline whose magic bytes still identify it as one.
+///
+/// The signature and one complete IHDR chunk, and nothing more: there is no image
+/// data, so it is deliberately not decodable. Use it wherever a payload only has to
+/// be recognised as a PNG; a test that needs conversion to succeed wants
+/// [`valid_png`]. Byte-identical to the integration-test constant of the same name,
+/// because one name meaning two fixtures is a trap for whichever test first
+/// depends on the difference.
+pub(crate) const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+
+/// Encodes a 1x1 RGBA PNG that decodes, for tests whose images must convert.
+pub(crate) fn valid_png() -> Vec<u8> {
+    let mut cursor = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .expect("test PNG should encode");
+    cursor.into_inner()
+}
+
+/// Builds an Image write pipeline that accepts `formats` and does nothing else.
+///
+/// No Conversion policy and no GIF destination: the shape nearly every pipeline
+/// test wants, so a call site names only the formats its test is about. A test
+/// that configures conversion or GIF routing spells out both constructors, which
+/// keeps what is unusual about it visible.
+pub(crate) fn pipeline_accepting(
+    formats: impl IntoIterator<Item = ImageFormat>,
+) -> ImageWritePipeline {
+    ImageWritePipeline::new(ImageWritePolicy::new(
+        formats.into_iter().collect(),
+        None,
+        None,
+    ))
+}
+
+/// Fallback-directory resolver for intake calls that must never need one.
+///
+/// Extraction run intake resolves the current directory only when no input was
+/// named, and only once the conversion request has validated. A test that names
+/// its inputs, or expects intake to fail on conversion first, passes this so that
+/// consulting the resolver anyway fails the test instead of quietly reading the
+/// process working directory.
+///
+/// # Panics
+///
+/// Always, when called.
+pub(crate) fn no_fallback_directory() -> io::Result<PathBuf> {
+    panic!(
+        "a run that names its inputs, or fails intake first, must not resolve the current directory"
+    )
+}
+
 /// Returns an unused temporary `.epub` file path for one test.
 ///
 /// `area` means what it does in [`temp_test_dir`]. Used by tests that want a single
-/// archive file rather than a directory to fill.
-pub(crate) fn temp_epub_path(area: &str, test_name: &str) -> PathBuf {
+/// archive file rather than a directory to fill. The returned guard removes the file
+/// once a passing test is done with it, as [`TempTestPath`] describes.
+pub(crate) fn temp_epub_path(area: &str, test_name: &str) -> TempTestPath {
     // Appended rather than set with `with_extension`, which would truncate at the last
     // `.` — an `area` or `test_name` containing one would silently eat the stamp that
     // makes the path unique.
-    let path = temp_test_dir(area, test_name);
+    let path = unique_temp_path(area, test_name);
     let mut file_name = path
         .file_name()
         .expect("generated temporary path should have a file name")
         .to_os_string();
     file_name.push(".epub");
-    path.with_file_name(file_name)
+    TempTestPath {
+        path: path.with_file_name(file_name),
+    }
 }
 
 /// Creates a directory link used to exercise the platform filesystem through selection.
@@ -228,8 +816,9 @@ fn observation_kind(observation: &ExtractionRunObservation) -> ObservationKind {
             ObservationKind::SelectionProgress
         }
         ExtractionRunObservation::MissingInput { .. }
+        | ExtractionRunObservation::SkippedNonEpubInput { .. }
         | ExtractionRunObservation::DocumentDiscoveryFailed { .. }
-        | ExtractionRunObservation::UnreadableEpubMetadata { .. } => {
+        | ExtractionRunObservation::UnreadableEpubDeclarations { .. } => {
             ObservationKind::SelectionDiagnostic
         }
         ExtractionRunObservation::ExtractionStarted { .. }
@@ -411,15 +1000,6 @@ pub(crate) fn write_epub_package(path: &Path, package: &[u8], resources: &[(&str
     write_epub_archive(path, SimpleFileOptions::default(), package, resources);
 }
 
-/// Writes a readable EPUB whose only declarations are its descriptive ones.
-pub(crate) fn write_epub_with_descriptive_declarations(path: &Path, author: &str, title: &str) {
-    write_epub_package(
-        path,
-        epub_package(title, Some(author), EpubNavigation::Absent, "").as_bytes(),
-        &[],
-    );
-}
-
 /// Writes a navigable EPUB declaring one image resource, with its payload present.
 pub(crate) fn write_epub_with_one_image(
     path: &Path,
@@ -599,3 +1179,6 @@ pub(crate) fn write_sparse_epub(path: &Path) {
         &[],
     );
 }
+
+#[cfg(test)]
+mod tests;

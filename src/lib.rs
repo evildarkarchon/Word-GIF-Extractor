@@ -34,6 +34,7 @@
 
 mod conversion;
 mod document_extraction;
+mod document_search_surface;
 mod document_selection;
 mod epub_declarations;
 mod extraction_run;
@@ -42,6 +43,7 @@ mod extraction_run_observation;
 mod extraction_run_presentation;
 mod image_format;
 mod image_write_pipeline;
+mod output_placement;
 #[cfg(test)]
 mod test_support;
 

@@ -28,9 +28,7 @@ use std::io::Cursor;
 
 use super::*;
 use crate::image_write_pipeline::purpose::{NormalImages, RequiredCover};
-use crate::test_support::FailAfterReader;
-
-const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR";
+use crate::test_support::{FailAfterReader, MINIMAL_PNG};
 
 /// One magic-evidence fixture naming the format its payload must identify as.
 ///

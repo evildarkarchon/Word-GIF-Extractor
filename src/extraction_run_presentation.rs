@@ -22,6 +22,7 @@
 //! behaviour depends on, which would be a behaviour change rather than a move.
 
 use std::io::{self, Write};
+use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Result;
@@ -33,7 +34,7 @@ use crate::extraction_run_intake::{
     Args, ExtractionRunIntakeError, PreRunNotice, PreparedExtractionRun,
 };
 use crate::extraction_run_observation::{
-    DocumentDiscoveryScope, EpubMetadataPurpose, ExtractionOutputKind, ExtractionRunObservation,
+    DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionOutputKind, ExtractionRunObservation,
     ExtractionRunObserver, ExtractionRunOutcome,
 };
 
@@ -43,60 +44,82 @@ use crate::extraction_run_observation::{
 /// arguments. Intake failures are returned rather than rendered here: the process
 /// exit path already prints a returned error, and returning one keeps the failure
 /// wording out of the destination a caller is capturing.
-pub fn run_cli(args: Args, output: TerminalOutput) -> Result<()> {
+///
+/// A run that got past intake returns its exit status: [`ExitCode::FAILURE`]
+/// exactly when at least one selected document failed to extract -- the same runs
+/// that printed an `Error processing` line -- and [`ExitCode::SUCCESS`] otherwise,
+/// including when no documents or no images were found. ADR-0014 records why.
+pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     let PreparedExtractionRun { request, notices } =
-        crate::extraction_run_intake::prepare(args).map_err(render_intake_error)?;
+        crate::extraction_run_intake::prepare(args, std::env::current_dir)
+            .map_err(render_intake_error)?;
 
     let mut presentation = ExtractionRunPresentation::new(output);
     presentation.render_pre_run_notices(notices);
-    crate::extraction_run::run(request, &mut presentation);
+    let outcome = crate::extraction_run::run(request, &mut presentation);
 
-    Ok(())
+    Ok(match outcome.failed_documents() {
+        Some(_) => ExitCode::FAILURE,
+        None => ExitCode::SUCCESS,
+    })
 }
 
-/// What a captured progress display did, and what it said doing it.
+/// One thing a captured run did to its terminal, in the order it did it.
 ///
-/// Clearing and redrawing is what suspension does, so the two counters are how a
-/// captured run shows that a direct write was made without a redraw racing it.
-/// The counters alone cannot show *what* was drawn, which leaves the terminal
-/// summaries of the two output-bearing outcomes -- they are rendered onto the
-/// progress display and never touch a text stream -- unreadable, so the rendered
-/// text is kept alongside them.
-#[derive(Debug, Default)]
-struct TerminalActivity {
-    clear_lines: usize,
-    writes: usize,
-    rendered: String,
+/// Clearing and redrawing is what suspension does, and its whole point is where a
+/// direct write lands relative to them: after the display cleared, before it drew
+/// again. Recording all three sinks into one ordered sequence makes that a
+/// property of the sequence. Counting clears and draws separately could only give
+/// lower bounds, because a steady tick anywhere in a measured window adds to both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TranscriptEntry {
+    /// The progress display cleared one line it had drawn.
+    Cleared,
+    /// The progress display drew one line.
+    ///
+    /// The progress library makes one call per drawn line and leaves the last
+    /// line of a draw unterminated, to keep the terminal cursor on it. Both calls
+    /// land here as one entry each, so the readback is one line per drawn line.
+    Drawn(String),
+    /// One line reached standard output.
+    Stdout(String),
+    /// One line reached standard error.
+    Stderr(String),
 }
 
-impl TerminalActivity {
-    /// Records one drawn terminal line, counting it and keeping its text.
-    ///
-    /// Both write operations land here terminated, because the progress library
-    /// makes one call per drawn line and uses the unterminated one only for the
-    /// last line of a draw, to leave the terminal cursor on it. Terminating both
-    /// keeps the readback one line per drawn line instead of running consecutive
-    /// redraws together.
-    fn record_write(&mut self, line: &str) {
-        self.writes += 1;
-        self.rendered.push_str(line);
-        self.rendered.push('\n');
+impl TranscriptEntry {
+    /// Returns whether the progress display, rather than a text stream, produced this entry.
+    fn is_progress(&self) -> bool {
+        matches!(self, Self::Cleared | Self::Drawn(_))
     }
+
+    /// Returns the line this entry wrote to either text stream, if it wrote one.
+    fn text_line(&self) -> Option<&str> {
+        match self {
+            Self::Stdout(line) | Self::Stderr(line) => Some(line),
+            Self::Cleared | Self::Drawn(_) => None,
+        }
+    }
+}
+
+/// The ordered record shared by every sink of one captured destination.
+///
+/// One lock serializes all three sinks, so the order of entries is the order the
+/// operations happened in, including writes made from inside a suspend.
+type Transcript = Arc<Mutex<Vec<TranscriptEntry>>>;
+
+/// Appends one entry to a shared transcript.
+fn record(transcript: &Transcript, entry: TranscriptEntry) {
+    transcript
+        .lock()
+        .expect("captured transcript should be available")
+        .push(entry);
 }
 
 /// Progress-display terminal that records operations instead of performing them.
 #[derive(Debug)]
 struct RecordingTerm {
-    activity: Arc<Mutex<TerminalActivity>>,
-}
-
-impl RecordingTerm {
-    /// Borrows the shared recording for the duration of one recorded operation.
-    fn counters(&self) -> MutexGuard<'_, TerminalActivity> {
-        self.activity
-            .lock()
-            .expect("terminal activity should be available")
-    }
+    transcript: Transcript,
 }
 
 impl TermLike for RecordingTerm {
@@ -121,17 +144,17 @@ impl TermLike for RecordingTerm {
     }
 
     fn write_line(&self, s: &str) -> io::Result<()> {
-        self.counters().record_write(s);
+        record(&self.transcript, TranscriptEntry::Drawn(s.to_string()));
         Ok(())
     }
 
     fn write_str(&self, s: &str) -> io::Result<()> {
-        self.counters().record_write(s);
+        record(&self.transcript, TranscriptEntry::Drawn(s.to_string()));
         Ok(())
     }
 
     fn clear_line(&self) -> io::Result<()> {
-        self.counters().clear_lines += 1;
+        record(&self.transcript, TranscriptEntry::Cleared);
         Ok(())
     }
 
@@ -145,14 +168,15 @@ enum ProgressSink {
     /// The terminal, through the progress library's own buffered stderr target.
     Terminal,
     /// A recording terminal shared with the [`Capture`] handed back to the caller.
-    Recording(Arc<Mutex<TerminalActivity>>),
+    Recording(Transcript),
 }
 
 /// Where one of the two direct text streams of a run goes.
 enum TextSink {
     Stdout,
     Stderr,
-    Captured(Arc<Mutex<String>>),
+    /// The shared transcript, with the entry constructor naming which stream this is.
+    Captured(Transcript, fn(String) -> TranscriptEntry),
 }
 
 impl TextSink {
@@ -164,10 +188,8 @@ impl TextSink {
             // line-buffered standard output.
             Self::Stdout => writeln!(io::stdout().lock(), "{line}"),
             Self::Stderr => writeln!(io::stderr().lock(), "{line}"),
-            Self::Captured(captured) => {
-                let mut captured = captured.lock().expect("captured text should be available");
-                captured.push_str(line);
-                captured.push('\n');
+            Self::Captured(transcript, stream) => {
+                record(transcript, stream(line.to_string()));
                 Ok(())
             }
         }
@@ -201,21 +223,15 @@ impl TerminalOutput {
     /// The capture shares the destination's storage, so it stays readable after the
     /// destination has been consumed by a run.
     pub fn captured() -> (Self, Capture) {
-        let progress_activity = Arc::new(Mutex::new(TerminalActivity::default()));
-        let stdout = Arc::new(Mutex::new(String::new()));
-        let stderr = Arc::new(Mutex::new(String::new()));
+        let transcript = Transcript::default();
 
         (
             Self {
-                progress: ProgressSink::Recording(Arc::clone(&progress_activity)),
-                stdout: TextSink::Captured(Arc::clone(&stdout)),
-                stderr: TextSink::Captured(Arc::clone(&stderr)),
+                progress: ProgressSink::Recording(Arc::clone(&transcript)),
+                stdout: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stdout),
+                stderr: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stderr),
             },
-            Capture {
-                progress_activity,
-                stdout,
-                stderr,
-            },
+            Capture { transcript },
         )
     }
 
@@ -227,9 +243,9 @@ impl TerminalOutput {
     fn progress_draw_target(&self) -> ProgressDrawTarget {
         match &self.progress {
             ProgressSink::Terminal => ProgressDrawTarget::stderr(),
-            ProgressSink::Recording(activity) => {
+            ProgressSink::Recording(transcript) => {
                 ProgressDrawTarget::term_like(Box::new(RecordingTerm {
-                    activity: Arc::clone(activity),
+                    transcript: Arc::clone(transcript),
                 }))
             }
         }
@@ -252,43 +268,86 @@ impl TerminalOutput {
 }
 
 /// Everything a captured [`TerminalOutput`] recorded during one run.
+///
+/// All three sinks record into one ordered transcript. The readers below either
+/// project one sink out of it or, for suspension, ask a question about its order.
 pub struct Capture {
-    progress_activity: Arc<Mutex<TerminalActivity>>,
-    stdout: Arc<Mutex<String>>,
-    stderr: Arc<Mutex<String>>,
+    transcript: Transcript,
 }
 
 impl Capture {
+    /// Borrows the ordered transcript for the duration of one read.
+    fn entries(&self) -> MutexGuard<'_, Vec<TranscriptEntry>> {
+        self.transcript
+            .lock()
+            .expect("captured transcript should be available")
+    }
+
+    /// Joins the selected entries' lines, each terminated, in transcript order.
+    fn lines(&self, select: impl Fn(&TranscriptEntry) -> Option<&str>) -> String {
+        self.entries()
+            .iter()
+            .filter_map(select)
+            .flat_map(|line| [line, "\n"])
+            .collect()
+    }
+
     /// Returns everything written to standard output so far.
     pub fn stdout(&self) -> String {
-        self.stdout
-            .lock()
-            .expect("captured text should be available")
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Stdout(line) => Some(line),
+            _ => None,
+        })
     }
 
     /// Returns everything written to standard error so far.
     pub fn stderr(&self) -> String {
-        self.stderr
-            .lock()
-            .expect("captured text should be available")
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Stderr(line) => Some(line),
+            _ => None,
+        })
     }
 
-    /// Returns how many drawn lines the progress display has cleared so far.
-    pub fn clear_lines(&self) -> usize {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .clear_lines
-    }
+    /// Returns whether every write of `line` happened with the progress display suspended.
+    ///
+    /// Suspended means the display cleared before the write and drew again after it:
+    /// the nearest progress-display entry before each occurrence is a clear, and the
+    /// nearest one after it is a draw. Writes to either text stream count as
+    /// occurrences and are skipped when looking for those neighbours. `line` is
+    /// compared whole and without its terminator. A line that was never written
+    /// returns `false`, so a mistyped expectation cannot pass by matching nothing.
+    ///
+    /// The answer is exact rather than a lower bound: the progress library holds the
+    /// display's lock for the whole of a suspend, so a steady tick cannot draw
+    /// between the clear and the write it protects.
+    pub fn suspended_around(&self, line: &str) -> bool {
+        let entries = self.entries();
+        let mut occurrences = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.text_line() == Some(line))
+            .map(|(index, _)| index)
+            .peekable();
+        if occurrences.peek().is_none() {
+            return false;
+        }
 
-    /// Returns how many times the progress display has written to the terminal.
-    pub fn writes(&self) -> usize {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .writes
+        occurrences.all(|index| {
+            let cleared_before = matches!(
+                entries[..index]
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.is_progress()),
+                Some(TranscriptEntry::Cleared)
+            );
+            let drawn_after = matches!(
+                entries[index + 1..]
+                    .iter()
+                    .find(|entry| entry.is_progress()),
+                Some(TranscriptEntry::Drawn(_))
+            );
+            cleared_before && drawn_after
+        })
     }
 
     /// Returns every line the progress display has drawn so far, each terminated.
@@ -303,11 +362,10 @@ impl Capture {
     /// renders through its own styling, so entries may carry terminal escapes
     /// around the parts a style colours.
     pub fn progress_text(&self) -> String {
-        self.progress_activity
-            .lock()
-            .expect("terminal activity should be available")
-            .rendered
-            .clone()
+        self.lines(|entry| match entry {
+            TranscriptEntry::Drawn(line) => Some(line),
+            _ => None,
+        })
     }
 }
 
@@ -345,6 +403,13 @@ fn epub_filter_description(title: Option<&str>, author: Option<&str>) -> String 
 fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     match error {
         ExtractionRunIntakeError::CurrentDirectory(error) => error.into(),
+        // The flag spellings below are checked against `Args` by a guard test, so a
+        // renamed flag fails that test instead of leaving this wording stale.
+        //
+        // From the command line, `clap` rejects an out-of-range quality and the
+        // quality/lossless conflict before intake runs, so only the other two arms
+        // are reached there. All four stay: the Conversion policy validates
+        // independently of `clap`, and an `Args` built directly reaches every arm.
         ExtractionRunIntakeError::ConversionPolicy(error) => match error {
             ConversionPolicyError::QualityOutOfRange { quality } => {
                 anyhow::anyhow!("--quality must be between 1 and 100 (got {quality})")
@@ -362,28 +427,68 @@ fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     }
 }
 
+/// The phase whose observations drew the progress display that is currently live.
+///
+/// The tag records who drew the display, not where that phase falls in the run:
+/// presentation never learns the phase order, it only refuses to let one phase's
+/// observations advance or finish a display another phase drew.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayPhase {
+    Discovery,
+    Filtering,
+    Deduplication,
+    Extraction,
+}
+
+/// The one progress display a run shows at a time, with the phase that drew it.
+struct LiveDisplay {
+    phase: DisplayPhase,
+    bar: ProgressBar,
+}
+
 /// Renders cohesive live Extraction run observations into one terminal destination.
 ///
 /// Crate-visible on purpose: the library publishes [`run_cli`] and the destination
 /// it renders into, not the renderer. Only in-crate tests construct one directly.
+///
+/// Phases never overlap, so a single slot holds whichever progress display is
+/// live. Every direct write to standard error suspends that display, whichever
+/// phase drew it, and the terminal summary finishes it or is printed when none is
+/// live.
 pub(crate) struct ExtractionRunPresentation {
     output: TerminalOutput,
-    discovery_pb: Option<ProgressBar>,
-    epub_filter_pb: Option<ProgressBar>,
-    epub_dedup_pb: Option<ProgressBar>,
-    extraction_pb: Option<ProgressBar>,
+    live: Option<LiveDisplay>,
 }
 
 impl ExtractionRunPresentation {
     /// Creates a presentation with no active progress bars over one destination.
     pub(crate) fn new(output: TerminalOutput) -> Self {
-        Self {
-            output,
-            discovery_pb: None,
-            epub_filter_pb: None,
-            epub_dedup_pb: None,
-            extraction_pb: None,
+        Self { output, live: None }
+    }
+
+    /// Returns the live display's bar when `phase` drew it.
+    fn live_bar(&self, phase: DisplayPhase) -> Option<&ProgressBar> {
+        self.live
+            .as_ref()
+            .filter(|live| live.phase == phase)
+            .map(|live| &live.bar)
+    }
+
+    /// Releases and returns the live display's bar when `phase` drew it.
+    ///
+    /// A display drawn by another phase stays live, so a finished observation
+    /// that arrives out of turn cannot end a display it does not own.
+    fn take_live(&mut self, phase: DisplayPhase) -> Option<ProgressBar> {
+        if self.live_bar(phase).is_some() {
+            self.live.take().map(|live| live.bar)
+        } else {
+            None
         }
+    }
+
+    /// Makes `bar` the live display, drawn by `phase`.
+    fn raise(&mut self, phase: DisplayPhase, bar: ProgressBar) {
+        self.live = Some(LiveDisplay { phase, bar });
     }
 
     /// Renders the ordered facts intake produced before the run started.
@@ -421,21 +526,28 @@ impl ExtractionRunPresentation {
         progress
     }
 
-    /// Finishes the extraction progress bar with the final run summary.
-    fn finish_extraction(&self, message: String) {
-        if let Some(pb) = &self.extraction_pb {
-            pb.finish_with_message(message);
+    /// Ends the run with its summary: finishes the live display, or prints when none is live.
+    ///
+    /// The routing follows display state rather than the outcome, so a summary can
+    /// never be dropped: no documents leaves nothing live and is printed, and any
+    /// other outcome finishes the extraction display the run raised before it.
+    fn finish_run(&mut self, summary: String) {
+        match self.live.take() {
+            Some(live) => live.bar.finish_with_message(summary),
+            None => self.output.print(&summary),
         }
     }
 
-    /// Writes one line to standard error with the supplied progress bar suspended.
+    /// Writes one line to standard error with the live progress display suspended.
     ///
     /// Suspension is the whole reason the sinks are bundled: the bar clears the
     /// lines it drew, the line is written, and the bar redraws, so a redraw cannot
-    /// land on top of the message.
-    fn print_error_suspended(&self, progress: Option<&ProgressBar>, line: &str) {
-        match progress {
-            Some(pb) => pb.suspend(|| self.output.print_error(line)),
+    /// land on top of the message. Whichever phase drew the live display, it is the
+    /// one that would redraw, so it is the one suspended; with nothing live the
+    /// line is written directly.
+    fn print_error_suspended(&self, line: &str) {
+        match &self.live {
+            Some(live) => live.bar.suspend(|| self.output.print_error(line)),
             None => self.output.print_error(line),
         }
     }
@@ -446,16 +558,19 @@ impl ExtractionRunPresentation {
     /// carries the phase's full current state, so nothing is accumulated here.
     /// The spinner is raised only for recursive traversal, which is the case slow
     /// enough to be worth showing. Whether this is the phase's first running
-    /// observation is read from `is_none` rather than carried by the observation.
+    /// observation is read from whether this phase's display is live rather than
+    /// carried by the observation.
     fn render_discovering_documents(&mut self, scope: DocumentDiscoveryScope, discovered: usize) {
-        if scope == DocumentDiscoveryScope::RecursiveDirectories && self.discovery_pb.is_none() {
+        if scope == DocumentDiscoveryScope::RecursiveDirectories
+            && self.live_bar(DisplayPhase::Discovery).is_none()
+        {
             let pb = self.new_progress_bar(None, create_spinner_style());
             pb.set_message("Scanning directories for documents...");
             pb.enable_steady_tick(std::time::Duration::from_millis(100));
-            self.discovery_pb = Some(pb);
+            self.raise(DisplayPhase::Discovery, pb);
         }
         if discovered > 0
-            && let Some(pb) = &self.discovery_pb
+            && let Some(pb) = self.live_bar(DisplayPhase::Discovery)
         {
             pb.set_message(format!("Found {} document(s)...", discovered));
         }
@@ -473,15 +588,15 @@ impl ExtractionRunPresentation {
         checked: usize,
         total: usize,
     ) {
-        if self.epub_filter_pb.is_none() {
+        if self.live_bar(DisplayPhase::Filtering).is_none() {
             let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
             pb.set_message(format!(
                 "Filtering EPUBs by {}",
                 epub_filter_description(title.as_deref(), author.as_deref())
             ));
-            self.epub_filter_pb = Some(pb);
+            self.raise(DisplayPhase::Filtering, pb);
         }
-        if let Some(pb) = &self.epub_filter_pb {
+        if let Some(pb) = self.live_bar(DisplayPhase::Filtering) {
             pb.set_position(checked as u64);
         }
     }
@@ -491,12 +606,12 @@ impl ExtractionRunPresentation {
     /// Rendered without relying on callback deltas: `checked` is the phase's full
     /// current count, so the bar is positioned absolutely rather than incremented.
     fn render_deduplicating_epubs(&mut self, checked: usize, total: usize) {
-        if self.epub_dedup_pb.is_none() {
+        if self.live_bar(DisplayPhase::Deduplication).is_none() {
             let pb = self.new_progress_bar(Some(total as u64), create_progress_style());
             pb.set_message("Deduplicating EPUBs by metadata");
-            self.epub_dedup_pb = Some(pb);
+            self.raise(DisplayPhase::Deduplication, pb);
         }
-        if let Some(pb) = &self.epub_dedup_pb {
+        if let Some(pb) = self.live_bar(DisplayPhase::Deduplication) {
             pb.set_position(checked as u64);
         }
     }
@@ -510,7 +625,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                 self.render_discovering_documents(scope, discovered);
             }
             ExtractionRunObservation::DocumentDiscoveryFinished { discovered, .. } => {
-                if let Some(pb) = self.discovery_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Discovery) {
                     pb.finish_with_message(format!("Found {} document(s)", discovered));
                 }
             }
@@ -526,7 +641,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             ExtractionRunObservation::EpubFilteringFinished {
                 checked, matching, ..
             } => {
-                if let Some(pb) = self.epub_filter_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Filtering) {
                     pb.set_position(checked as u64);
                     pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
                 }
@@ -540,7 +655,7 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                 unique_remaining,
                 ..
             } => {
-                if let Some(pb) = self.epub_dedup_pb.take() {
+                if let Some(pb) = self.take_live(DisplayPhase::Deduplication) {
                     pb.set_position(checked as u64);
                     if duplicates_found > 0 {
                         pb.finish_with_message(format!(
@@ -552,43 +667,51 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     }
                 }
             }
-            // The three arms below render structured Document selection
-            // diagnostics with terminal wording. Each suspends the progress bar
-            // belonging to the phase that produced it, because a diagnostic can
-            // arrive while that bar is live and the next redraw would otherwise
-            // corrupt or overwrite the line.
+            // The arms below render structured Document selection diagnostics
+            // with terminal wording. Every one suspends whatever progress display
+            // is live, because a diagnostic can arrive while one is drawing and
+            // the next redraw would otherwise corrupt or overwrite the line. The
+            // two that report on requested inputs arrive outside any phase, when
+            // no display is live, so for them the suspend is a direct write.
             ExtractionRunObservation::MissingInput { path } => {
-                self.output.print_error(&format!(
+                self.print_error_suspended(&format!(
                     "Warning: Input path does not exist: {}",
+                    path.display()
+                ));
+            }
+            ExtractionRunObservation::SkippedNonEpubInput { path } => {
+                // Wording names the eligibility rule rather than the flag that
+                // caused it: selection reports that only EPUBs were eligible and
+                // does not know why, so naming --cover-only here would put a fact
+                // in the sentence that no part of the run actually asserted.
+                self.print_error_suspended(&format!(
+                    "Warning: Skipped {}: this run extracts EPUB documents only",
                     path.display()
                 ));
             }
             ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } => {
                 // Recursive discovery can warn while its spinner is active; suspending
                 // prevents the next redraw from corrupting or overwriting the warning.
-                self.print_error_suspended(
-                    self.discovery_pb.as_ref(),
-                    &format!(
-                        "Warning: Could not inspect {} during document discovery: {}",
-                        path.display(),
-                        detail
-                    ),
-                );
+                self.print_error_suspended(&format!(
+                    "Warning: Could not inspect {} during document discovery: {}",
+                    path.display(),
+                    detail
+                ));
             }
-            ExtractionRunObservation::UnreadableEpubMetadata {
+            ExtractionRunObservation::UnreadableEpubDeclarations {
                 path,
                 purpose,
                 detail,
             } => match purpose {
-                EpubMetadataPurpose::Filtering => {
-                    self.print_error_suspended(
-                        self.epub_filter_pb.as_ref(),
-                        &format!("Warning: Could not read {}: {}", path.display(), detail),
-                    );
+                EpubDeclarationPurpose::Filtering => {
+                    self.print_error_suspended(&format!(
+                        "Warning: Could not read {}: {}",
+                        path.display(),
+                        detail
+                    ));
                 }
-                EpubMetadataPurpose::Deduplication => {
+                EpubDeclarationPurpose::Deduplication => {
                     self.print_error_suspended(
-                        self.epub_dedup_pb.as_ref(),
                         &format!(
                             "Warning: Could not read EPUB metadata from {} during deduplication; using filename fallback: {}",
                             path.display(),
@@ -605,38 +728,32 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     "Extracting images from documents"
                 };
                 pb.set_message(extraction_msg);
-                self.extraction_pb = Some(pb);
+                self.raise(DisplayPhase::Extraction, pb);
             }
             ExtractionRunObservation::DocumentStarted { display_name, .. } => {
-                if let Some(pb) = &self.extraction_pb {
+                if let Some(pb) = self.live_bar(DisplayPhase::Extraction) {
                     pb.set_message(display_name);
                 }
             }
             ExtractionRunObservation::DocumentError { path, message } => {
-                self.print_error_suspended(
-                    self.extraction_pb.as_ref(),
-                    &format!("Error processing {}: {}", path.display(), message),
-                );
+                self.print_error_suspended(&format!(
+                    "Error processing {}: {}",
+                    path.display(),
+                    message
+                ));
             }
             ExtractionRunObservation::DocumentWarning { warning, .. } => {
                 // The document path stays run context only; presentation adds the
                 // prefix and nothing else to the Document extraction-owned body.
-                self.print_error_suspended(
-                    self.extraction_pb.as_ref(),
-                    &document_warning_line(&warning),
-                );
+                self.print_error_suspended(&document_warning_line(&warning));
             }
             ExtractionRunObservation::DocumentFinished { .. } => {
-                if let Some(pb) = &self.extraction_pb {
+                if let Some(pb) = self.live_bar(DisplayPhase::Extraction) {
                     pb.inc(1);
                 }
             }
             ExtractionRunObservation::Terminal(outcome) => {
-                if matches!(outcome, ExtractionRunOutcome::NoDocuments) {
-                    self.output.print(&final_summary_message(&outcome));
-                } else {
-                    self.finish_extraction(final_summary_message(&outcome));
-                }
+                self.finish_run(final_summary_message(&outcome));
             }
         }
     }
@@ -654,12 +771,14 @@ fn document_warning_line(warning: &DocumentExtractionWarning) -> String {
 fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
     match outcome {
         ExtractionRunOutcome::NoDocuments => "No documents found to process.".to_string(),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images) => {
-            "No images found".to_string()
-        }
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers) => {
-            "No cover images found".to_string()
-        }
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            ..
+        } => "No images found".to_string(),
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            ..
+        } => "No cover images found".to_string(),
         ExtractionRunOutcome::ProducedOutput(output) => {
             let item_name = match output.output_kind() {
                 ExtractionOutputKind::Images => "image(s)",

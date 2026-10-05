@@ -51,6 +51,14 @@ word-image-extractor book.epub -f png,jpg
 | `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
+| `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
+| `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when it has no cover |
+
+## EPUB Covers
+
+`--cover-only` extracts one cover image per EPUB. It applies to EPUB files alone: `.docx` inputs are not eligible for a cover run and are skipped before extraction begins. A `.docx` you name on the command line is reported as skipped; one found while searching a directory is dropped without a message, the same way an EPUB that fails a title or author filter is.
+
+`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring `.docx` files back into a cover run.
 
 ## Conversion
 
@@ -73,6 +81,21 @@ Extracted images use the book's metadata for naming in the format "Author - Titl
 - No metadata: Falls back to filename like `.docx` files
 
 Invalid filename characters in metadata are automatically replaced with underscores.
+
+For both document kinds, the number is the image's position in the document, counted
+across every image it emits. GIFs routed to a separate directory with `--gif-output`
+keep their place in that count, so a document with one PNG and one GIF writes
+`document_1.png` in the output directory and `document_2.gif` in the GIF directory.
+
+## Exit Status
+
+- `0`: the run completed and no document failed. This includes runs that found no
+  documents or no images, and runs whose only problems were printed as warnings.
+- `1`: at least one document failed to extract (each is printed as an
+  `Error processing ...` line, and the run still processes the rest), or the
+  options were valid to parse but could not be combined, such as `--quality` with
+  `--convert png`.
+- `2`: the command line could not be parsed.
 
 ## License
 

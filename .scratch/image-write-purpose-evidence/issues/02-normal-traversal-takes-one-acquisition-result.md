@@ -2,7 +2,7 @@
 
 **What to build:** A document adapter hands each resource to normal-image traversal through a single visitor method, `visit`, which takes the Archive image source and a standard `Result` holding either a mutable reader or any displayable error. The adapter no longer writes a two-armed visit-or-unreadable dispatch per resource, and the separate `unreadable` method is removed. Inside `visit`, the Image write purpose's eligibility decision is applied first, for both arms. A rejected source is skipped silently whatever the acquisition result. An eligible unavailable source records the existing acquisition-failure warning. An eligible readable source goes through Archive image discovery exactly as before. The visitor stays scoped to normal-image traversal's closure and keeps its name.
 
-This is a behaviour-preserving refactor: every file, name, warning, warning order and count stays the same, and all discovery warnings still come before all conversion warnings. Governing decision: ADR-0008. Spec: `.scratch/image-write-purpose-evidence/spec.md` (user stories 4–5, 16–17, 19, 21).
+This is a behaviour-preserving refactor: every file, name, warning, warning order and count stays the same, and all discovery warnings still come before all conversion warnings. Governing decision: ADR-0015. Spec: `.scratch/image-write-purpose-evidence/spec.md` (user stories 4–5, 16–17, 19, 21).
 
 **Blocked by:** 01 — The Image write purpose decides source eligibility and path evidence (the visitor consumes the reshaped eligibility decision, and both tickets edit the same visitor code)
 

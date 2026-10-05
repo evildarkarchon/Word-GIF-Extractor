@@ -4,13 +4,12 @@ use super::*;
 use crate::extraction_run_intake::{self, Args};
 use crate::extraction_run_observation::{DocumentDiscoveryScope, ProducedOutput};
 use crate::test_support::{
-    RecordingRunObserver, create_directory_link, remove_directory_link, temp_test_dir, write_docx,
-    write_epub_document,
+    RecordingRunObserver, create_directory_link, no_fallback_directory, remove_directory_link,
+    temp_test_dir, valid_png, write_docx, write_epub_document,
 };
 use clap::Parser;
-use image::DynamicImage;
 use std::fs;
-use std::io::Cursor;
+use std::num::NonZeroUsize;
 
 /// Prepares one production request from directly built options.
 ///
@@ -18,8 +17,8 @@ use std::io::Cursor;
 /// cares about and leave the rest at their parsed-with-no-flags values. Nothing here
 /// has to know how a flag is spelled.
 fn prepare_request_from(args: Args) -> ExtractionRunRequest {
-    let prepared =
-        extraction_run_intake::prepare(args).expect("Extraction run intake should succeed");
+    let prepared = extraction_run_intake::prepare(args, no_fallback_directory)
+        .expect("Extraction run intake should succeed");
     assert!(prepared.notices.is_empty());
     prepared.request
 }
@@ -69,20 +68,13 @@ fn assert_single_terminal_observation(
 }
 
 /// Encodes a valid PNG payload for run-level conversion assertions.
-fn valid_png() -> Vec<u8> {
-    let mut cursor = Cursor::new(Vec::new());
-    DynamicImage::new_rgba8(1, 1)
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .expect("test PNG should encode");
-    cursor.into_inner()
-}
 
 #[test]
 fn no_selected_documents_returns_no_documents_outcome() {
     let temp_dir = temp_test_dir("run", "no-documents");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let request = prepare_request_from(Args {
-        inputs: vec![temp_dir.clone()],
+        inputs: vec![temp_dir.to_path_buf()],
         ..Args::default()
     });
     let mut observer = RecordingRunObserver::default();
@@ -96,8 +88,6 @@ fn no_selected_documents_returns_no_documents_outcome() {
         ExtractionRunObservation::ExtractionStarted { .. }
             | ExtractionRunObservation::DocumentStarted { .. }
     )));
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -144,8 +134,6 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
         ExtractionRunObservation::ExtractionStarted { .. }
             | ExtractionRunObservation::DocumentStarted { .. }
     )));
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies in-scan discovery diagnostics retain their order through the run seam.
@@ -176,7 +164,10 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert!(matches!(
         observer.observations.as_slice(),
@@ -195,7 +186,6 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
     assert_single_terminal_observation(&observer, &outcome);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies recursive discovery diagnostics retain order in the unified run stream.
@@ -225,7 +215,10 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert!(matches!(
         observer.observations.as_slice(),
@@ -255,7 +248,6 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
     assert_single_terminal_observation(&observer, &outcome);
 
     remove_directory_link(&broken_link);
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -279,7 +271,10 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert_eq!(
         observer.observations,
@@ -308,13 +303,12 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
             ExtractionRunObservation::DocumentFinished {
                 path: input_path.clone(),
             },
-            ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput(
-                ExtractionOutputKind::Images,
-            )),
+            ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput {
+                output_kind: ExtractionOutputKind::Images,
+                failed_documents: None
+            }),
         ]
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -337,11 +331,12 @@ fn selected_document_without_images_returns_image_no_output() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -365,7 +360,60 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None
+        }
+    );
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+#[test]
+fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
+    // --cover-only extracts EPUB covers, and a DOCX has no cover to extract, so
+    // it is not eligible work for the run at all. Selection drops it before the
+    // run counts documents, which is why `total` is 1 rather than 2 and the DOCX
+    // never reaches extraction. Naming the DOCX on the command line is what earns
+    // the diagnostic; a DOCX swept up by traversal is dropped silently.
+    let temp_dir = temp_test_dir("run", "cover-only-skips-docx");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let docx_path = temp_dir.join("sample.docx");
+    let epub_path = temp_dir.join("book.epub");
+    let output_dir = temp_dir.join("output");
+    write_docx(
+        &docx_path,
+        &[("word/media/image.png", b"\x89PNG\r\n\x1A\n")],
+    );
+    write_epub_document(
+        &epub_path,
+        "Test Creator",
+        "Covered",
+        Some(("cover.jpg", b"\xFF\xD8\xFFcover", true)),
+    );
+
+    let request = prepare_request(vec![
+        "test".to_string(),
+        docx_path.to_string_lossy().into_owned(),
+        epub_path.to_string_lossy().into_owned(),
+        "--output".to_string(),
+        output_dir.to_string_lossy().into_owned(),
+        "--cover-only".to_string(),
+    ]);
+    let mut observer = RecordingRunObserver::default();
+
+    let outcome = run(request, &mut observer);
+    let output = produced(&outcome);
+
+    assert_eq!(output.output_kind(), ExtractionOutputKind::Covers);
+    assert_eq!(output.emitted_images(), 1);
+    assert_eq!(output.documents_with_output(), 1);
+    assert!(output_dir.join("Test Creator - Covered.jpg").exists());
+    assert!(!output_dir.join("sample.png").exists());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: docx_path.clone()
+        }]
     );
     assert_single_terminal_observation(&observer, &outcome);
 
@@ -400,8 +448,6 @@ fn normal_document_output_returns_produced_images() {
     assert!(output.conversion().is_none());
     assert!(output.gif_routing().is_none());
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -430,8 +476,6 @@ fn epub_normal_fallback_is_classified_as_images() {
         produced(&outcome).output_kind(),
         ExtractionOutputKind::Images
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -458,8 +502,6 @@ fn requested_conversion_retains_valid_zero_totals() {
         produced(&outcome).conversion(),
         Some(&ConversionFacts::new(0, 0))
     );
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -487,8 +529,6 @@ fn routed_gif_retains_its_count_and_destination() {
     assert!(output.conversion().is_none());
     assert_eq!(gif_routing.routed_gifs(), 1);
     assert_eq!(gif_routing.destination(), gif_destination);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -533,8 +573,6 @@ fn produced_outcome_retains_combined_conversion_and_gif_routing_facts() {
         .expect("routed GIF facts should be present");
     assert_eq!(gif_routing.routed_gifs(), 1);
     assert_eq!(gif_routing.destination(), gif_output);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 #[test]
@@ -613,8 +651,35 @@ fn epub_identity_is_consistent_across_normal_and_cover_runs() {
             "Test Creator - Declared Title"
         ]
     );
+}
 
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
+/// Verifies a run whose only document fails reports that failure without output.
+///
+/// "No images found" and "every document failed" used to be the same outcome; the
+/// failure count is what now tells them apart.
+#[test]
+fn failed_document_without_output_is_counted_in_no_output() {
+    let temp_dir = temp_test_dir("run", "failed-without-output");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let broken_path = temp_dir.join("broken.docx");
+    fs::write(&broken_path, b"not a zip archive").expect("broken DOCX should be writable");
+    let request = prepare_request(vec![
+        "test".to_string(),
+        broken_path.to_string_lossy().into_owned(),
+        "--output".to_string(),
+        temp_dir.join("output").to_string_lossy().into_owned(),
+    ]);
+    let mut observer = RecordingRunObserver::default();
+
+    let outcome = run(request, &mut observer);
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: NonZeroUsize::new(1),
+        }
+    );
 }
 
 #[test]
@@ -658,6 +723,20 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
     assert_eq!(output.emitted_images(), 3);
     assert_eq!(output.documents_with_output(), 2);
+    // The failed document's partial output still counts as output, and the failure
+    // is a second fact the outcome carries beside it.
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Images,
+            NonZeroUsize::new(3).expect("three is nonzero"),
+            NonZeroUsize::new(2).expect("two is nonzero"),
+            None,
+            None,
+            NonZeroUsize::new(1),
+        )
+        .expect("expected outcome should be semantically valid")
+    );
     assert!(output_dir.join("failing_1.png").exists());
     assert!(output_dir.join("failing_2.png").exists());
     assert!(output_dir.join("succeeding.png").exists());
@@ -724,8 +803,6 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     assert_eq!(succeeding_finish_indices.len(), 1);
     assert!(succeeding_start < succeeding_finish_indices[0]);
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }
 
 /// Verifies the run transports opaque warning values with their document paths.
@@ -815,6 +892,4 @@ fn run_carries_opaque_document_extraction_warnings_with_originating_paths() {
     assert!(started_at(&second_path) < warnings[2].0);
     assert!(warnings[2].0 < finished_at(&second_path));
     assert_single_terminal_observation(&observer, &outcome);
-
-    fs::remove_dir_all(temp_dir).expect("temporary directory should be removable");
 }

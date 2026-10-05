@@ -63,8 +63,6 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
         },
     )
     .expect("resource archive should open");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -96,8 +94,6 @@ fn percent_decoded_aliases_share_archive_resource_identity() {
         },
     )
     .expect("resource archive should open");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -118,8 +114,6 @@ fn unresolved_duplicate_manifest_paths_have_distinct_archive_resource_identities
         },
     )
     .expect("resource archive should open despite unresolved resources");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -139,8 +133,6 @@ fn resources_are_ordered_by_resolved_path_with_manifest_fallback() {
         },
     )
     .expect("resource archive should open");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -185,8 +177,6 @@ fn resource_order_uses_manifest_id_ties_and_retains_equal_declaration_order() {
         },
     )
     .expect("resource archive should open");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -217,8 +207,6 @@ fn invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure() {
         },
     )
     .expect("resource archive should open despite unresolved resources");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -249,8 +237,6 @@ fn malformed_percent_escape_is_retained_as_typed_acquisition_failure() {
         },
     )
     .expect("resource archive should open despite unresolved resources");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -280,8 +266,6 @@ fn unopenable_resource_is_nonfatal_and_does_not_invoke_its_consumer() {
         },
     )
     .expect("catalog construction should remain payload-free");
-
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -306,7 +290,6 @@ fn consumer_failure_propagates_with_its_concrete_error_identity() {
     .expect("resource archive should open");
 
     assert!(error.downcast_ref::<ConsumerFailure>().is_some());
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }
 
 #[test]
@@ -346,5 +329,4 @@ fn catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session() {
     .expect("resource archive session should open");
 
     assert_eq!(consumer_calls.get(), 2);
-    fs::remove_file(path).expect("temporary EPUB should be removable");
 }

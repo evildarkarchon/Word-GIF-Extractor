@@ -2,7 +2,7 @@
 
 **What to build:** A document adapter describes an archive resource with one purpose-neutral Archive image source constructor — its name, plus an optional builder step for the declared MIME — and the Image write purpose alone decides what those facts mean. The purpose's eligibility decision becomes a single two-way answer: reject, or inspect carrying the optional name it accepts as path evidence. Normal images reject an unsafe name under the existing archive-path safety rule and otherwise inspect with the name as evidence; a required cover always inspects with no path evidence. Archive image discovery passes the accepted evidence into Image format identification (magic bytes, then accepted path extension, then declared MIME) and into the extension-fallback warning instead of reading the source again. The single-variant filtered-format action goes away: the filtered-format decision returns only its optional warning, and discovery still completes without emission for a filtered format.
 
-This is a behaviour-preserving refactor: every file, name, warning, warning order and count stays the same. Governing decision: ADR-0008. Spec: `.scratch/image-write-purpose-evidence/spec.md` (user stories 1–3, 9–13, 19–20, 25).
+This is a behaviour-preserving refactor: every file, name, warning, warning order and count stays the same. Governing decision: ADR-0015. Spec: `.scratch/image-write-purpose-evidence/spec.md` (user stories 1–3, 9–13, 19–20, 25).
 
 **Blocked by:** None — can start immediately
 

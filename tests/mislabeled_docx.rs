@@ -34,6 +34,4 @@ fn extracts_mislabeled_png_when_filtering_for_png() {
     // Identifying the payload from its magic bytes is the normal path, not a fallback,
     // so nothing is warned about.
     assert_eq!(capture.stderr(), "", "unexpected standard error");
-
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }

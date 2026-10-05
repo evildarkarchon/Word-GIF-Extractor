@@ -15,13 +15,11 @@ use support::{temp_test_dir, write_png_docx};
 
 /// Verifies the shipped binary wires its arguments through and exits successfully.
 ///
-/// The exit assertion is weaker than it looks, knowingly so. `main` discards the
-/// Extraction run outcome, so the binary exits zero for a run that found no documents,
-/// produced no output, or failed every document it opened — a successful exit therefore
-/// says nothing about whether the run achieved anything, which is why the emitted file is
-/// asserted separately. That is a known defect, deliberately out of scope for the test
-/// conversion this file belongs to; the assertion pins current behaviour rather than
-/// fixing it. Whoever gives the outcomes exit codes should expect to strengthen it.
+/// A successful exit means no document failed, per ADR-0014, not that anything was
+/// produced: a run that found no documents or no images also exits zero, because
+/// finding nothing is an answer rather than a failure. That is why the emitted file is
+/// asserted separately. The failure side of the contract is pinned by
+/// [`compiled_binary_exits_with_failure_when_a_document_fails`].
 #[test]
 fn compiled_binary_extracts_and_exits_successfully() {
     let temp_dir = temp_test_dir("binary-smoke", "successful-exit");
@@ -50,6 +48,36 @@ fn compiled_binary_extracts_and_exits_successfully() {
         "expected the extracted PNG in {}",
         output_dir.display()
     );
+}
 
-    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+/// Verifies a run whose document fails to extract exits with the failure status.
+///
+/// The document is selected by its extension and then cannot be opened as an archive,
+/// so the run reports it as an error and carries on to its summary. Only the process
+/// exit status says whether the run as a whole succeeded, which is why this lives in
+/// the one file that drives the compiled binary.
+#[test]
+fn compiled_binary_exits_with_failure_when_a_document_fails() {
+    let temp_dir = temp_test_dir("binary-smoke", "failed-document-exit");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    let docx_path = temp_dir.join("broken.docx");
+    fs::write(&docx_path, b"not a zip archive").expect("broken DOCX should be writable");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"))
+        .arg(&docx_path)
+        .arg("--output")
+        .arg(temp_dir.join("output"))
+        .output()
+        .expect("extractor binary should run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Error processing"),
+        "the failed document should be reported as an error: {stderr}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a run with a failed document should exit with status 1\nstderr: {stderr}"
+    );
 }

@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 
-Governing decision: ADR-0008 (Let the Image write purpose interpret Archive image sources). Glossary terms used here — Archive image source, Image write purpose, Archive image discovery, Image write pipeline, Image write policy, Image file emission, EPUB resource archive, EPUB cover extraction, Emitted image role — are defined in `CONTEXT.md`.
+Governing decision: ADR-0015 (Let the Image write purpose interpret Archive image sources). Glossary terms used here — Archive image source, Image write purpose, Archive image discovery, Image write pipeline, Image write policy, Image file emission, EPUB resource archive, EPUB cover extraction, Emitted image role — are defined in `CONTEXT.md`.
 
 ## Problem Statement
 
@@ -58,7 +58,7 @@ Users of the command-line tool see no difference: every file, name, warning, war
   - unidentified, filtered and conversion-declined covers complete;
   - an emitted cover completes, and uses singular output naming.
 - **Deleted from the cover path.** The required-cover visitor type, its disposition enum, its "exactly one source" guard and both runtime protocol errors are deleted.
-- **One request type.** The two field-identical request types merge under the existing normal-images request name, with one purpose-neutral constructor taking output directory and base name. The name deliberately avoids "placement" (see ADR-0008).
+- **One request type.** The two field-identical request types merge under the existing normal-images request name, with one purpose-neutral constructor taking output directory and base name. The name deliberately avoids "placement" (see ADR-0015).
 - **Adapters.**
   - The DOCX adapter makes one visitor call per ZIP entry, passing the entry-open result mapped to a reader. Its source-name fallback for unnamed entries stays as it is.
   - The EPUB adapter's normal-image traversal calls the visitor with the readable payload inside the resource archive's scoped acquisition, and with the unavailability fact when acquisition reports the resource unavailable.
@@ -90,7 +90,7 @@ Users of the command-line tool see no difference: every file, name, warning, war
 
 - Binding the pipeline and output placement into a per-document write target, and removing the EPUB adapter's plan copy of the resource catalog (architecture review candidate 04).
 - Replacing the normal-image output flag with a closed "emitted for" value that Document extraction maps to its output purpose (architecture review candidate 03).
-- Inverting control so that the pipeline drives iteration over an adapter-implemented source trait (rejected in ADR-0008).
+- Inverting control so that the pipeline drives iteration over an adapter-implemented source trait (rejected in ADR-0015).
 - Collapsing the Image write purpose trait into a closed enum, or changing the conversion decision's optional result (ADR-0007's deferred item).
 - Moving output naming into Image file emission, and the naming-namespace overlap between collision suffixes and multi-image numbering (architecture review candidate 05).
 - Removing the base name from pipeline conversion warnings.
@@ -98,6 +98,6 @@ Users of the command-line tool see no difference: every file, name, warning, war
 
 ## Further Notes
 
-- `CONTEXT.md` has already been updated: Image write purpose now states that it interprets Archive image source facts, and Archive image source is newly defined. ADR-0008 has already been written. Both were written ahead of the code change they govern, in the manner of ADR-0006 and ADR-0007, and are not yet committed.
+- `CONTEXT.md` has already been updated: Image write purpose now states that it interprets Archive image source facts, and Archive image source is newly defined. ADR-0015 has already been written. Both were written ahead of the code change they govern, in the manner of ADR-0006 and ADR-0007, and are not yet committed.
 - The architecture review found one piece of independent evidence of the current hazard: the purpose module's own test asserts that a cover-built source is unsafe for normal traversal. That test exists because the pairing has to be remembered by callers, and its replacement in this spec is the clearest sign the leak is closed.
-- Suggested commit order, following the repository's recent precedent: the documentation changes (ADR-0008 and the glossary edits) first, then the pipeline refactor and the adapter call-site updates together, so that every commit builds and passes tests.
+- Suggested commit order, following the repository's recent precedent: the documentation changes (ADR-0015 and the glossary edits) first, then the pipeline refactor and the adapter call-site updates together, so that every commit builds and passes tests.
