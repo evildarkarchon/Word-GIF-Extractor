@@ -275,6 +275,14 @@ pub(crate) enum RequiredCoverWriteOutcome {
 }
 
 /// Immutable Image write pipeline configured for one Extraction run.
+///
+/// It holds nothing but its policy, and stays a type of its own anyway, for the
+/// reason [`DocumentExtraction`] stays distinct from its Document extraction
+/// policy: the policy is the run's choices, and this is the process that applies
+/// them. Merging the two would leave either a policy that writes images or an
+/// intake that builds the pipeline itself.
+///
+/// [`DocumentExtraction`]: crate::document_extraction::DocumentExtraction
 pub(crate) struct ImageWritePipeline {
     policy: ImageWritePolicy,
 }

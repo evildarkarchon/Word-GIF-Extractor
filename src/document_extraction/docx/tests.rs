@@ -2,9 +2,10 @@
 
 use super::*;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
-use crate::test_support::{temp_test_dir, write_docx, write_extension_fallback_docx};
-use std::collections::HashSet;
+use crate::image_write_pipeline::ImageWriteWarning;
+use crate::test_support::{
+    pipeline_accepting, temp_test_dir, write_docx, write_extension_fallback_docx,
+};
 use std::fs;
 
 #[test]
@@ -18,11 +19,7 @@ fn returns_extension_fallback_warning_fact() {
     let result = process_file(
         &input_path,
         &OutputPlacement::new(&output_dir, "sample"),
-        &ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Png]),
-            None,
-            None,
-        )),
+        &pipeline_accepting([ImageFormat::Png]),
     )
     .expect("DOCX extraction should succeed");
 
@@ -60,11 +57,7 @@ fn preserves_zip_order_for_numbered_outputs() {
     let result = process_file(
         &input_path,
         &OutputPlacement::new(&output_dir, "sample"),
-        &ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
-            None,
-            None,
-        )),
+        &pipeline_accepting([ImageFormat::Png, ImageFormat::Gif]),
     )
     .expect("DOCX extraction should succeed");
 

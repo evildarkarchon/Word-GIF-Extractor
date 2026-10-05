@@ -6,12 +6,11 @@ use crate::document_selection::{
     DocumentSelectionOptions, EpubFilter, SelectedDocument, SelectedEpub, select_documents,
 };
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
+use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    SilentExtractionRunObserver, temp_test_dir, write_epub_with_one_image,
+    SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_epub_with_one_image,
     write_stored_epub_fixture,
 };
-use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -98,11 +97,7 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
             ("OEBPS/images/b.jpg", cover),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(
@@ -146,11 +141,7 @@ fn extracts_epub_resource_by_magic_before_declared_extension_and_mime() {
         MINIMAL_PNG,
     );
 
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -178,11 +169,7 @@ fn extracts_epub_resource_by_magic_without_declared_image_hints() {
         MINIMAL_PNG,
     );
 
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -208,11 +195,7 @@ fn missing_manifest_resource_warns_and_later_image_is_extracted() {
         ],
         &[("OEBPS/images/b.png", MINIMAL_PNG)],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -256,11 +239,7 @@ fn epub_batch_output_uses_resolved_path_order() {
             ("OEBPS/images/a.png", &first_by_path),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -300,11 +279,7 @@ fn percent_decoded_resource_sorts_by_resolved_zip_path() {
             ("OEBPS/images/a.png", &first_by_resolved_path),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -334,11 +309,7 @@ fn percent_decoded_manifest_path_falls_back_to_matching_zip_entry() {
         &[("image", "images/cover%20art.png", "image/png", None)],
         &[("OEBPS/images/cover art.png", MINIMAL_PNG)],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -371,11 +342,7 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
             ("OEBPS/images/cover art.png", &decoded_payload),
         ],
     );
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
@@ -399,11 +366,7 @@ fn archive_open_failure_after_selection_is_a_fatal_extraction_error() {
     write_epub_with_one_image(&input_path, "images/image.png", "image/png", MINIMAL_PNG);
     let selected = select_epub(&input_path, &output_dir);
     fs::remove_file(&input_path).expect("selected EPUB should be removable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
         .expect_err("archive-open failure should be fatal");
@@ -429,11 +392,7 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
     write_epub_with_one_image(&input_path, "images/image.png", "image/png", MINIMAL_PNG);
     let selected = select_epub(&input_path, &output_dir);
     fs::write(&input_path, b"not a ZIP archive").expect("selected EPUB should be replaceable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure = extract(selected, DocumentExtractionPolicy::NormalImages, &pipeline)
         .expect_err("archive-parse failure should be fatal");
@@ -482,11 +441,7 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
         ],
     );
     corrupt_stored_payload(&input_path, corrupt_cover);
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]);
     let selected = select_epub(&input_path, &output_dir);
 
     let result = extract(

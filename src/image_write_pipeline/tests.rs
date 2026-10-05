@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
-use crate::test_support::{FailAfterReader, temp_test_dir};
+use crate::test_support::{FailAfterReader, pipeline_accepting, temp_test_dir};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
@@ -81,11 +81,7 @@ fn mime_source(
 #[test]
 fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-default-jpeg");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg]);
     let original = vec![0x5a; 4096];
     let mut reader = Cursor::new(original.clone());
 
@@ -138,11 +134,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
 #[test]
 fn required_cover_completing_without_emission_is_a_final_outcome() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-filter");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let mut reader = Cursor::new(vec![0xff; 4096]);
     reader.get_mut()[..3].copy_from_slice(b"\xFF\xD8\xFF");
 
@@ -169,11 +161,7 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
 #[test]
 fn required_cover_acquisition_failure_permits_another_candidate() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-tail-failure");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Jpg]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Jpg]);
     let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
 
     let outcome = pipeline
@@ -304,8 +292,7 @@ fn required_gif_cover_routes_without_conversion() {
 #[test]
 fn emitted_file_is_named_from_the_identified_format() {
     let temp_dir = temp_test_dir("pipeline", "format-derived-output-name");
-    let pipeline =
-        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let pipeline = pipeline_accepting(ImageFormat::all_set());
     let payload = b"RIFF\x00\x00\x00\x00WEBP payload".to_vec();
 
     let result = write_sources(
@@ -329,8 +316,7 @@ fn emitted_file_is_named_from_the_identified_format() {
 #[test]
 fn magic_evidence_outranks_conflicting_extension_and_mime() {
     let temp_dir = temp_test_dir("pipeline", "magic-precedence");
-    let pipeline =
-        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let pipeline = pipeline_accepting(ImageFormat::all_set());
 
     let result = write_sources(
         &pipeline,
@@ -363,11 +349,7 @@ fn magic_evidence_outranks_conflicting_extension_and_mime() {
 #[test]
 fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
     let temp_dir = temp_test_dir("pipeline", "normal-images");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let mut original = vec![0; 4096];
     original[..MINIMAL_PNG.len()].copy_from_slice(MINIMAL_PNG);
     for (index, byte) in original[MINIMAL_PNG.len()..].iter_mut().enumerate() {
@@ -406,11 +388,7 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
 #[test]
 fn non_emitting_discovery_outcomes_move_no_counts() {
     let temp_dir = temp_test_dir("pipeline", "non-emitting-outcomes");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = write_sources(
         &pipeline,
@@ -438,11 +416,7 @@ fn failed_normal_emission_does_not_report_normal_output() {
     let blocked_output = temp_dir.join("not-a-directory");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
     fs::write(&blocked_output, b"occupied").expect("blocking file should be creatable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure = write_sources(
         &pipeline,
@@ -462,11 +436,7 @@ fn failed_normal_emission_does_not_report_normal_output() {
 #[test]
 fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
     let temp_dir = temp_test_dir("pipeline", "tail-read-failure");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let failing_payload = vec![0; 2048];
     let mut failing_source = FailAfterReader::new(failing_payload, 1100);
     let mut valid_source = Cursor::new(MINIMAL_PNG);
@@ -510,11 +480,7 @@ fn extension_fallback_warning_precedes_tail_failure_and_later_source_emits() {
 #[test]
 fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
     let temp_dir = temp_test_dir("pipeline", "svg-evidence-window");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Svg]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Svg]);
     let mut svg = b"\xEF\xBB\xBF".to_vec();
     svg.extend(std::iter::repeat_n(b' ', 1019));
     svg.extend_from_slice(b"<svg>");
@@ -587,11 +553,7 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
 #[test]
 fn earlier_images_are_emitted_before_third_payload_is_fully_read() {
     let temp_dir = temp_test_dir("pipeline", "two-image-lookahead");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
     let mut first = Cursor::new(MINIMAL_PNG);
     let mut second = Cursor::new(MINIMAL_PNG);
     let mut third_payload = vec![0; 2048];
@@ -633,11 +595,7 @@ fn concurrent_image_emissions_preserve_every_payload() {
         let output_dir = temp_dir.clone();
         let barrier = barrier.clone();
         writers.push(std::thread::spawn(move || {
-            let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-                HashSet::from([ImageFormat::Png]),
-                None,
-                None,
-            ));
+            let pipeline = pipeline_accepting([ImageFormat::Png]);
 
             barrier.wait();
             write_sources(
@@ -688,11 +646,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     fs::write(temp_dir.join("shared.png"), b"existing")
         .expect("existing output should be writable");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = write_sources(
         &pipeline,
@@ -719,11 +673,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
 #[test]
 fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
     let temp_dir = temp_test_dir("pipeline", "extension-fallback");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = write_sources(
         &pipeline,
@@ -756,11 +706,7 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
 #[test]
 fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
     let temp_dir = temp_test_dir("pipeline", "unreadable-source-eligibility");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = pipeline
         .write_from(&OutputPlacement::new(&temp_dir, "sample"), |visitor| {
@@ -867,11 +813,7 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
     let temp_dir = temp_test_dir("pipeline", "unconfigured-policy-counts");
     let png = MINIMAL_PNG.to_vec();
     let gif = b"GIF89a unrouted payload".to_vec();
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png, ImageFormat::Gif]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png, ImageFormat::Gif]);
 
     let result = write_sources(
         &pipeline,
@@ -962,11 +904,7 @@ fn routed_gif_bypasses_conversion() {
 #[test]
 fn mime_is_used_only_after_magic_and_extension_evidence_fail() {
     let temp_dir = temp_test_dir("pipeline", "mime-source");
-    let pipeline = ImageWritePipeline::new(ImageWritePolicy::new(
-        HashSet::from([ImageFormat::Png]),
-        None,
-        None,
-    ));
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = write_sources(
         &pipeline,
@@ -1181,8 +1119,7 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
 /// pipeline records why and leaves the next candidate to EPUB cover extraction.
 #[test]
 fn unavailable_required_cover_retries_with_its_acquisition_warning() {
-    let pipeline =
-        ImageWritePipeline::new(ImageWritePolicy::new(ImageFormat::all_set(), None, None));
+    let pipeline = pipeline_accepting(ImageFormat::all_set());
 
     let outcome = pipeline.required_cover_unavailable("OPS/cover.jpg", "entry is missing");
 

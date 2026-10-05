@@ -6,8 +6,8 @@ use crate::document_selection::{DocumentSelectionOptions, EpubFilter, select_doc
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
-    SilentExtractionRunObserver, temp_test_dir, write_docx, write_epub_fixture, write_epub_image,
-    write_epub_with_resources,
+    SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_docx, write_epub_fixture,
+    write_epub_image, write_epub_with_resources,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -65,11 +65,7 @@ fn docx_uses_normal_images_when_policy_requests_an_epub_cover() {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: false,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Png]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Png]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -215,11 +211,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: false,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let unidentified = select_one_document(&unidentified_path, &unidentified_output);
     let DocumentExtractionOutcome::Completed(unidentified_facts) =
@@ -251,11 +243,7 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: false,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let filtered = select_one_document(&filtered_path, &filtered_output);
     let DocumentExtractionOutcome::Completed(filtered_facts) =
@@ -400,11 +388,7 @@ fn epub_cover_retry_warning_bodies_precede_filename_retry_and_normal_fallback() 
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: true,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg, ImageFormat::Png]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -445,11 +429,7 @@ fn epub_cover_output_is_classified_as_covers_only() {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: false,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -478,11 +458,7 @@ fn epub_cover_fallback_is_classified_as_normal_images() {
         DocumentExtractionPolicy::EpubCover {
             fallback_to_normal_images: true,
         },
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -514,11 +490,7 @@ fn normal_policy_extracts_epub_images_through_document_extraction() {
     );
     let extraction = DocumentExtraction::new(
         DocumentExtractionPolicy::NormalImages,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
     let document = select_one_document(&input_path, &output_dir);
 
@@ -572,11 +544,7 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
     );
     let extraction = DocumentExtraction::new(
         DocumentExtractionPolicy::NormalImages,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
 
     let document = selected
@@ -624,11 +592,7 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
     );
     let extraction = DocumentExtraction::new(
         DocumentExtractionPolicy::NormalImages,
-        ImageWritePipeline::new(ImageWritePolicy::new(
-            HashSet::from([ImageFormat::Jpg]),
-            None,
-            None,
-        )),
+        pipeline_accepting([ImageFormat::Jpg]),
     );
 
     let document = selected

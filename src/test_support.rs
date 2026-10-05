@@ -34,6 +34,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
+use crate::image_format::ImageFormat;
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 
 /// Returns an unused temporary directory path for one test.
 ///
@@ -62,6 +64,22 @@ pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "word-image-extractor-{area}-{test_name}-{}-{nanos}",
         std::process::id()
+    ))
+}
+
+/// Builds an Image write pipeline that accepts `formats` and does nothing else.
+///
+/// No Conversion policy and no GIF destination: the shape nearly every pipeline
+/// test wants, so a call site names only the formats its test is about. A test
+/// that configures conversion or GIF routing spells out both constructors, which
+/// keeps what is unusual about it visible.
+pub(crate) fn pipeline_accepting(
+    formats: impl IntoIterator<Item = ImageFormat>,
+) -> ImageWritePipeline {
+    ImageWritePipeline::new(ImageWritePolicy::new(
+        formats.into_iter().collect(),
+        None,
+        None,
     ))
 }
 
