@@ -4,8 +4,9 @@ use std::fs;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
+use crate::conversion::ConversionTarget;
 use crate::extraction_run::run as execute_extraction_run;
 use crate::extraction_run_intake::prepare as prepare_extraction_run;
 use crate::extraction_run_observation::{ConversionFacts, GifRoutingFacts};
@@ -184,6 +185,67 @@ fn test_lossless_with_png_error() {
         "Error was: {}",
         err_msg
     );
+}
+
+/// Verifies every flag the intake error wording names is a flag `Args` defines.
+///
+/// The wording stays here because this module owns every word the tool says, which
+/// leaves it far from the `clap` definitions it spells. A renamed field or `long`
+/// override would leave it naming a flag that no longer exists, with nothing failing
+/// to compile. This renders all four Conversion policy arms -- including the two
+/// `clap` pre-empts on the command line -- and resolves every `--name` it finds,
+/// plus the value that follows a flag with a closed set of values, against the
+/// command definition itself.
+#[test]
+fn intake_error_wording_names_only_flags_args_defines() {
+    let command = Args::command();
+    let errors = [
+        ConversionPolicyError::QualityOutOfRange { quality: 0 },
+        ConversionPolicyError::QualityUnsupportedForPng,
+        ConversionPolicyError::LosslessUnsupportedForTarget {
+            target: ConversionTarget::Jpg,
+        },
+        ConversionPolicyError::LosslessConflictsWithQuality,
+    ];
+
+    for error in errors {
+        let message =
+            render_intake_error(ExtractionRunIntakeError::ConversionPolicy(error)).to_string();
+        let words = message.split_whitespace().collect::<Vec<_>>();
+        let mut flags_named = 0;
+
+        for (index, word) in words.iter().enumerate() {
+            let Some(long) = word.strip_prefix("--") else {
+                continue;
+            };
+            flags_named += 1;
+            let argument = command
+                .get_arguments()
+                .find(|argument| argument.get_long() == Some(long))
+                .unwrap_or_else(|| {
+                    panic!("{message:?} names --{long}, which Args does not define")
+                });
+
+            // A switch reports `true` and `false` as its possible values without
+            // taking either from the command line, so only a flag that takes a
+            // value has one to check in the wording.
+            let possible_values = argument.get_possible_values();
+            if argument.get_action().takes_values() && !possible_values.is_empty() {
+                let value = words
+                    .get(index + 1)
+                    .unwrap_or_else(|| panic!("{message:?} names --{long} without its value"));
+                assert!(
+                    possible_values
+                        .iter()
+                        .any(|possible| possible.matches(value, false)),
+                    "{message:?} gives --{long} the value {value:?}, which Args does not accept"
+                );
+            }
+        }
+
+        // A message that names no flag would pass the loop above vacuously.
+        assert!(flags_named > 0, "{message:?} names no flag to check");
+    }
 }
 
 #[test]

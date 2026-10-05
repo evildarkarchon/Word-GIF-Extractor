@@ -394,6 +394,13 @@ fn epub_filter_description(title: Option<&str>, author: Option<&str>) -> String 
 fn render_intake_error(error: ExtractionRunIntakeError) -> anyhow::Error {
     match error {
         ExtractionRunIntakeError::CurrentDirectory(error) => error.into(),
+        // The flag spellings below are checked against `Args` by a guard test, so a
+        // renamed flag fails that test instead of leaving this wording stale.
+        //
+        // From the command line, `clap` rejects an out-of-range quality and the
+        // quality/lossless conflict before intake runs, so only the other two arms
+        // are reached there. All four stay: the Conversion policy validates
+        // independently of `clap`, and an `Args` built directly reaches every arm.
         ExtractionRunIntakeError::ConversionPolicy(error) => match error {
             ConversionPolicyError::QualityOutOfRange { quality } => {
                 anyhow::anyhow!("--quality must be between 1 and 100 (got {quality})")
