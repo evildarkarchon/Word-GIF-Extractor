@@ -125,6 +125,7 @@ pub struct ProducedOutput {
     documents_with_output: NonZeroUsize,
     conversion: Option<ConversionFacts>,
     gif_routing: Option<GifRoutingFacts>,
+    failed_documents: Option<NonZeroUsize>,
 }
 
 impl ProducedOutput {
@@ -160,7 +161,12 @@ pub enum ExtractionRunOutcome {
     /// Document selection found no eligible documents.
     NoDocuments,
     /// Documents were selected, but no image file was emitted.
-    NoOutput(ExtractionOutputKind),
+    NoOutput {
+        /// Whether the run sought normal images or required covers.
+        output_kind: ExtractionOutputKind,
+        /// How many selected documents failed, when any did.
+        failed_documents: Option<NonZeroUsize>,
+    },
     /// At least one selected document emitted at least one image file.
     ProducedOutput(ProducedOutput),
 }
@@ -187,6 +193,7 @@ impl ExtractionRunOutcome {
         documents_with_output: NonZeroUsize,
         conversion: Option<ConversionFacts>,
         gif_routing: Option<GifRoutingFacts>,
+        failed_documents: Option<NonZeroUsize>,
     ) -> Option<Self> {
         let conversion_total = match conversion {
             Some(facts) => facts
@@ -210,6 +217,7 @@ impl ExtractionRunOutcome {
             documents_with_output,
             conversion,
             gif_routing,
+            failed_documents,
         }))
     }
 }
@@ -254,6 +262,8 @@ pub(crate) struct ExtractionRunOutcomeAccumulator {
     /// Conversion totals, which are valid at zero, kept in their outcome type.
     conversion: Option<ConversionFacts>,
     gif_routing: Option<RoutedGifTally>,
+    /// Documents whose extraction failed, counted where the run reports each one.
+    failed_documents: usize,
 }
 
 impl ExtractionRunOutcomeAccumulator {
@@ -279,6 +289,7 @@ impl ExtractionRunOutcomeAccumulator {
                     routed_gifs: 0,
                     destination,
                 }),
+            failed_documents: 0,
         }
     }
 
@@ -311,6 +322,17 @@ impl ExtractionRunOutcomeAccumulator {
         }
     }
 
+    /// Counts one document whose extraction failed.
+    ///
+    /// Separate from [`Self::fold`] because a failed document's facts fold
+    /// exactly like a completed one's -- partial output is still output -- while
+    /// the failure itself is a second fact. The run records it where it reports
+    /// the document's error, so the outcome counts a failure exactly when the
+    /// terminal shows one.
+    pub(crate) fn record_failed_document(&mut self) {
+        self.failed_documents += 1;
+    }
+
     /// Consumes the accumulated facts into the run's terminal outcome.
     ///
     /// `cover_only` is the run's cover intent, which arrives here rather than
@@ -327,6 +349,7 @@ impl ExtractionRunOutcomeAccumulator {
         } else {
             ExtractionOutputKind::Images
         };
+        let failed_documents = NonZeroUsize::new(self.failed_documents);
         // The two counts are zero together or positive together, because a
         // document joins the document count exactly by emitting an image. The
         // pattern reads both rather than deriving one from the other, which is
@@ -335,7 +358,10 @@ impl ExtractionRunOutcomeAccumulator {
             NonZeroUsize::new(self.emitted_images),
             NonZeroUsize::new(self.documents_with_output),
         ) else {
-            return ExtractionRunOutcome::NoOutput(output_kind);
+            return ExtractionRunOutcome::NoOutput {
+                output_kind,
+                failed_documents,
+            };
         };
         let gif_routing = self.gif_routing.and_then(|tally| {
             NonZeroUsize::new(tally.routed_gifs)
@@ -348,6 +374,7 @@ impl ExtractionRunOutcomeAccumulator {
             documents_with_output,
             conversion: self.conversion,
             gif_routing,
+            failed_documents,
         })
     }
 }

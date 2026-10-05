@@ -752,12 +752,14 @@ fn document_warning_line(warning: &DocumentExtractionWarning) -> String {
 fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
     match outcome {
         ExtractionRunOutcome::NoDocuments => "No documents found to process.".to_string(),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images) => {
-            "No images found".to_string()
-        }
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers) => {
-            "No cover images found".to_string()
-        }
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            ..
+        } => "No images found".to_string(),
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            ..
+        } => "No cover images found".to_string(),
         ExtractionRunOutcome::ProducedOutput(output) => {
             let item_name = match output.output_kind() {
                 ExtractionOutputKind::Images => "image(s)",

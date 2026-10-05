@@ -263,7 +263,10 @@ fn builds_validated_epub_cover_extraction_policy() {
 
     assert_eq!(
         execute(prepared),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None
+        }
     );
 }
 

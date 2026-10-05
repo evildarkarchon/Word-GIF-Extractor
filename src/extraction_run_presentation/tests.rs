@@ -84,6 +84,7 @@ fn produced_outcome(
                 destination,
             )
         }),
+        None,
     )
     .expect("terminal test outcome should be semantically valid")
 }
@@ -102,7 +103,9 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
     let mut presentation = ExtractionRunPresentation::new(output);
     let cover_only = match &outcome {
         ExtractionRunOutcome::NoDocuments => false,
-        ExtractionRunOutcome::NoOutput(output_kind) => *output_kind == ExtractionOutputKind::Covers,
+        ExtractionRunOutcome::NoOutput { output_kind, .. } => {
+            *output_kind == ExtractionOutputKind::Covers
+        }
         ExtractionRunOutcome::ProducedOutput(output) => {
             output.output_kind() == ExtractionOutputKind::Covers
         }
@@ -428,9 +431,10 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
 #[test]
 fn image_no_output_summary_preserves_existing_wording() {
     assert_eq!(
-        final_summary_message(&ExtractionRunOutcome::NoOutput(
-            ExtractionOutputKind::Images
-        )),
+        final_summary_message(&ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }),
         "No images found"
     );
 }
@@ -438,9 +442,10 @@ fn image_no_output_summary_preserves_existing_wording() {
 #[test]
 fn cover_no_output_summary_preserves_existing_wording() {
     assert_eq!(
-        final_summary_message(&ExtractionRunOutcome::NoOutput(
-            ExtractionOutputKind::Covers
-        )),
+        final_summary_message(&ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None
+        }),
         "No cover images found"
     );
 }
@@ -490,8 +495,14 @@ fn gif_routing_summary_preserves_existing_wording() {
 fn terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display() {
     let gif_dir = PathBuf::from("/tmp/gifs");
     let outcomes = [
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images),
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers),
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None,
+        },
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None,
+        },
         produced_outcome(ExtractionOutputKind::Images, 3, 2, None, None),
         produced_outcome(
             ExtractionOutputKind::Images,

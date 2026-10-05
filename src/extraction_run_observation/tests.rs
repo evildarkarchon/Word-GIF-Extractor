@@ -8,8 +8,15 @@ fn produced_outcome_rejects_inconsistent_semantic_totals() {
     let two = NonZeroUsize::new(2).expect("two should be nonzero");
 
     assert!(
-        ExtractionRunOutcome::try_produced(ExtractionOutputKind::Images, one, two, None, None,)
-            .is_none()
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Images,
+            one,
+            two,
+            None,
+            None,
+            None
+        )
+        .is_none()
     );
     assert!(
         ExtractionRunOutcome::try_produced(
@@ -18,6 +25,7 @@ fn produced_outcome_rejects_inconsistent_semantic_totals() {
             one,
             Some(ConversionFacts::new(1, 0)),
             Some(GifRoutingFacts::new(one, PathBuf::from("gifs"))),
+            None,
         )
         .is_none()
     );

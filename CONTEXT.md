@@ -13,7 +13,7 @@ The ready-to-execute handoff produced by Extraction run intake, containing the r
 _Avoid_: Run options, prepared options, configuration bundle
 
 **Extraction run outcome**:
-The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts; the outcome excludes terminal wording and raw cross-module counters.
+The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts. Whenever documents were selected, the outcome also records how many of them failed to extract, if any did; a run that selected no documents had none to fail. The outcome excludes terminal wording and raw cross-module counters.
 _Avoid_: Run report, extraction summary, final counters
 
 **Applicable outcome facts**:

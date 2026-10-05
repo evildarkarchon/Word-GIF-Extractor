@@ -9,6 +9,7 @@ use crate::test_support::{
 };
 use clap::Parser;
 use std::fs;
+use std::num::NonZeroUsize;
 
 /// Prepares one production request from directly built options.
 ///
@@ -163,7 +164,10 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert!(matches!(
         observer.observations.as_slice(),
@@ -211,7 +215,10 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert!(matches!(
         observer.observations.as_slice(),
@@ -264,7 +271,10 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert_eq!(
         observer.observations,
@@ -293,9 +303,10 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
             ExtractionRunObservation::DocumentFinished {
                 path: input_path.clone(),
             },
-            ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput(
-                ExtractionOutputKind::Images,
-            )),
+            ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput {
+                output_kind: ExtractionOutputKind::Images,
+                failed_documents: None
+            }),
         ]
     );
 }
@@ -320,7 +331,10 @@ fn selected_document_without_images_returns_image_no_output() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Images)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: None
+        }
     );
     assert_single_terminal_observation(&observer, &outcome);
 }
@@ -346,7 +360,10 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
 
     assert_eq!(
         outcome,
-        ExtractionRunOutcome::NoOutput(ExtractionOutputKind::Covers)
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: None
+        }
     );
     assert_single_terminal_observation(&observer, &outcome);
 }
@@ -584,6 +601,35 @@ fn epub_identity_is_consistent_across_normal_and_cover_runs() {
     );
 }
 
+/// Verifies a run whose only document fails reports that failure without output.
+///
+/// "No images found" and "every document failed" used to be the same outcome; the
+/// failure count is what now tells them apart.
+#[test]
+fn failed_document_without_output_is_counted_in_no_output() {
+    let temp_dir = temp_test_dir("run", "failed-without-output");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let broken_path = temp_dir.join("broken.docx");
+    fs::write(&broken_path, b"not a zip archive").expect("broken DOCX should be writable");
+    let request = prepare_request(vec![
+        "test".to_string(),
+        broken_path.to_string_lossy().into_owned(),
+        "--output".to_string(),
+        temp_dir.join("output").to_string_lossy().into_owned(),
+    ]);
+    let mut observer = RecordingRunObserver::default();
+
+    let outcome = run(request, &mut observer);
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Images,
+            failed_documents: NonZeroUsize::new(1),
+        }
+    );
+}
+
 #[test]
 fn run_retains_partial_facts_and_continues_after_document_failure() {
     let temp_dir = temp_test_dir("run", "partial-failure-continuation");
@@ -625,6 +671,20 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     assert_eq!(output.output_kind(), ExtractionOutputKind::Images);
     assert_eq!(output.emitted_images(), 3);
     assert_eq!(output.documents_with_output(), 2);
+    // The failed document's partial output still counts as output, and the failure
+    // is a second fact the outcome carries beside it.
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::try_produced(
+            ExtractionOutputKind::Images,
+            NonZeroUsize::new(3).expect("three is nonzero"),
+            NonZeroUsize::new(2).expect("two is nonzero"),
+            None,
+            None,
+            NonZeroUsize::new(1),
+        )
+        .expect("expected outcome should be semantically valid")
+    );
     assert!(output_dir.join("failing_1.png").exists());
     assert!(output_dir.join("failing_2.png").exists());
     assert!(output_dir.join("succeeding.png").exists());
