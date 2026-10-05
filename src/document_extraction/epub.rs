@@ -39,15 +39,8 @@ pub(super) fn extract(
 ) -> ImageWriteOutcome {
     let (input_path, output_dir, base_name, retained_declarations) =
         document.into_extraction_parts();
-    let acquired_declarations;
-    let declarations = match retained_declarations.as_ref() {
-        Some(declarations) => declarations,
-        None => {
-            acquired_declarations =
-                EpubDeclarations::acquire(&input_path).map_err(anyhow::Error::new)?;
-            &acquired_declarations
-        }
-    };
+    let declarations = EpubDeclarations::retained_or_acquire(retained_declarations, &input_path)
+        .map_err(anyhow::Error::new)?;
     // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
     // even when declaration facts were retained earlier by Document selection.
     EpubResourceArchive::open(&input_path, declarations.resources(), |mut archive| {

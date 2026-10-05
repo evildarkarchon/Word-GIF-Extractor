@@ -155,6 +155,11 @@ enum DocumentCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EpubCandidate {
     path: PathBuf,
+    /// The declarations selection has retained for this EPUB so far.
+    ///
+    /// Before deduplication, `None` means no phase has acquired them yet: filtering keeps
+    /// only EPUBs it read successfully. Deduplication attempts every EPUB, so after it
+    /// `None` means selection could not read them, which is what the Selected EPUB hands on.
     epub_declarations: Option<EpubDeclarations>,
 }
 
@@ -292,21 +297,22 @@ fn deduplicate_epubs_by_declarations(
         epub_files,
         |EpubCandidate {
              path,
-             mut epub_declarations,
+             epub_declarations,
          },
          diagnostics| {
-            if epub_declarations.is_none() {
-                match EpubDeclarations::acquire(&path) {
-                    Ok(declarations) => epub_declarations = Some(declarations),
+            // From here on, `None` means selection could not read the declarations.
+            let epub_declarations =
+                match EpubDeclarations::retained_or_acquire(epub_declarations, &path) {
+                    Ok(declarations) => Some(declarations),
                     Err(error) => {
                         diagnostics.report(ExtractionRunObservation::UnreadableEpubMetadata {
                             path: path.clone(),
                             purpose: EpubMetadataPurpose::Deduplication,
                             detail: error.to_string(),
-                        })
+                        });
+                        None
                     }
-                }
-            }
+                };
 
             let key = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
                 .dedupe_key();
