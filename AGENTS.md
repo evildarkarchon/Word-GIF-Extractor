@@ -21,15 +21,6 @@ cargo run -- "path/to/document.docx"
 - Unit tests stay in-crate beside their subject (`src/<module>/tests.rs`); `tests/` covers the binary and CLI-visible behavior only.
 - Domain vocabulary is defined in `CONTEXT.md` — use those terms and avoid the synonyms it lists. Decisions live in `docs/adr/`; if a change contradicts one, say so explicitly instead of silently overriding it.
 
-## graphify
-
-This project has a knowledge graph at `graphify-out/`.
-
-- For codebase questions, run `graphify query "<question>"` first. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
-- Use `graphify-out/wiki/index.md` for broad navigation instead of raw source browsing; read `GRAPH_REPORT.md` only for broad architecture review or when query/path/explain do not surface enough context.
-- Dirty `graphify-out/` files are expected after hooks or incremental updates and are not a reason to skip graphify. Only skip it if the task is about stale or incorrect graph output, or the user says not to.
-- After modifying code, run `graphify update .` (AST-only, no API cost).
-
 ## Agent policy
 
 - **Issues** live as local markdown under `.scratch/<feature-slug>/`, not in GitHub Issues. See `docs/agents/issue-tracker.md`.
