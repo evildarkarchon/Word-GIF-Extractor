@@ -13,6 +13,16 @@
 > ungated reporters described below; the gate is now used only by discovery, because
 > the EPUB phases return before emitting anything when they have nothing to check.
 
+> **Amended by ADR-0019.** The loop ownership and the per-EPUB check closures recorded
+> here stand unchanged. The per-phase re-join is gone: Document selection now splits its
+> candidates by document kind once, into typed EPUB and DOCX lists, so neither EPUB phase
+> partitions the candidates or appends the other documents after its EPUBs, and the
+> partition this decision describes as returning a typed `EpubCandidate` no longer exists.
+> "EPUBs ahead of other documents after each phase" below is therefore no longer how the
+> order is made. The order itself is unchanged, EPUBs first and then other documents,
+> each in encounter order, and it is now made at one join, where it is stated and kept on
+> purpose. The EPUB candidate also no longer carries the requested-or-traversed origin.
+
 This reopens the third paragraph of ADR-0004, which left `DocumentSelectionLifecycle` and its three phase reporters with their shape, counters and assertions. The EPUB filtering and deduplication phases now own their check loop. Each takes the EPUBs it checks and a per-EPUB closure that returns the check's outcome, and the outcome carries the candidate that continues through selection: `EpubFilterCheck::Matched(EpubCandidate)` or `Rejected`, `EpubDeduplicationCheck::Unique(EpubCandidate)` or `Duplicate`. The lifecycle derives the total from the EPUBs it was given, treats the phase as active exactly when that total is non-zero, records one check per EPUB, and returns the continuing candidates.
 
 The old shape stated its invariant and then policed it. Callers computed `active`, which was always `total > 0`, then partitioned the candidates, looped, and had to call `record_check` exactly once per EPUB; two `assert_eq!(checked, total)` and two over-count `assert!`s were the only enforcement, and both phase bodies carried an unreachable `let … else { continue }` because the partition returned the untyped candidate enum. With the lifecycle running the loop, a check cannot be skipped or recorded twice, so all four assertions are deleted rather than moved, and the partition now returns a typed `EpubCandidate` so the unreachable branch is gone with them.
