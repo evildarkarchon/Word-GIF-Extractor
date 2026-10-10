@@ -102,6 +102,11 @@ fn magic_title_filter() -> EpubFilter {
     }
 }
 
+/// Returns the source path of each selected document, in selection order.
+fn selected_paths(selected: &[SelectedDocument]) -> Vec<&Path> {
+    selected.iter().map(SelectedDocument::get_path).collect()
+}
+
 #[test]
 fn select_documents_reports_scanning_through_its_public_interface() {
     let surface = InMemorySearchSurface::new()
@@ -770,8 +775,8 @@ fn epub_only_selection_diagnoses_a_requested_docx_once_when_its_directory_is_als
 ///
 /// The DOCX is sighted twice: once through the requested directory and once as
 /// the file the user named. Selecting it twice used to extract it twice and write
-/// a second copy of every image under collision suffixes. Both traversal modes are
-/// covered because they reach the directory's files through different branches
+/// a second copy of every image under collision suffixes. Both recursion settings
+/// are covered because they reach the directory's files through different branches
 /// of Document discovery.
 #[test]
 fn select_documents_selects_a_docx_once_when_its_directory_is_also_requested() {
@@ -783,7 +788,7 @@ fn select_documents_selects_a_docx_once_when_its_directory_is_also_requested() {
         let (selected, observer) =
             select_against(&surface, &["root", "root/report.docx"], recursive);
 
-        let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+        let paths = selected_paths(&selected);
         assert_eq!(
             paths,
             [Path::new("root/report.docx")],
@@ -803,7 +808,7 @@ fn select_documents_selects_a_docx_named_twice_once() {
 
     let (selected, observer) = select_against(&surface, &["report.docx", "report.docx"], false);
 
-    let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+    let paths = selected_paths(&selected);
     assert_eq!(paths, [Path::new("report.docx")]);
     assert!(observer.selection_diagnostics().is_empty());
 }
@@ -822,7 +827,7 @@ fn select_documents_keeps_same_named_docx_files_in_different_directories() {
 
     let (selected, observer) = select_against(&surface, &["a/report.docx", "b/report.docx"], false);
 
-    let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+    let paths = selected_paths(&selected);
     assert_eq!(
         paths,
         [Path::new("a/report.docx"), Path::new("b/report.docx")]
@@ -909,7 +914,7 @@ fn select_documents_selects_epubs_before_other_documents_each_in_encounter_order
             false,
         );
 
-        let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+        let paths = selected_paths(&selected);
         assert_eq!(
             paths,
             [

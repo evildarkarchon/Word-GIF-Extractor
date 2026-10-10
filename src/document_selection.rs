@@ -154,27 +154,31 @@ enum CandidateOrigin {
     Traversed,
 }
 
+/// The document kind of a supported candidate, as its extension classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentKind {
+    Docx,
+    Epub,
+}
+
 /// Private pre-eligibility representation of one sighting, from Document discovery
 /// until [`split_by_kind`] turns it into a typed EPUB or DOCX candidate.
 ///
 /// Every sighting carries its origin here, whatever its kind, because collapsing
 /// repeat sightings merges origins before anything knows which side will read them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum DocumentCandidate {
-    Docx {
-        path: PathBuf,
-        origin: CandidateOrigin,
-    },
-    Epub {
-        path: PathBuf,
-        origin: CandidateOrigin,
-    },
+struct DocumentCandidate {
+    kind: DocumentKind,
+    /// The path as Document discovery spelled it.
+    path: PathBuf,
+    /// How this candidate reached Document discovery's output.
+    origin: CandidateOrigin,
 }
 
 /// Private pre-eligibility DOCX, as the EPUB-only restriction and the join see it.
 ///
-/// It keeps the requested-or-traversed origin because the EPUB-only restriction
-/// diagnoses only a DOCX the user named (ADR-0011).
+/// It keeps its [`CandidateOrigin`] because the EPUB-only restriction diagnoses
+/// only a DOCX the user named (ADR-0011).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DocxCandidate {
     path: PathBuf,
@@ -196,41 +200,21 @@ struct EpubCandidate {
 }
 
 impl DocumentCandidate {
-    /// Classifies a supported path into its private pre-eligibility variant.
+    /// Classifies a supported path into a candidate of its document kind.
+    ///
+    /// Returns `None` for a path whose extension names no supported document kind.
     fn from_path(path: PathBuf, origin: CandidateOrigin) -> Option<Self> {
-        match path
+        let kind = match path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_lowercase)
             .as_deref()
         {
-            Some("docx") => Some(Self::Docx { path, origin }),
-            Some("epub") => Some(Self::Epub { path, origin }),
-            _ => None,
-        }
-    }
-
-    /// Returns the path Document discovery spelled for this candidate.
-    fn path(&self) -> &Path {
-        match self {
-            Self::Docx { path, .. } | Self::Epub { path, .. } => path,
-        }
-    }
-
-    /// Returns how this candidate reached Document discovery's output.
-    fn origin(&self) -> CandidateOrigin {
-        match self {
-            Self::Docx { origin, .. } | Self::Epub { origin, .. } => *origin,
-        }
-    }
-
-    /// Records that the user named this candidate's path, whichever sighting was kept.
-    fn mark_requested(&mut self) {
-        match self {
-            Self::Docx { origin, .. } | Self::Epub { origin, .. } => {
-                *origin = CandidateOrigin::Requested;
-            }
-        }
+            Some("docx") => DocumentKind::Docx,
+            Some("epub") => DocumentKind::Epub,
+            _ => return None,
+        };
+        Some(Self { kind, path, origin })
     }
 }
 
@@ -240,9 +224,11 @@ impl DocumentCandidate {
 /// Document identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
 /// filters. Missing inputs, requested-root inspection failures, named inputs
-/// skipped because only EPUBs are eligible, and unreadable EPUB declarations are
-/// reported as structured, non-fatal diagnostics through the informational
-/// observer. A path sighted more than once is selected once, silently.
+/// skipped because only EPUBs are eligible
+/// ([`SkippedNonEpubInput`](crate::extraction_run_observation::ExtractionRunObservation::SkippedNonEpubInput)),
+/// and unreadable EPUB declarations are reported as structured, non-fatal
+/// diagnostics through the informational observer. A path sighted more than once
+/// is selected once, silently.
 ///
 /// Selection reports into the Extraction run observation stream directly. The
 /// observer is informational: callbacks cannot cancel selection or alter which
@@ -268,15 +254,15 @@ pub fn select_documents(
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
     let candidates = collapse_repeat_sightings(candidates);
-    let (epubs, docx) = split_by_kind(candidates);
+    let (epubs, docx_files) = split_by_kind(candidates);
 
     // The EPUB-only restriction runs before filtering opens, so its diagnostics
     // precede every EPUB phase observation, as ADR-0011 places it.
-    let docx = if options.epub_only {
-        skip_non_epub_candidates(docx, &mut lifecycle);
+    let docx_files = if options.epub_only {
+        skip_non_epub_candidates(docx_files, &mut lifecycle);
         Vec::new()
     } else {
-        docx
+        docx_files
     };
     let filtered = if !options.epub_filter.is_empty() {
         filter_epub_files(epubs, options.epub_filter, declarations, &mut lifecycle)
@@ -295,8 +281,9 @@ pub fn select_documents(
         .into_iter()
         .map(|epub| selected_epub_from_candidate(epub, options.output))
         .chain(
-            docx.into_iter()
-                .map(|docx| selected_docx_from_candidate(docx, options.output)),
+            docx_files
+                .into_iter()
+                .map(|candidate| selected_docx_from_candidate(candidate, options.output)),
         )
         .collect()
 }
@@ -314,7 +301,7 @@ pub fn select_documents(
 /// The earlier sighting keeps its position, and it becomes requested if a dropped
 /// sighting was requested. That origin merge is what keeps ADR-0011's diagnostic
 /// for a named DOCX in an EPUB-only run when the directory above it was listed first
-/// and so sighted it first as a traversal hit.
+/// and so sighted it first through a directory search.
 ///
 /// The collapse is silent: it reports no observation and no Document selection
 /// diagnostic, and it is not a progress phase. Discovery's count has already been
@@ -333,12 +320,13 @@ fn collapse_repeat_sightings(candidates: Vec<DocumentCandidate>) -> Vec<Document
     let mut kept: Vec<DocumentCandidate> = Vec::with_capacity(candidates.len());
 
     for candidate in candidates {
-        if let Some(&index) = kept_index.get(candidate.path()) {
-            if candidate.origin() == CandidateOrigin::Requested {
-                kept[index].mark_requested();
+        if let Some(&index) = kept_index.get(&candidate.path) {
+            // The user named this path, whichever sighting was kept.
+            if candidate.origin == CandidateOrigin::Requested {
+                kept[index].origin = CandidateOrigin::Requested;
             }
         } else {
-            kept_index.insert(candidate.path().to_path_buf(), kept.len());
+            kept_index.insert(candidate.path.clone(), kept.len());
             kept.push(candidate);
         }
     }
@@ -351,20 +339,20 @@ fn collapse_repeat_sightings(candidates: Vec<DocumentCandidate>) -> Vec<Document
 /// This is the only place selection splits by kind (ADR-0019). Both lists keep
 /// encounter order, and from here each stage sees only the kind it acts on: the
 /// EPUB-only restriction the DOCX list, filtering and deduplication the EPUB list.
-/// The EPUB side drops the requested-or-traversed origin, which it never reads.
+/// The EPUB side drops the [`CandidateOrigin`], which it never reads.
 fn split_by_kind(candidates: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec<DocxCandidate>) {
     let mut epubs = Vec::new();
-    let mut docx = Vec::new();
-    for candidate in candidates {
-        match candidate {
-            DocumentCandidate::Epub { path, .. } => epubs.push(EpubCandidate {
+    let mut docx_files = Vec::new();
+    for DocumentCandidate { kind, path, origin } in candidates {
+        match kind {
+            DocumentKind::Epub => epubs.push(EpubCandidate {
                 path,
                 epub_declarations: None,
             }),
-            DocumentCandidate::Docx { path, origin } => docx.push(DocxCandidate { path, origin }),
+            DocumentKind::Docx => docx_files.push(DocxCandidate { path, origin }),
         }
     }
-    (epubs, docx)
+    (epubs, docx_files)
 }
 
 /// Drops every non-EPUB candidate for a run in which only EPUBs are eligible.
@@ -380,7 +368,10 @@ fn split_by_kind(candidates: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec
 /// recursive run over a large tree unreadable. Which candidate was named is read
 /// off the candidate's own [`CandidateOrigin`] rather than recovered by comparing
 /// paths against the requested inputs: a run naming both a directory and a file
-/// inside it discovers that file twice, and both copies match the named path.
+/// inside it discovers that file twice, both sightings equal to the named path.
+/// [`collapse_repeat_sightings`] makes them the one candidate this stage sees and
+/// merges their origins into it, so the origin, not the path, is what records that
+/// the user named it.
 ///
 /// It takes the DOCX list from [`split_by_kind`] and consumes all of it, since
 /// none of it stays eligible; the EPUB list never passes through here.
@@ -493,10 +484,7 @@ fn selected_epub_from_candidate(
     // Selection fixes the run identity from retained declarations only;
     // extraction-time declaration retries cannot revise this fallback.
     let identity = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path);
-    let placement = OutputPlacement::new(
-        resolve_output_dir(&path, global_output),
-        identity.base_name(),
-    );
+    let placement = output_placement(&path, &identity, global_output);
 
     SelectedDocument::Epub(SelectedEpub::new(
         path,
@@ -512,11 +500,23 @@ fn selected_docx_from_candidate(
     global_output: Option<&Path>,
 ) -> SelectedDocument {
     let identity = DocumentIdentity::of_path(&path);
-    let placement = OutputPlacement::new(
-        resolve_output_dir(&path, global_output),
-        identity.base_name(),
-    );
+    let placement = output_placement(&path, &identity, global_output);
     SelectedDocument::Docx(SelectedDocx::new(path, placement, identity.display_name()))
+}
+
+/// Builds the Output placement for one selected document, whatever its kind.
+///
+/// The directory comes from [`resolve_output_dir`] and the base name from the
+/// document's already-fixed Document identity.
+fn output_placement(
+    path: &Path,
+    identity: &DocumentIdentity,
+    global_output: Option<&Path>,
+) -> OutputPlacement {
+    OutputPlacement::new(
+        resolve_output_dir(path, global_output),
+        identity.base_name(),
+    )
 }
 
 /// Resolves the output directory for a single input file.
