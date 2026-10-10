@@ -880,6 +880,53 @@ fn select_documents_checks_an_epub_reached_twice_once() {
     assert!(observer.selection_diagnostics().is_empty());
 }
 
+/// Pins the order of the Selected documents: EPUBs first, then other documents,
+/// each in encounter order (ADR-0019).
+///
+/// Every DOCX here is encountered before the EPUB that follows it, so plain
+/// encounter order would put a DOCX first. The order is kept deliberately: Image
+/// file emission claims names first come, first served, so extraction order decides
+/// which of two documents sharing an Output placement gets the unsuffixed names.
+/// Both the unfiltered and the filtered run are covered because each EPUB phase
+/// that runs is a place the order could be lost.
+#[test]
+fn select_documents_selects_epubs_before_other_documents_each_in_encounter_order() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.docx")
+        .with_file("first.epub")
+        .with_file("second.docx")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("First Creator"), Some("Magic One"))
+        .with_declarations("second.epub", Some("Second Creator"), Some("Magic Two"));
+
+    for filter in [EpubFilter::default(), magic_title_filter()] {
+        let (selected, observer) = select_declared(
+            &surface,
+            &declarations,
+            &filter,
+            &["first.docx", "first.epub", "second.docx", "second.epub"],
+            false,
+        );
+
+        let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+        assert_eq!(
+            paths,
+            [
+                Path::new("first.epub"),
+                Path::new("second.epub"),
+                Path::new("first.docx"),
+                Path::new("second.docx"),
+            ],
+            "filter: {filter:?}"
+        );
+        assert!(
+            observer.selection_diagnostics().is_empty(),
+            "filter: {filter:?}"
+        );
+    }
+}
+
 #[test]
 fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
     let surface = InMemorySearchSurface::new().with_file("doc.docx");
