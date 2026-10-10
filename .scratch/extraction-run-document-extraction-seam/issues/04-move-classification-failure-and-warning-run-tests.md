@@ -1,6 +1,6 @@
 # 04 — Move the classification, failure and warning run tests
 
-Status: ready-for-agent
+Status: done
 
 Blocked by: 03
 
@@ -65,3 +65,7 @@ selection and real extraction.
 - The ten moved tests were checked against two temporary production mutations. Dropping
   `record_failed_document` and forwarding only a document's first warning each failed the expected
   tests, and the mutations were reverted before commit.
+
+## Comments
+
+- Landed in 6decd35, merged through PR #67.

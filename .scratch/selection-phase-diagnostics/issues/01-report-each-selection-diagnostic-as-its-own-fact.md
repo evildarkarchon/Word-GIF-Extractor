@@ -1,6 +1,6 @@
 # Report each Document selection diagnostic as its own fact
 
-Status: ready-for-agent
+Status: done
 
 Spec: `.scratch/selection-phase-diagnostics/spec.md`
 Decision: `docs/adr/0009-report-each-selection-diagnostic-as-its-own-fact.md`
@@ -59,3 +59,7 @@ hard `assert!`. No new tests and no `progress/tests.rs`.
 
 `cargo test` passes at each commit, `cargo build --release` succeeds, and `graphify update .`
 has run after the code commits.
+
+## Comments
+
+- Landed in b721439 (rename), c3ca345 (per-fact methods) and 7f80804 (silence gate), merged through PR #60.

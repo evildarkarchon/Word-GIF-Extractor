@@ -1,6 +1,6 @@
 # Give the Extraction run a Document extraction seam
 
-Status: ready-for-agent
+Status: done
 
 Governing decision: ADR-0016 (Give the Extraction run a Document extraction seam). Origin: candidate 01 of the 2026-10-05 architecture review, settled in a grilling session before any code was written. Glossary terms used here — Extraction run, Extraction run request, Extraction run outcome, Extraction run observation, Extraction run presentation, Document selection, Document search surface, EPUB declarations, Selected document, Document extraction, Document extraction outcome, Document extraction facts, Document extraction warning, Document extraction error, Applicable outcome facts, EPUB cover policy, Image write policy — are defined in `CONTEXT.md`.
 
@@ -106,3 +106,7 @@ Users of the command-line tool see no difference: every observation, outcome, fi
 - ADR-0016 records this decision and is written ahead of the code, in the manner of ADR-0006, ADR-0007 and ADR-0008. It is not yet committed at the time of writing.
 - ADR number 0015 is deliberately vacant. An earlier ADR-0015, written against an older `main`, was withdrawn pending a fresh review of whether its change is still needed. Its glossary edits were reverted with it. Nothing in this spec depends on it.
 - Candidate 02 of the same review, which has the Image write pipeline report what it emitted for, is independent of this change. Its new tests would benefit from the scripted adapter introduced here.
+
+## Comments
+
+- Every ticket landed: 01 in PR #64, 02 in PR #65, 03 in PR #66, 04 in PR #67, 05 in PR #68.

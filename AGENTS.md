@@ -19,10 +19,10 @@ cargo run -- "path/to/document.docx"
 - `src/lib.rs` owns the whole module tree, including terminal presentation, and exposes exactly four items: `Args`, `run_cli`, `TerminalOutput`, `Capture`. Read its module docs before widening that boundary.
 - `src/main.rs` parses arguments and calls `run_cli`; it holds no other logic.
 - Unit tests stay in-crate beside their subject (`src/<module>/tests.rs`); `tests/` covers the binary and CLI-visible behavior only.
-- Domain vocabulary is defined in `CONTEXT.md` — use those terms and avoid the synonyms it lists. Decisions live in `docs/adr/`; if a change contradicts one, say so explicitly instead of silently overriding it.
+- Domain vocabulary is defined in `GLOSSARY.md` — use those terms and avoid the synonyms it lists. Decisions live in `docs/adr/`; if a change contradicts one, say so explicitly instead of silently overriding it.
 
 ## Agent policy
 
-- **Issues** live as local markdown under `.scratch/<feature-slug>/`, not in GitHub Issues. See `docs/agents/issue-tracker.md`.
-- **Triage labels**: the five canonical strings are used verbatim (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), written on a `Status:` line in each issue file. A ticket whose work is implemented and committed is set to `done`. See `docs/agents/triage-labels.md`.
-- **Domain docs**: single-context (`CONTEXT.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+- **Issues** live in this repo's GitHub Issues, driven through the `gh` CLI. `.scratch/` is a read-only archive of the earlier local-markdown tickets. See `docs/agents/issue-tracker.md`.
+- **Triage labels**: the five canonical strings are used verbatim as GitHub labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Finished work is closed as completed rather than labelled. See `docs/agents/triage-labels.md`.
+- **Domain docs**: single-context (`GLOSSARY.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.

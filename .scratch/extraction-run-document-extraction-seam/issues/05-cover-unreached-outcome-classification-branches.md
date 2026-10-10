@@ -1,6 +1,6 @@
 # 05 — Cover the outcome-classification branches nothing reaches yet
 
-Status: ready-for-agent
+Status: done
 
 Blocked by: 04
 
@@ -91,3 +91,5 @@ temporary production mutations, all reverted before commit. In every case only n
   failure-count tests.
 - Overwriting conversion and routed-GIF totals instead of summing them failed the sums test.
 - Recording a failure as a flag rather than a count failed the failure-count test.
+
+- Landed in a0ae201, merged through PR #68.

@@ -1,6 +1,6 @@
 # 01 — Extraction run takes its Document extraction through a seam
 
-Status: ready-for-agent
+Status: done
 
 Blocked by: None — can start immediately
 
@@ -34,3 +34,7 @@ This is a behaviour-preserving prefactor. Users of the command-line tool see no 
 - [x] Nothing outside the run's module calls the inner function
 - [x] Every new item is crate-private or narrower; the library still exports exactly four items (ADR-0003)
 - [x] No test file is edited, and `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+
+## Comments
+
+- Landed in 461bcbd, merged through PR #64.

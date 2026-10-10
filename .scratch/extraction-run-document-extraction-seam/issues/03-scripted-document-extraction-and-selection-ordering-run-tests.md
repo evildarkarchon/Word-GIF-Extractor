@@ -1,6 +1,6 @@
 # 03 — Scripted Document extraction, proven by moving the selection-ordering run tests
 
-Status: ready-for-agent
+Status: done
 
 Blocked by: 01, 02
 
@@ -57,3 +57,7 @@ Prove the adapter by moving the six run tests whose subject is selection and ord
 - `all_failed_requested_inputs_reach_one_no_documents_terminal_observation` used paths containing a
   NUL byte to provoke inspection failures; broken links in the in-memory surface provoke the same
   `DocumentDiscoveryFailed` observation.
+
+## Comments
+
+- Landed in 17f596b, merged through PR #66.

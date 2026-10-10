@@ -1,5 +1,7 @@
 # Document selection phase diagnostics and the silence gate
 
+Status: done
+
 Origin: Candidate C of `Architecture_review_2.html` ("Collapse the three Document selection
 phase reporters into one"), stress-tested in a grilling session before any code was written.
 The decision itself is `docs/adr/0009-report-each-selection-diagnostic-as-its-own-fact.md`;
@@ -61,3 +63,7 @@ case rests on one arriving.
   exact-sequence assertion at `extraction_run/tests.rs:287`.
 - `DocumentSelectionLifecycle` has no `active` field, so the two ungated lifecycle diagnostics
   cannot be routed through the silence gate by accident.
+
+## Comments
+
+- Its one ticket landed through PR #60.

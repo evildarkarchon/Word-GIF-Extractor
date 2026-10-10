@@ -1,53 +1,60 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
-
-Do **not** use `gh issue` for tracking work. The repo still has a GitHub remote
-(`evildarkarchon/Word-GIF-Extractor`), so `gh` remains available for PRs, releases, and
-labels — but the issue queue the skills read and write is the local one described here.
+Issues and specs for this repo live as GitHub issues on `evildarkarchon/Word-GIF-Extractor`. Use the `gh` CLI for all operations.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` — never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- **Create an issue**: `gh issue create --title "..." --body-file <path>`. Write multi-line bodies to a file first (the scratchpad directory for throwaway files) rather than passing them through a heredoc — heredoc quoting mangles backticks and `$` on the way through the shell.
+- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
+- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **Comment on an issue**: `gh issue comment <number> --body-file <path>` (or `--body "..."` for a one-liner)
+- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
+- **Close**: `gh issue close <number> --reason completed --comment "..."` for finished work, `--reason "not planned"` for `wontfix`
 
-`.scratch/` is **not** gitignored, so issue files are committed alongside the code they
-describe. Add `.scratch/` to `.gitignore` if you'd rather keep them local-only.
+Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
+
+A spec and its implementation tickets are separate issues. Link each ticket to its spec as a GitHub sub-issue where sub-issues are enabled; otherwise put `Part of #<spec>` at the top of the ticket body and list the tickets as a task list in the spec body.
+
+## Pull requests as a triage surface
+
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
+
+When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
+
+- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
+- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
+
+GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. A bare number is **not** a ticket reference — numbering
-restarts at `01` inside every `.scratch/<feature-slug>/issues/` directory, so `01` names as many
-tickets as there are features. A usable reference carries the feature too, either as a full path
-(`.scratch/epub-cover/issues/01-detect-spine.md`) or as the slug and number together (`epub-cover
-01`, which resolves to the one `01-*.md` under that feature).
+Run `gh issue view <number> --comments`.
 
-If you are handed a bare number, resolve it from the feature already established in the
-conversation. Where no feature is established, ask which one — never scan for a matching number and
-take the first hit.
+## Legacy local tickets
 
-Bare numbers *are* unambiguous within one feature: the wayfinding `Blocked by: NN, NN` line is
-scoped to its own effort directory and needs no slug.
+Before the switch to GitHub, issues lived as markdown under `.scratch/<feature-slug>/`. That
+directory is now a read-only archive: don't create new files there, and don't treat it as the
+queue. A reference shaped like a path (`.scratch/epub-cover/issues/01-detect-spine.md`) or a slug
+plus number (`epub-cover 01`) points into the archive — read the file. A `#N` reference is a GitHub
+issue. Two archived tickets were still `needs-triage` at the switch and were deliberately left
+there rather than migrated.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
+Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-- **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body.
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Wayfinder:` line records where the ticket sits on the map — `open`, `claimed`, or `resolved`, with an absent line read as `open`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `Wayfinder: resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are `Wayfinder: open` and unblocked; first by number wins.
-- **Claim**: set `Wayfinder: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Wayfinder: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
+- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
+- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
+- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
+- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
+- **Resolve**: `gh issue comment <n> --body-file <path>`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
 
-Wayfinding state gets its own `Wayfinder:` line rather than reusing `Status:`, because `Status:`
-carries one of the five canonical triage roles, or `done`, and nothing else (`triage-labels.md`). The two lines
-are independent: a wayfinder ticket may carry both, and claiming or resolving it never rewrites its
-triage role.
+Wayfinding state lives in `wayfinder:*` labels, assignees, and open/closed state — never in the
+triage labels (`triage-labels.md`). A wayfinder ticket may carry a triage label too; claiming or
+resolving it never rewrites that label.

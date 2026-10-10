@@ -1,6 +1,6 @@
 # 02 — Fabricate Document extraction values in tests; presentation stops running the stack
 
-Status: ready-for-agent
+Status: done
 
 Blocked by: None — can start immediately
 
@@ -37,3 +37,7 @@ The first users are two Extraction run presentation tests that currently run the
 - [x] The warning-presentation test no longer writes or extracts a DOCX; its prefix and suspension assertions are unchanged, and it restates no warning wording owned by Document extraction
 - [x] No other presentation test, and nothing under `tests/`, is edited
 - [x] `cargo fmt --check`, `cargo clippy` and `cargo test` all pass
+
+## Comments
+
+- Landed in 8191d02, merged through PR #65.
