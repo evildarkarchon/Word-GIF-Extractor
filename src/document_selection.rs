@@ -4,7 +4,7 @@ mod discovery;
 mod document_identity;
 mod progress;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::DocumentSearchSurface;
@@ -195,6 +195,30 @@ impl DocumentCandidate {
             _ => None,
         }
     }
+
+    /// Returns the path Document discovery spelled for this candidate.
+    fn path(&self) -> &Path {
+        match self {
+            Self::Docx { path, .. } => path,
+            Self::Epub(epub) => &epub.path,
+        }
+    }
+
+    /// Returns how this candidate reached Document discovery's output.
+    fn origin(&self) -> CandidateOrigin {
+        match self {
+            Self::Docx { origin, .. } => *origin,
+            Self::Epub(epub) => epub.origin,
+        }
+    }
+
+    /// Records that the user named this candidate's path, whichever sighting was kept.
+    fn mark_requested(&mut self) {
+        match self {
+            Self::Docx { origin, .. } => *origin = CandidateOrigin::Requested,
+            Self::Epub(epub) => epub.origin = CandidateOrigin::Requested,
+        }
+    }
 }
 
 /// Selects documents for extraction while reporting live progress snapshots and diagnostics.
@@ -202,9 +226,10 @@ impl DocumentCandidate {
 /// Selection owns document discovery, EPUB declaration filtering, EPUB dedupe,
 /// Document identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
-/// filters. Missing inputs, requested-root inspection failures, and unreadable
-/// EPUB declarations are reported as structured, non-fatal diagnostics through
-/// the informational observer.
+/// filters. Missing inputs, requested-root inspection failures, named inputs
+/// skipped because only EPUBs are eligible, and unreadable EPUB declarations are
+/// reported as structured, non-fatal diagnostics through the informational
+/// observer. A path sighted more than once is selected once, silently.
 ///
 /// Selection reports into the Extraction run observation stream directly. The
 /// observer is informational: callbacks cannot cancel selection or alter which
@@ -229,6 +254,7 @@ pub fn select_documents(
 
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
+    let candidates = collapse_repeat_sightings(candidates);
     let eligible = if options.epub_only {
         retain_epub_candidates(candidates, &mut lifecycle)
     } else {
@@ -245,6 +271,51 @@ pub fn select_documents(
         .into_iter()
         .map(|candidate| selected_document_from_candidate(candidate, options.output))
         .collect()
+}
+
+/// Drops every candidate whose path equals an earlier candidate's, for every document kind.
+///
+/// Document discovery yields one candidate per sighting, so a file named directly
+/// and also reached through a requested directory, or named twice, arrives here
+/// twice. ADR-0019 makes a path one candidate. "Equal" is Rust's `Path` equality,
+/// component by component as discovery spelled the paths, with no canonicalisation:
+/// Document identity's path key would collapse `a/report.docx` and `b/report.docx`,
+/// and canonicalising would need a new Document search surface operation (ADR-0008).
+/// So `./dir/x.docx` and `dir/x.docx` deliberately stay two candidates.
+///
+/// The earlier sighting keeps its position, and it becomes requested if a dropped
+/// sighting was requested. That origin merge is what keeps ADR-0011's diagnostic
+/// for a named DOCX in an EPUB-only run when the directory above it was listed first
+/// and so sighted it first as a traversal hit.
+///
+/// The collapse is silent: it reports no observation and no Document selection
+/// diagnostic, and it is not a progress phase. Discovery's count has already been
+/// reported and still counts every sighting, which keeps it a fact about the search
+/// (ADR-0011). Spelling the same request twice says something about the command
+/// line, not about the user's documents, so it earns no warning.
+///
+/// It runs before every eligibility stage so that none of them has to recognise a
+/// repeat sighting itself: the EPUB-only restriction diagnoses a named DOCX once,
+/// and an EPUB reached twice enters filtering and deduplication once rather than
+/// being acquired twice and counted as a duplicate of itself.
+fn collapse_repeat_sightings(candidates: Vec<DocumentCandidate>) -> Vec<DocumentCandidate> {
+    // Maps each kept path to its index in `kept`, so a later sighting can merge its
+    // origin into the earlier one. `Path`'s hash agrees with its component equality.
+    let mut kept_index: HashMap<PathBuf, usize> = HashMap::new();
+    let mut kept: Vec<DocumentCandidate> = Vec::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        if let Some(&index) = kept_index.get(candidate.path()) {
+            if candidate.origin() == CandidateOrigin::Requested {
+                kept[index].mark_requested();
+            }
+        } else {
+            kept_index.insert(candidate.path().to_path_buf(), kept.len());
+            kept.push(candidate);
+        }
+    }
+
+    kept
 }
 
 /// Splits candidates into the EPUBs a declaration phase checks and every other document.

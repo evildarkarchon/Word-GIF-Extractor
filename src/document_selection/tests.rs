@@ -766,6 +766,120 @@ fn epub_only_selection_diagnoses_a_requested_docx_once_when_its_directory_is_als
     );
 }
 
+/// Pins ADR-0019's rule that a path is one candidate, whichever way it was reached.
+///
+/// The DOCX is sighted twice: once through the requested directory and once as
+/// the file the user named. Selecting it twice used to extract it twice and write
+/// a second copy of every image under collision suffixes. Both traversal modes are
+/// covered because they reach the directory's files through different branches
+/// of Document discovery.
+#[test]
+fn select_documents_selects_a_docx_once_when_its_directory_is_also_requested() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/report.docx");
+
+    for recursive in [false, true] {
+        let (selected, observer) =
+            select_against(&surface, &["root", "root/report.docx"], recursive);
+
+        let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+        assert_eq!(
+            paths,
+            [Path::new("root/report.docx")],
+            "recursive: {recursive}"
+        );
+        assert!(
+            observer.selection_diagnostics().is_empty(),
+            "recursive: {recursive}"
+        );
+    }
+}
+
+/// Pins that naming the same DOCX twice selects it once (ADR-0019).
+#[test]
+fn select_documents_selects_a_docx_named_twice_once() {
+    let surface = InMemorySearchSurface::new().with_file("report.docx");
+
+    let (selected, observer) = select_against(&surface, &["report.docx", "report.docx"], false);
+
+    let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+    assert_eq!(paths, [Path::new("report.docx")]);
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Pins that collapsing repeat sightings compares whole paths, not file names.
+///
+/// Document identity's path key is the case-folded file name, which would make
+/// these two one document. They are different files, so both are selected.
+#[test]
+fn select_documents_keeps_same_named_docx_files_in_different_directories() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("a")
+        .with_directory("b")
+        .with_file("a/report.docx")
+        .with_file("b/report.docx");
+
+    let (selected, observer) = select_against(&surface, &["a/report.docx", "b/report.docx"], false);
+
+    let paths: Vec<_> = selected.iter().map(SelectedDocument::get_path).collect();
+    assert_eq!(
+        paths,
+        [Path::new("a/report.docx"), Path::new("b/report.docx")]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Pins that an EPUB reached twice is one file to filtering and deduplication.
+///
+/// Seeing the same file twice is not finding two files that are the same book, so
+/// the repeat sighting must not reach deduplication and be reported as a removed
+/// duplicate, and its declarations must be acquired once (ADR-0019).
+#[test]
+fn select_documents_checks_an_epub_reached_twice_once() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/book.epub");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "root/book.epub",
+        Some("Test Author"),
+        Some("Magic Book"),
+    );
+
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &magic_title_filter(),
+        &["root", "root/book.epub"],
+        false,
+    );
+
+    assert_eq!(selected.len(), 1);
+    let progress = observer.selection_progress();
+    assert!(
+        progress.contains(&ExtractionRunObservation::EpubFilteringFinished {
+            checked: 1,
+            total: 1,
+            matching: 1,
+        }),
+        "unexpected selection progress: {progress:?}"
+    );
+    assert!(
+        progress.contains(&ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 1,
+            total: 1,
+            duplicates_found: 0,
+            unique_remaining: 1,
+        }),
+        "unexpected selection progress: {progress:?}"
+    );
+    assert_eq!(
+        declarations.acquisitions(),
+        vec![PathBuf::from("root/book.epub")]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
 #[test]
 fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
     let surface = InMemorySearchSurface::new().with_file("doc.docx");
