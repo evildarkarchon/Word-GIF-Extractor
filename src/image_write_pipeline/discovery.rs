@@ -6,7 +6,6 @@ use std::path::Path;
 
 use crate::image_format::ImageFormat;
 
-use super::purpose::{ImageWritePurpose, UnidentifiedFormatAction};
 use super::{AcceptedImage, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
@@ -30,17 +29,35 @@ const SVG_SEARCH_LIMIT: usize = 1024;
 
 /// Source facts supplied before discovery reads one archive resource.
 ///
-/// The optional path evidence encodes whether the name may identify a format:
-/// normal sources include it, while required covers deliberately omit it. No
-/// source name ever decides where a file is written; output names come only
-/// from the document's Output placement. That is why ADR-0020 deleted the
-/// path-traversal guard on source names and why none should return unless a
-/// source name starts reaching an output path.
+/// The Image write purpose is decided once, by the constructor that creates the
+/// source, and discovery reads it back off the source rather than being told it
+/// separately (ADR-0020). No source name ever decides where a file is written;
+/// output names come only from the document's Output placement. That is why
+/// ADR-0020 deleted the path-traversal guard on source names and why none should
+/// return unless a source name starts reaching an output path.
 #[derive(Debug, Clone)]
 pub(crate) struct ArchiveImageSource {
     diagnostic_name: String,
-    path_evidence_name: Option<String>,
-    declared_mime: Option<String>,
+    purpose: ImageWritePurpose,
+}
+
+/// The Image write purpose an archive image source was created with, and the
+/// evidence that purpose permits.
+///
+/// Closed and data-carrying, so each purpose holds exactly the evidence it may
+/// use: a required cover has no path evidence at all, which is how it never
+/// falls back to its manifest extension. Only `ArchiveImageSource::required_cover`,
+/// which is private to the Image write pipeline, builds the second variant.
+#[derive(Debug, Clone)]
+enum ImageWritePurpose {
+    /// One of a document's normal images, whose name is extension evidence.
+    NormalImage {
+        path_evidence_name: String,
+        declared_mime: Option<String>,
+    },
+    /// The one required EPUB cover an attempt is about, whose manifest path is
+    /// diagnostic identity only.
+    RequiredCover { declared_mime: String },
 }
 
 impl ArchiveImageSource {
@@ -49,15 +66,27 @@ impl ArchiveImageSource {
         let source_name = source_name.into();
         Self {
             diagnostic_name: source_name.clone(),
-            path_evidence_name: Some(source_name),
-            declared_mime: None,
+            purpose: ImageWritePurpose::NormalImage {
+                path_evidence_name: source_name,
+                declared_mime: None,
+            },
         }
     }
 
     /// Adds document-declared MIME evidence after magic and path evidence.
     #[must_use]
     pub(crate) fn with_mime(mut self, mime: impl Into<String>) -> Self {
-        self.declared_mime = Some(mime.into());
+        // Replacing, never changing the purpose: MIME is evidence a source carries
+        // under whichever purpose it was created with. Document adapters can only
+        // build normal images, so in practice they only reach the first arm.
+        match &mut self.purpose {
+            ImageWritePurpose::NormalImage { declared_mime, .. } => {
+                *declared_mime = Some(mime.into());
+            }
+            ImageWritePurpose::RequiredCover { declared_mime } => {
+                *declared_mime = mime.into();
+            }
+        }
         self
     }
 
@@ -68,8 +97,9 @@ impl ArchiveImageSource {
     pub(super) fn required_cover(source_name: impl Into<String>, mime: impl Into<String>) -> Self {
         Self {
             diagnostic_name: source_name.into(),
-            path_evidence_name: None,
-            declared_mime: Some(mime.into()),
+            purpose: ImageWritePurpose::RequiredCover {
+                declared_mime: mime.into(),
+            },
         }
     }
 
@@ -77,12 +107,22 @@ impl ArchiveImageSource {
         &self.diagnostic_name
     }
 
-    pub(super) fn path_evidence_name(&self) -> Option<&str> {
-        self.path_evidence_name.as_deref()
+    /// Returns the name that may identify a format by extension; normal images only.
+    fn path_evidence_name(&self) -> Option<&str> {
+        match &self.purpose {
+            ImageWritePurpose::NormalImage {
+                path_evidence_name, ..
+            } => Some(path_evidence_name),
+            ImageWritePurpose::RequiredCover { .. } => None,
+        }
     }
 
-    pub(super) fn declared_mime(&self) -> Option<&str> {
-        self.declared_mime.as_deref()
+    /// Returns the document-declared MIME, which a required cover always has.
+    fn declared_mime(&self) -> Option<&str> {
+        match &self.purpose {
+            ImageWritePurpose::NormalImage { declared_mime, .. } => declared_mime.as_deref(),
+            ImageWritePurpose::RequiredCover { declared_mime } => Some(declared_mime),
+        }
     }
 }
 
@@ -119,19 +159,21 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
     AcquisitionFailed,
 }
 
-/// Acquires and identifies one source through a statically selected Image write purpose.
+/// Acquires and identifies one source under the Image write purpose it carries.
 ///
 /// Identification checks magic bytes, a normal source's path extension, then
-/// declared MIME. Unidentified and requested-format decisions remain delegated
-/// to the purpose. Every source is read; unidentified or filtered sources consume
-/// at most 1,027 evidence bytes, and accepted sources retain that prefix and
-/// append the remaining payload. Any read failure returns `AcquisitionFailed`
-/// with the existing warning facts.
-pub(super) fn discover_image<P: ImageWritePurpose>(
+/// declared MIME. The two decisions that differ by purpose are made here by
+/// matching on the source: unidentified evidence completes a normal image
+/// silently but continues a required cover as JPEG with a warning, and a
+/// filtered format completes either one, warning only for a required cover.
+/// Every source is read; unidentified or filtered sources consume at most 1,027
+/// evidence bytes, and accepted sources retain that prefix and append the
+/// remaining payload. Any read failure returns `AcquisitionFailed` with the
+/// existing warning facts.
+pub(super) fn discover_image(
     source: &ArchiveImageSource,
     reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
-    purpose: &P,
 ) -> DiscoveredImage {
     let mut warnings = Vec::new();
     let mut data = Vec::new();
@@ -149,21 +191,20 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
     let identified = identify_source(&data, source);
     let (format, evidence) = match identified {
         Some(identified) => (identified.format, Some(identified.evidence)),
-        None => {
-            let decision = purpose.unidentified_format(source);
-            if let Some(warning) = decision.warning {
-                warnings.push(warning);
+        None => match &source.purpose {
+            ImageWritePurpose::NormalImage { .. } => {
+                return DiscoveredImage {
+                    outcome: ArchiveImageDiscoveryOutcome::Completed,
+                    warnings,
+                };
             }
-            match decision.action {
-                UnidentifiedFormatAction::ContinueWith(format) => (format, None),
-                UnidentifiedFormatAction::Complete => {
-                    return DiscoveredImage {
-                        outcome: ArchiveImageDiscoveryOutcome::Completed,
-                        warnings,
-                    };
-                }
+            ImageWritePurpose::RequiredCover { declared_mime } => {
+                warnings.push(ImageWriteWarning::CoverDefaultToJpeg {
+                    mime: declared_mime.clone(),
+                });
+                (ImageFormat::Jpg, None)
             }
-        }
+        },
     };
 
     match evidence {
@@ -179,8 +220,13 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
     }
 
     if !allowed_formats.contains(&format) {
-        if let Some(warning) = purpose.filtered_format(format) {
-            warnings.push(warning);
+        // Kept exhaustive so a new purpose has to state whether filtering warns.
+        match &source.purpose {
+            // A filtered normal image is an ordinary non-match, so it completes silently.
+            ImageWritePurpose::NormalImage { .. } => {}
+            ImageWritePurpose::RequiredCover { .. } => {
+                warnings.push(ImageWriteWarning::UnsupportedCoverFormat { format });
+            }
         }
         return DiscoveredImage {
             outcome: ArchiveImageDiscoveryOutcome::Completed,

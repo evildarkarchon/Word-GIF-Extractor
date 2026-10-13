@@ -2,7 +2,6 @@
 
 mod discovery;
 mod emission;
-mod purpose;
 
 use anyhow::{Error, Result};
 use std::collections::HashSet;
@@ -18,7 +17,6 @@ use crate::output_placement::OutputPlacement;
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::{ImageFileEmission, OutputNaming};
-use self::purpose::{NormalImages, RequiredCover};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -293,12 +291,7 @@ impl ImageWritePipeline {
         reader: &mut dyn Read,
     ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
         let source = ArchiveImageSource::required_cover(manifest_path, mime);
-        let discovered = discover_image(
-            &source,
-            reader,
-            &self.policy.allowed_formats,
-            &RequiredCover,
-        );
+        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         let mut result = ImageWriteResult::default();
         result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
@@ -379,7 +372,7 @@ impl ImageWritePipeline {
         placement: &OutputPlacement,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> ImageWriteOutcome {
-        let mut visitor = ArchiveImageVisitor::new(&self.policy, placement, NormalImages);
+        let mut visitor = ArchiveImageVisitor::new(&self.policy, placement);
         if let Err(error) = traverse(&mut visitor) {
             return Err(visitor.into_failure(error));
         }
@@ -405,7 +398,6 @@ enum NormalImageNaming<'policy, 'placement> {
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
-    purpose: NormalImages,
     output_dir: &'placement Path,
     base_name: &'placement str,
     discovery_warnings: Vec<ImageWriteWarning>,
@@ -416,14 +408,9 @@ pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
 
 impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     /// Starts one scoped Archive image discovery traversal.
-    fn new(
-        policy: &'policy ImageWritePolicy,
-        placement: &'placement OutputPlacement,
-        purpose: NormalImages,
-    ) -> Self {
+    fn new(policy: &'policy ImageWritePolicy, placement: &'placement OutputPlacement) -> Self {
         Self {
             policy,
-            purpose,
             output_dir: placement.output_dir(),
             base_name: placement.base_name(),
             discovery_warnings: Vec::new(),
@@ -442,8 +429,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         source: ArchiveImageSource,
         reader: &mut dyn Read,
     ) -> Result<()> {
-        let discovered =
-            discover_image(&source, reader, &self.policy.allowed_formats, &self.purpose);
+        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         self.discovery_warnings.extend(discovered.warnings);
 
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
@@ -525,7 +511,9 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         prepared: PreparedImage<'policy>,
     ) -> Result<()> {
         // This visitor is bound to the normal-images purpose, so it records
-        // normal images; the counting function supplies only the role.
+        // normal images; the counting function supplies only the role. The
+        // binding holds because only this pipeline can build a required-cover
+        // source, and it never hands one to a visitor.
         let tally = &mut self.tally;
         emit_prepared_image(self.output_dir, emission, prepared, |role| {
             tally.record_normal_image(role)
