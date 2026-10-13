@@ -362,9 +362,9 @@ fn resolve_reference(reference: &str) -> Option<String> {
 /// Looks up a resolved manifest path using exact spelling before a percent-decoded alias.
 ///
 /// `manifest_path` is the spelling [`resolve_reference`] produced; the raw, unresolved
-/// spelling is never looked up. Returns the matching ZIP index. After exact lookup fails, malformed escapes
-/// and decoded bytes that are not UTF-8 return `InvalidPercentEncoding`; a
-/// valid decoded alias that does not exist returns `NotFound`.
+/// spelling is never looked up. Returns the matching ZIP index. After exact lookup
+/// fails, malformed escapes and decoded bytes that are not UTF-8 return
+/// `InvalidPercentEncoding`; a valid decoded alias that does not exist returns `NotFound`.
 fn resolve_resource(
     archive: &ZipArchive<fs::File>,
     manifest_path: &str,

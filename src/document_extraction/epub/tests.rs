@@ -585,7 +585,7 @@ fn parent_relative_required_cover_is_emitted_without_falling_back() {
 }
 
 #[test]
-fn invalid_percent_escape_warning_names_the_reference_as_before() {
+fn invalid_percent_escape_warning_names_the_resolved_reference() {
     let temp_dir = temp_test_dir("epub", "invalid-percent-escape-warning");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("out");

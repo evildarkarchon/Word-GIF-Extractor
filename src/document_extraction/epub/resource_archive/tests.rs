@@ -370,13 +370,13 @@ fn reference_escaping_the_archive_root_is_unavailable_with_the_crate_spelling() 
 }
 
 #[test]
-fn parent_relative_and_root_relative_references_share_archive_resource_identity() {
+fn parent_relative_reference_shares_identity_with_its_resolved_spelling() {
     let path = temp_epub_path("resource-archive", "dot-segment-identity");
     write_zip_archive(&path, &[("Images/a.png", b"shared")]);
     EpubResourceArchive::open(
         &path,
         &[
-            EpubResourceDeclaration::new("root", Path::new("Images/a.png"), "image/png"),
+            EpubResourceDeclaration::new("resolved", Path::new("Images/a.png"), "image/png"),
             EpubResourceDeclaration::new("parent", Path::new("OEBPS/../Images/a.png"), "image/png"),
         ],
         |archive| {
