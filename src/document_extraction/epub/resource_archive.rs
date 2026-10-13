@@ -227,6 +227,9 @@ impl EpubResourceArchive {
                 // the sort key as it stands. A resolved reference sorts by the entry
                 // name its lookup reached, which is that spelling or its percent-decoded
                 // form, so percent-encoded aliases keep sorting where their payload is.
+                // This departs from the letter of ADR-0020, which names the resolved
+                // spelling itself as the sort key: for a decoded match that would sort
+                // `%7A.png` before `a.png` and renumber output that extracts today.
                 let sort_path = match &resolution {
                     ResourceResolution::Resolved(index) => archive
                         .name_for_index(*index)
