@@ -366,9 +366,10 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
 /// Proves a discovery outcome that emits nothing contributes nothing to the run.
 ///
 /// *Why* each of these sources is non-emitting — a format outside the allow-set,
-/// evidence that identifies no format — is decided in Archive image discovery and
-/// Image write purpose, and asserted as values there. This is the part only the
-/// fold can show: such an outcome moves no count and claims no normal output.
+/// evidence that identifies no format — is decided in Archive image discovery
+/// from the source's Image write purpose, and asserted as values there. This is
+/// the part only the fold can show: such an outcome moves no count and claims no
+/// normal output.
 ///
 /// It is asserted from the result rather than from the absence of the output
 /// directory. The directory is absent before the pipeline runs (see

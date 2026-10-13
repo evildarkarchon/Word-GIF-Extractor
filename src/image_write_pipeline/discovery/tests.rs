@@ -5,12 +5,13 @@
 //! the declared-MIME normalization, the SVG search window and the EMF offset
 //! check — and each contract is a value-to-value function with no I/O. Routing
 //! these assertions back through `discover_image` would mean constructing a
-//! source, an Image write purpose and an allow-set in order to observe that one
-//! signature is recognized, which reproduces at smaller scale the coupling this
-//! module's tests exist to remove. `discover_image` is tested below, separately
-//! from the recognizers, for the facts that only it produces: evidence
-//! precedence, the bounded read boundary, the fallback warning, delegation to
-//! the Image write purpose and the two-phase read.
+//! source, with its Image write purpose, and an allow-set in order to observe
+//! that one signature is recognized, which reproduces at smaller scale the
+//! coupling this module's tests exist to remove. `discover_image` is tested
+//! below, separately from the recognizers, for the facts that only it produces:
+//! evidence precedence, the bounded read boundary, the fallback warning, the
+//! decisions that differ by the source's Image write purpose and the two-phase
+//! read.
 //!
 //! The entry-point tests run over in-memory readers, with no archive and no
 //! filesystem: the returned discovery outcome, its accepted payload and its
@@ -27,7 +28,6 @@
 use std::io::Cursor;
 
 use super::*;
-use crate::image_write_pipeline::purpose::{NormalImages, RequiredCover};
 use crate::test_support::{FailAfterReader, MINIMAL_PNG};
 
 /// One magic-evidence fixture naming the format its payload must identify as.
@@ -240,7 +240,7 @@ fn magic_evidence_outranks_a_conflicting_extension_and_mime() {
     let source = ArchiveImageSource::named("word/media/image.jpg").with_mime("image/gif");
     let mut reader = Cursor::new(MINIMAL_PNG.to_vec());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set(), &NormalImages);
+    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
 
     // The empty warning list is half the point: the fallback warning belongs to
     // extension evidence alone, and a normal source's `.jpg` name never got to speak.
@@ -253,11 +253,11 @@ fn path_extension_outranks_mime_and_emits_the_fallback_warning() {
     let payload = b"not actually a png".to_vec();
     let mut reader = Cursor::new(payload.clone());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set(), &NormalImages);
+    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
 
     // The warning carries the source name and the format it fell back to, which
     // is what makes it Archive image discovery's warning rather than any Image
-    // write purpose's — no purpose hook runs on this path.
+    // write purpose's — no purpose-specific decision runs on this path.
     assert_eq!(
         discovered,
         accepted_with(
@@ -277,7 +277,7 @@ fn declared_mime_identifies_only_after_magic_and_extension_evidence_fail() {
     let payload = b"unknown bytes".to_vec();
     let mut reader = Cursor::new(payload.clone());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set(), &NormalImages);
+    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
 
     // `.bin` is not an image extension, so the extension rung is skipped rather
     // than failed — and MIME evidence emits no fallback warning of its own.
@@ -289,12 +289,7 @@ fn unidentified_normal_source_completes_silently_after_the_bounded_read() {
     let source = ArchiveImageSource::named("word/media/image.bin");
     let mut reader = Cursor::new(vec![0; 4096]);
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Png]),
-        &NormalImages,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
 
     assert_eq!(discovered, completed_silently());
     assert_eq!(reader.position(), 1027);
@@ -307,12 +302,7 @@ fn filtered_source_consumes_the_whole_evidence_window() {
     payload[..6].copy_from_slice(b"GIF89a");
     let mut reader = Cursor::new(payload);
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Png]),
-        &NormalImages,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
 
     // The format is identifiable from byte 0, so the read boundary is not
     // coupled to how early identification succeeds: the window is consumed
@@ -333,12 +323,7 @@ fn accepted_source_retains_its_evidence_prefix_and_appends_the_remainder() {
     }
     let mut reader = Cursor::new(original.clone());
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Png]),
-        &NormalImages,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
 
     assert_eq!(discovered, accepted(original.clone(), ImageFormat::Png));
     assert_eq!(reader.position(), original.len() as u64);
@@ -355,12 +340,7 @@ fn bom_prefixed_svg_ending_inside_the_window_is_accepted() {
     assert_eq!(svg.len(), 1027);
     let mut reader = Cursor::new(svg.clone());
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Svg]),
-        &NormalImages,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Svg]));
 
     assert_eq!(discovered, accepted(svg, ImageFormat::Svg));
     // The payload ends exactly at the read boundary, so acceptance must not have
@@ -376,12 +356,7 @@ fn bom_prefixed_svg_beyond_the_window_completes_at_the_read_boundary() {
     svg.extend_from_slice(b"<svg>");
     let mut reader = Cursor::new(svg);
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Svg]),
-        &NormalImages,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Svg]));
 
     assert_eq!(discovered, completed_silently());
     assert_eq!(reader.position(), 1027);
@@ -394,12 +369,7 @@ fn required_cover_with_unidentified_evidence_continues_as_jpeg() {
     let original = vec![0x5a; 4096];
     let mut reader = Cursor::new(original.clone());
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Jpg]),
-        &RequiredCover,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Jpg]));
 
     // The `.png` in the name is diagnostic identity, not evidence: a required
     // cover carries no path evidence, so unknown MIME leaves it unidentified.
@@ -423,12 +393,7 @@ fn required_cover_whose_format_is_filtered_completes_with_a_warning() {
     payload[..3].copy_from_slice(b"\xFF\xD8\xFF");
     let mut reader = Cursor::new(payload);
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Png]),
-        &RequiredCover,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
 
     // Where a filtered normal image completes silently, a filtered cover says
     // why it produced nothing — the same outcome, a different warning list.
@@ -451,12 +416,7 @@ fn required_cover_failing_mid_payload_returns_ordered_acquisition_facts() {
     // defaulting decision is already recorded when acquisition gives out.
     let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
 
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Jpg]),
-        &RequiredCover,
-    );
+    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Jpg]));
 
     // Warning order is a property of this outcome, not of the fold that the
     // pipeline later performs over it, so it is asserted as a sequence here.
