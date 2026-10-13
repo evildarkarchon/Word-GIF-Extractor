@@ -82,8 +82,8 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     fs::create_dir_all(&output_dir).expect("output directory should be creatable");
     let cover = b"\xFF\xD8\xFFdeclared-cover";
     // The declared cover deliberately resolves after another resource, so it is not
-    // the catalog's first entry: EPUB cover extraction addresses candidates by position,
-    // and an off-by-one there would acquire the wrong payload rather than fail.
+    // the catalog's first entry: an extraction that reached for the wrong catalog entry
+    // would acquire the wrong payload rather than fail.
     write_stored_epub_fixture(
         &input_path,
         &[
@@ -388,8 +388,8 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
 ///
 /// `images/cover%2Ejpg`, `images/cover.jpg` and `images/cover%2ejpg` are three declared
 /// references to a single archive payload, so exactly one of them is ever acquired and
-/// the rest are excluded from normal fallback. EPUB cover extraction's own tests assume
-/// aliasing candidates share an identity; only a real archive can establish that they do.
+/// the rest are excluded from normal fallback. EPUB cover extraction's own tests pin the
+/// same exclusion at its interface; this one keeps it pinned through the EPUB adapter.
 #[test]
 fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
     let temp_dir = temp_test_dir("epub", "aliasing-cover-identity");

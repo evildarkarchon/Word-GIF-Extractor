@@ -37,14 +37,33 @@ pub(super) fn extract_all_images<'session>(
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
     pipeline.write_from(placement, |visitor| {
-        for resource in catalog {
-            if excluded_identities.contains(&resource.identity()) {
-                continue;
-            }
-            visit_resource(payloads, resource, visitor)?;
-        }
-        Ok(())
+        visit_all(catalog, payloads, excluded_identities, visitor)
     })
+}
+
+/// Visits every non-excluded catalog resource against one normal-image visitor.
+///
+/// The traversal [`extract_all_images`] runs under its own `write_from`, split out
+/// so cover fallback can run the same traversal against the fresh visitor its cover
+/// scope lends it, keeping one definition of which resources a fallback revisits.
+///
+/// # Errors
+///
+/// Returns an error only when output emission fails; per-resource lookup and read
+/// failures are recorded on the visitor and traversal continues.
+pub(super) fn visit_all<'session>(
+    catalog: &[EpubResource<'session>],
+    payloads: &mut EpubPayloadReader<'session>,
+    excluded_identities: &HashSet<ArchiveResourceIdentity<'session>>,
+    visitor: &mut ArchiveImageVisitor<'_, '_>,
+) -> Result<()> {
+    for resource in catalog {
+        if excluded_identities.contains(&resource.identity()) {
+            continue;
+        }
+        visit_resource(payloads, resource, visitor)?;
+    }
+    Ok(())
 }
 
 /// Builds the normal-image source facts used by shared archive traversal.

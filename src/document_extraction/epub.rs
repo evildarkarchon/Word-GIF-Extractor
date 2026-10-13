@@ -46,35 +46,22 @@ pub(super) fn extract(
     EpubResourceArchive::open(
         &input_path,
         declarations.resources(),
-        |catalog, mut payloads| {
-            match cover_policy {
-                None => normal_images::extract_all_images(
-                    catalog,
-                    &mut payloads,
-                    &HashSet::new(),
-                    &placement,
-                    pipeline,
-                ),
-                Some(cover_policy) => {
-                    // ADR-0005 keeps cover extraction taking a plain bool rather than a
-                    // Document extraction type, so the fallback decision is flattened here.
-                    let fallback_to_normal_images =
-                        matches!(cover_policy, EpubCoverPolicy::CoverThenNormalImages);
-                    let candidates = cover_extraction::cover_candidates(catalog);
-                    let mut attempts = cover_extraction::EpubCoverAttempts {
-                        catalog,
-                        payloads: &mut payloads,
-                        placement: &placement,
-                        pipeline,
-                    };
-                    cover_extraction::extract_required_cover(
-                        &candidates,
-                        declarations.cover_id(),
-                        fallback_to_normal_images,
-                        &mut attempts,
-                    )
-                }
-            }
+        |catalog, mut payloads| match cover_policy {
+            None => normal_images::extract_all_images(
+                catalog,
+                &mut payloads,
+                &HashSet::new(),
+                &placement,
+                pipeline,
+            ),
+            Some(cover_policy) => cover_extraction::extract_required_cover(
+                catalog,
+                &mut payloads,
+                pipeline,
+                &placement,
+                declarations.cover_id(),
+                cover_policy,
+            ),
         },
     )?
 }
