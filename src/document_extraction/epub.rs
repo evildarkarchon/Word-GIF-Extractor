@@ -51,8 +51,8 @@ pub(super) fn extract(
                 catalog,
                 &mut payloads,
                 &HashSet::new(),
-                &placement,
                 pipeline,
+                &placement,
             ),
             Some(cover_policy) => cover_extraction::extract_required_cover(
                 catalog,

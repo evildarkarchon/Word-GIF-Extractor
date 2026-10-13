@@ -33,8 +33,8 @@ pub(super) fn extract_all_images<'session>(
     catalog: &[EpubResource<'session>],
     payloads: &mut EpubPayloadReader<'session>,
     excluded_identities: &HashSet<ArchiveResourceIdentity<'session>>,
-    placement: &OutputPlacement,
     pipeline: &ImageWritePipeline,
+    placement: &OutputPlacement,
 ) -> ImageWriteOutcome {
     pipeline.write_from(placement, |visitor| {
         visit_all(catalog, payloads, excluded_identities, visitor)

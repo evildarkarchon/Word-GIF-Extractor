@@ -82,8 +82,8 @@ fn attempt_required_cover(
     reader: &mut dyn Read,
 ) -> ImageWriteOutcome<(RequiredCoverDisposition, ImageWriteResult)> {
     let mut disposition = None;
-    let result = pipeline.write_required_cover(placement, |covers| {
-        disposition = Some(covers.attempt(manifest_path, mime, reader)?);
+    let result = pipeline.write_required_cover(placement, |cover_scope| {
+        disposition = Some(cover_scope.attempt(manifest_path, mime, reader)?);
         Ok(())
     })?;
     Ok((
@@ -1182,8 +1182,8 @@ fn unavailable_required_cover_retries_with_its_acquisition_warning() {
     let mut outcome = None;
 
     let result = pipeline
-        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |covers| {
-            outcome = Some(covers.unreadable("OPS/cover.jpg", "entry is missing"));
+        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |cover_scope| {
+            outcome = Some(cover_scope.unreadable("OPS/cover.jpg", "entry is missing"));
             Ok(())
         })
         .expect("an unavailable required cover should not fail the cover scope");
@@ -1212,9 +1212,9 @@ fn cover_scope_appends_fallback_facts_after_cover_attempt_facts() {
     let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let result = pipeline
-        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |covers| {
-            covers.unreadable("OPS/cover.jpg", "entry is missing");
-            covers.fallback(|visitor| {
+        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |cover_scope| {
+            cover_scope.unreadable("OPS/cover.jpg", "entry is missing");
+            cover_scope.fallback(|visitor| {
                 visitor.visit(
                     ArchiveImageSource::named("OPS/page.png"),
                     &mut Cursor::new(b"not actually a png".to_vec()),
@@ -1258,15 +1258,18 @@ fn cover_scope_fallback_emission_failure_keeps_earlier_cover_facts() {
     let pipeline = pipeline_accepting([ImageFormat::Png]);
 
     let failure = pipeline
-        .write_required_cover(&OutputPlacement::new(&blocked_output, "sample"), |covers| {
-            covers.unreadable("OPS/cover.jpg", "entry is missing");
-            covers.fallback(|visitor| {
-                visitor.visit(
-                    ArchiveImageSource::named("OPS/page.png"),
-                    &mut Cursor::new(b"not actually a png".to_vec()),
-                )
-            })
-        })
+        .write_required_cover(
+            &OutputPlacement::new(&blocked_output, "sample"),
+            |cover_scope| {
+                cover_scope.unreadable("OPS/cover.jpg", "entry is missing");
+                cover_scope.fallback(|visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::named("OPS/page.png"),
+                        &mut Cursor::new(b"not actually a png".to_vec()),
+                    )
+                })
+            },
+        )
         .expect_err("a failed fallback emission should fail the cover scope");
 
     assert!(format!("{:#}", failure.error).contains("Failed to create output directory"));

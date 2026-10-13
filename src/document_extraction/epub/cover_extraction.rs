@@ -48,7 +48,7 @@ pub(super) fn extract_required_cover<'session>(
     let filename_cover = find_cover_by_filename(catalog);
     let mut attempted_identities = HashSet::new();
 
-    pipeline.write_required_cover(placement, |covers| {
+    pipeline.write_required_cover(placement, |cover_scope| {
         for candidate in [metadata_cover, filename_cover].into_iter().flatten() {
             if !attempted_identities.insert(candidate.identity()) {
                 continue;
@@ -58,12 +58,12 @@ pub(super) fn extract_required_cover<'session>(
             // unchanged and ends the sequence; the attempt has already folded the
             // facts it recorded before failing into the cover scope.
             let acquisition = payloads.acquire(candidate, |payload| {
-                covers.attempt(candidate.manifest_path(), candidate.mime(), payload)
+                cover_scope.attempt(candidate.manifest_path(), candidate.mime(), payload)
             })?;
             let disposition = match acquisition {
                 ResourceAcquisition::Acquired(disposition) => disposition,
                 ResourceAcquisition::Unavailable(error) => {
-                    covers.unreadable(candidate.manifest_path(), error)
+                    cover_scope.unreadable(candidate.manifest_path(), error)
                 }
             };
             if disposition == RequiredCoverDisposition::Completed {
@@ -73,7 +73,7 @@ pub(super) fn extract_required_cover<'session>(
 
         match cover_policy {
             EpubCoverPolicy::CoverOnly => Ok(()),
-            EpubCoverPolicy::CoverThenNormalImages => covers.fallback(|visitor| {
+            EpubCoverPolicy::CoverThenNormalImages => cover_scope.fallback(|visitor| {
                 normal_images::visit_all(catalog, payloads, &attempted_identities, visitor)
             }),
         }
