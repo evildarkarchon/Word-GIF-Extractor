@@ -388,6 +388,9 @@ fn cover_retry_warnings_precede_the_normal_fallback_warning() {
 fn cover_retries_precede_partial_normal_fallback_facts() {
     // The singular-versus-numbered lookahead emits the converted PNG only once the GIF
     // arrives, and then fails routing the GIF into a destination a file occupies.
+    // Before either, fallback visits a declared page with no archive entry, so the
+    // partial facts carry a fallback warning whose place after the cover retries'
+    // warnings shows the order the scope folded them in.
     let first = valid_png();
     let fixture = CoverFixture::new(
         "retries-before-partial-fallback",
@@ -404,6 +407,7 @@ fn cover_retries_precede_partial_normal_fallback_facts() {
     let declarations = [
         declared("metadata-cover", "OEBPS/images/missing.png", "image/png"),
         declared("filename-cover", "OEBPS/images/cover.jpg", "image/jpeg"),
+        declared("absent-page", "OEBPS/images/absent.png", "image/png"),
         declared("first", "OEBPS/images/first.png", "image/png"),
         declared("second", "OEBPS/images/second.gif", "image/gif"),
     ];
@@ -429,6 +433,7 @@ fn cover_retries_precede_partial_normal_fallback_facts() {
         vec![
             not_found("OEBPS/images/missing.png"),
             not_found("OEBPS/images/cover.jpg"),
+            not_found("OEBPS/images/absent.png"),
         ]
     );
     assert_eq!(fixture.written_files(), vec!["Book_1.jpg".to_string()]);
@@ -518,7 +523,13 @@ fn an_already_attempted_identity_is_not_retried() {
 
     // One acquisition warning for three spellings is the observable form of one
     // identity: the aliases were neither attempted again nor revisited by fallback,
-    // so the aliased cover payload was not also written as a normal image.
+    // each of which would have warned about the same unreadable payload again.
+    //
+    // That the aliased payload was not also written as a normal image holds here
+    // trivially, because it cannot be read. No readable case exists through the real
+    // pipeline: a readable cover completes its attempt, and a completed attempt ends
+    // the sequence before fallback, so only an unreadable identity ever reaches
+    // fallback as an attempted one. The warning count is what shows the exclusion.
     assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
     assert_eq!(
         acquisition_failure_sources(&result.warnings),
