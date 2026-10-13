@@ -9,13 +9,13 @@
 //! read, and a file standing where a directory should be fails emission.
 
 use super::*;
-use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
+use crate::conversion::ConversionTarget;
 use crate::epub_declarations::EpubResourceDeclaration;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePolicy, ImageWriteWarning};
 use crate::test_support::{
-    MINIMAL_PNG, TempTestPath, pipeline_accepting, temp_test_dir, valid_png,
-    write_stored_epub_fixture,
+    MINIMAL_PNG, TempTestPath, acquisition_failure_sources, corrupt_stored_payload, file_names_in,
+    pipeline_accepting, pipeline_converting, temp_test_dir, valid_png, write_stored_epub_fixture,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -82,27 +82,6 @@ impl CoverFixture {
         blocked
     }
 
-    /// Flips one byte of a uniquely identifiable stored payload, failing its CRC check.
-    ///
-    /// Only the payload bytes change, so the entry still opens and the failure surfaces
-    /// when the payload is read, which is the failure a cover attempt retries on.
-    fn corrupt_stored_payload(&self, payload: &[u8]) {
-        let mut archive_bytes = fs::read(&self.epub).expect("test EPUB should be readable");
-        let matches: Vec<_> = archive_bytes
-            .windows(payload.len())
-            .enumerate()
-            .filter(|(_, window)| *window == payload)
-            .map(|(position, _)| position)
-            .collect();
-        assert_eq!(
-            matches.len(),
-            1,
-            "test payload must uniquely identify one archive entry"
-        );
-        archive_bytes[matches[0] + payload.len() - 1] ^= 0xff;
-        fs::write(&self.epub, archive_bytes).expect("corrupted test EPUB should be writable");
-    }
-
     /// Opens the fixture as a real EPUB resource archive and runs cover extraction on it.
     fn extract(
         &self,
@@ -127,18 +106,7 @@ impl CoverFixture {
 
     /// Returns the names of the files written to the output directory, sorted.
     fn written_files(&self) -> Vec<String> {
-        let mut names: Vec<_> = fs::read_dir(&self.output_dir)
-            .expect("output directory should remain readable")
-            .map(|entry| {
-                entry
-                    .expect("output entry should be readable")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        names.sort();
-        names
+        file_names_in(&self.output_dir)
     }
 }
 
@@ -148,38 +116,6 @@ fn not_found(source_name: &str) -> ImageWriteWarning {
         source_name,
         format!("EPUB resource not found: {source_name}"),
     )
-}
-
-/// Returns archive acquisition warning sources in their observed order.
-fn acquisition_failure_sources(warnings: &[ImageWriteWarning]) -> Vec<&str> {
-    warnings
-        .iter()
-        .filter_map(|warning| match warning {
-            ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. } => {
-                Some(source_name.as_str())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Builds a pipeline with a Conversion policy and an optional GIF destination.
-fn pipeline_converting(
-    allowed_formats: impl IntoIterator<Item = ImageFormat>,
-    target: ConversionTarget,
-    gif_output: Option<PathBuf>,
-) -> ImageWritePipeline {
-    let conversion = ConversionPolicy::try_from(ConversionRequest {
-        target,
-        quality: None,
-        lossless: false,
-    })
-    .expect("test conversion request should be valid");
-    ImageWritePipeline::new(ImageWritePolicy::new(
-        allowed_formats.into_iter().collect::<HashSet<_>>(),
-        Some(conversion),
-        gif_output,
-    ))
 }
 
 #[test]
@@ -380,7 +316,7 @@ fn an_unreadable_declared_cover_retries_the_filename_candidate() {
             ("OEBPS/images/cover.jpg", &filename_cover),
         ],
     );
-    fixture.corrupt_stored_payload(&unreadable_cover);
+    corrupt_stored_payload(&fixture.epub, &unreadable_cover);
     let declarations = [
         declared("metadata-cover", "OEBPS/images/art.jpg", "image/jpeg"),
         declared("filename-cover", "OEBPS/images/cover.jpg", "image/jpeg"),
@@ -562,7 +498,7 @@ fn an_already_attempted_identity_is_not_retried() {
             ("OEBPS/images/page.png", MINIMAL_PNG),
         ],
     );
-    fixture.corrupt_stored_payload(&corrupt_cover);
+    corrupt_stored_payload(&fixture.epub, &corrupt_cover);
     let declarations = [
         declared("metadata-cover", "OEBPS/images/cover%2Ejpg", "image/jpeg"),
         declared("filename-cover", "OEBPS/images/cover.jpg", "image/jpeg"),

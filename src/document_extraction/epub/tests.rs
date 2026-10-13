@@ -10,8 +10,8 @@ use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    MINIMAL_PNG, SilentExtractionRunObserver, pipeline_accepting, temp_test_dir,
-    write_epub_with_one_image, write_stored_epub_fixture,
+    MINIMAL_PNG, SilentExtractionRunObserver, acquisition_failure_sources, corrupt_stored_payload,
+    pipeline_accepting, temp_test_dir, write_epub_with_one_image, write_stored_epub_fixture,
 };
 use std::fs;
 use std::path::Path;
@@ -40,38 +40,6 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
         SelectedDocument::Epub(document) => document,
         SelectedDocument::Docx(_) => panic!("EPUB fixture should retain its selected kind"),
     }
-}
-
-/// Returns archive acquisition warning sources in their observed order.
-fn acquisition_failure_sources(warnings: &[ImageWriteWarning]) -> Vec<&str> {
-    warnings
-        .iter()
-        .filter_map(|warning| match warning {
-            ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. } => {
-                Some(source_name.as_str())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Corrupts one uniquely identifiable stored payload without changing ZIP metadata.
-fn corrupt_stored_payload(path: &Path, payload: &[u8]) {
-    let mut archive_bytes = fs::read(path).expect("test EPUB should be readable");
-    let payload_start = archive_bytes
-        .windows(payload.len())
-        .position(|window| window == payload)
-        .expect("stored test payload should occur in the EPUB");
-    assert_eq!(
-        archive_bytes
-            .windows(payload.len())
-            .filter(|window| *window == payload)
-            .count(),
-        1,
-        "test payload must uniquely identify one archive entry"
-    );
-    archive_bytes[payload_start] ^= 0xff;
-    fs::write(path, archive_bytes).expect("corrupted test EPUB should be writable");
 }
 
 #[test]

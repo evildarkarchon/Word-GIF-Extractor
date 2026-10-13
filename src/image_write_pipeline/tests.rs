@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
-use crate::test_support::{FailAfterReader, MINIMAL_PNG, pipeline_accepting, temp_test_dir};
+use crate::test_support::{
+    FailAfterReader, MINIMAL_PNG, pipeline_accepting, pipeline_converting, temp_test_dir,
+};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
@@ -202,7 +204,7 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
 #[test]
 fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-skip");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
         None,
@@ -234,7 +236,7 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
 #[test]
 fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-failure");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
         None,
@@ -267,7 +269,7 @@ fn required_gif_cover_routes_without_conversion() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-gif-routing");
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Gif]),
         ConversionTarget::Png,
         Some(gif_dir.clone()),
@@ -510,7 +512,7 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
 #[test]
 fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
     let temp_dir = temp_test_dir("pipeline", "phase-ordered-warnings");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg, ImageFormat::Png]),
         ConversionTarget::Png,
         None,
@@ -741,7 +743,7 @@ fn every_unreadable_normal_source_warns_whatever_its_name() {
 #[test]
 fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
     let temp_dir = temp_test_dir("pipeline", "normal-conversion-skip");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
         None,
@@ -779,7 +781,7 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
 fn normal_conversion_failure_writes_original_and_counts_skip() {
     let temp_dir = temp_test_dir("pipeline", "normal-conversion-failure");
     let original = b"\x89PNG\r\n\x1A\nnot a valid png".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
         None,
@@ -840,7 +842,7 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
 fn matching_conversion_target_preserves_original_without_conversion_count() {
     let temp_dir = temp_test_dir("pipeline", "matching-conversion-target");
     let original = b"accepted through extension fallback".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Png,
         None,
@@ -943,7 +945,7 @@ fn routed_gif_bypasses_conversion() {
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
     let original = b"GIF89a routed payload".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Gif]),
         ConversionTarget::Png,
         Some(gif_dir.clone()),
@@ -1020,26 +1022,6 @@ fn constructed_results_carry_their_facts_through_the_fold() {
     assert_eq!(earlier.tally.converted(), 2);
     assert_eq!(earlier.tally.conversion_skipped(), 1);
     assert_eq!(earlier.warnings, vec![earlier_warning, later_warning]);
-}
-
-/// Builds a pipeline with a default Conversion policy for interface tests.
-fn pipeline_with_conversion(
-    allowed_formats: HashSet<ImageFormat>,
-    target: ConversionTarget,
-    gif_output: Option<PathBuf>,
-) -> ImageWritePipeline {
-    let conversion = ConversionPolicy::try_from(ConversionRequest {
-        target,
-        quality: None,
-        lossless: false,
-    })
-    .expect("test conversion request should be valid");
-
-    ImageWritePipeline::new(ImageWritePolicy::new(
-        allowed_formats,
-        Some(conversion),
-        gif_output,
-    ))
 }
 
 /// Builds an Image write policy accepting every format, for direct preparation tests.
