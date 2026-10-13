@@ -18,7 +18,7 @@ use crate::output_placement::OutputPlacement;
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::{ImageFileEmission, OutputNaming};
-use self::purpose::{ImageWritePurpose, NormalImages, RequiredCover, SourceEligibility};
+use self::purpose::{NormalImages, RequiredCover};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -480,18 +480,14 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
 
     /// Records a source that the document adapter could not open.
     ///
-    /// Unsafe normal-image names remain silent skips, matching discovery behavior.
+    /// Every such source warns, whatever its name: a source name never decides
+    /// where a file is written, so no name is grounds for a silent skip.
     pub(crate) fn unreadable(&mut self, source: ArchiveImageSource, error: impl fmt::Display) {
-        if matches!(
-            self.purpose.source_eligibility(&source),
-            SourceEligibility::Inspect
-        ) {
-            self.discovery_warnings
-                .push(ImageWriteWarning::archive_image_acquisition_failed(
-                    source.diagnostic_name(),
-                    error,
-                ));
-        }
+        self.discovery_warnings
+            .push(ImageWriteWarning::archive_image_acquisition_failed(
+                source.diagnostic_name(),
+                error,
+            ));
     }
 
     /// Holds the first prepared image until singular versus multiple naming is known.

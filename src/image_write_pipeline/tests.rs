@@ -366,7 +366,7 @@ fn accepted_source_reuses_its_evidence_prefix_and_emits_the_complete_payload() {
 /// Proves a discovery outcome that emits nothing contributes nothing to the run.
 ///
 /// *Why* each of these sources is non-emitting — a format outside the allow-set,
-/// a path the safety rule rejects — is decided in Archive image discovery and
+/// evidence that identifies no format — is decided in Archive image discovery and
 /// Image write purpose, and asserted as values there. This is the part only the
 /// fold can show: such an outcome moves no count and claims no normal output.
 ///
@@ -385,8 +385,8 @@ fn non_emitting_discovery_outcomes_move_no_counts() {
         vec![
             // Identified, then filtered out by the allow-set.
             named_source(b"GIF89a payload".as_slice(), "word/media/animation.gif"),
-            // Rejected before its reader is touched, despite valid PNG evidence.
-            named_source(MINIMAL_PNG, "../media/image.png"),
+            // No magic, extension or MIME evidence identifies a format.
+            named_source(b"<document/>".as_slice(), "word/document.xml"),
         ],
     )
     .expect("non-emitting sources should be a normal pipeline outcome");
@@ -646,7 +646,7 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
 
 /// Proves extension evidence outranks MIME and returns the exact fallback warning.
 #[test]
-fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
+fn path_extension_outranks_mime_and_emits_fallback_warning() {
     let temp_dir = temp_test_dir("pipeline", "extension-fallback");
     let pipeline = pipeline_accepting([ImageFormat::Png]);
 
@@ -677,19 +677,21 @@ fn eligible_extension_outranks_mime_and_emits_fallback_warning() {
 }
 
 #[test]
-fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
-    let temp_dir = temp_test_dir("pipeline", "unreadable-source-eligibility");
+fn every_unreadable_normal_source_warns_whatever_its_name() {
+    let temp_dir = temp_test_dir("pipeline", "unreadable-source-warns");
     let pipeline = pipeline_accepting([ImageFormat::Png]);
 
+    // A source name never decides where a file is written, so a name carrying
+    // `..` is no reason to drop the warning for a source that could not be opened.
     let result = pipeline
         .write_from(&OutputPlacement::new(&temp_dir, "sample"), |visitor| {
             visitor.unreadable(
-                ArchiveImageSource::named("../unsafe.png"),
-                "unsafe source should remain silent",
+                ArchiveImageSource::named("../outside.png"),
+                "escaping source could not be opened",
             );
             visitor.unreadable(
-                ArchiveImageSource::named("word/media/safe.png"),
-                "safe source could not be opened",
+                ArchiveImageSource::named("word/media/image.png"),
+                "ordinary source could not be opened",
             );
             Ok(())
         })
@@ -699,10 +701,16 @@ fn unreadable_normal_sources_apply_source_eligibility_before_warning() {
     assert_eq!(result.tally.normal_images(), 0);
     assert_eq!(
         result.warnings,
-        vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
-            source_name: "word/media/safe.png".to_string(),
-            detail: "safe source could not be opened".to_string(),
-        }]
+        vec![
+            ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "../outside.png".to_string(),
+                detail: "escaping source could not be opened".to_string(),
+            },
+            ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "word/media/image.png".to_string(),
+                detail: "ordinary source could not be opened".to_string(),
+            },
+        ]
     );
 }
 

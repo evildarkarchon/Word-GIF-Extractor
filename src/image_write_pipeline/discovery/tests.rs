@@ -243,12 +243,12 @@ fn magic_evidence_outranks_a_conflicting_extension_and_mime() {
     let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set(), &NormalImages);
 
     // The empty warning list is half the point: the fallback warning belongs to
-    // extension evidence alone, and an eligible `.jpg` name never got to speak.
+    // extension evidence alone, and a normal source's `.jpg` name never got to speak.
     assert_eq!(discovered, accepted(MINIMAL_PNG.to_vec(), ImageFormat::Png));
 }
 
 #[test]
-fn eligible_extension_outranks_mime_and_emits_the_fallback_warning() {
+fn path_extension_outranks_mime_and_emits_the_fallback_warning() {
     let source = ArchiveImageSource::named("word/media/image.png").with_mime("image/jpeg");
     let payload = b"not actually a png".to_vec();
     let mut reader = Cursor::new(payload.clone());
@@ -342,24 +342,6 @@ fn accepted_source_retains_its_evidence_prefix_and_appends_the_remainder() {
 
     assert_eq!(discovered, accepted(original.clone(), ImageFormat::Png));
     assert_eq!(reader.position(), original.len() as u64);
-}
-
-#[test]
-fn ineligible_source_leaves_its_reader_untouched() {
-    // Safety precedes acquisition: the reader position states that the guard
-    // ran before a single byte of an unsafe source was read.
-    let source = ArchiveImageSource::named("../image.png");
-    let mut reader = Cursor::new(MINIMAL_PNG.to_vec());
-
-    let discovered = discover_image(
-        &source,
-        &mut reader,
-        &HashSet::from([ImageFormat::Png]),
-        &NormalImages,
-    );
-
-    assert_eq!(discovered, completed_silently());
-    assert_eq!(reader.position(), 0);
 }
 
 #[test]
