@@ -1,5 +1,12 @@
 # Keep EPUB cover extraction generic over the Archive resource identity
 
+> **Superseded by ADR-0021.** The `CoverAttempts` trait, its production and test
+> adapters, the identity type parameter, `CoverCandidate` and its `position`, and the
+> boolean flattening of the EPUB cover policy are deleted. EPUB cover extraction is
+> one concrete function over the real EPUB resource archive and Image write pipeline,
+> and the ordered fold of Image write pipeline facts now lives in the pipeline's scoped
+> cover entry. The text below records the design the code no longer has.
+
 EPUB cover extraction is its own module: it owns cover candidate ordering, Archive resource identity exclusion, the acquisition-retry loop, the fallback decision, and the ordered fold of Image write pipeline facts. It reaches the archive and the pipeline through one injected `CoverAttempts` trait whose `&mut self` receiver serves both operations — two closure parameters were rejected because both operations need a mutable borrow of the same EPUB resource archive session, and two closures cannot each capture it mutably. The module is generic over the identity type, constrained to `Copy + Eq + Hash`, and owns its own `CoverCandidate` type rather than borrowing the EPUB adapter's plan entry.
 
 The generic is the load-bearing part of that shape, and it is recorded here because the code does not explain it. The trait has exactly one production implementation, `EpubCoverAttempts` in the EPUB adapter, and the usual rule — one adapter means a hypothetical seam, two mean a real one — appears to argue for collapsing the generic and naming `ArchiveResourceIdentity` directly. The second adapter is the test adapter, which arrives with the cover policy tests in a separate change: the module was extracted with every existing test green and unchanged, so for one commit the generic has a single caller and looks unmotivated. The reason it cannot collapse is that `ArchiveResourceIdentity` carries an invariant session brand and is obtainable only by opening a real EPUB resource archive, which opens a file. A concrete identity in this module's interface would mean every test of candidate ordering, exclusion and retry sequencing still has to write a ZIP to a temporary directory and read files back to observe a decision that never touches the filesystem. The tests pass a plain integer; production passes the branded identity.
