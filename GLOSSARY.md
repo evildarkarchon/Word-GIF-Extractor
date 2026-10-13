@@ -105,7 +105,7 @@ The valid per-run choices that govern how the Image write pipeline accepts and e
 _Avoid_: Extraction config, writer options
 
 **Image write purpose**:
-The role of one source set in the Image write pipeline: normal batch images or a required EPUB cover. It distinguishes cover-specific outcomes from per-run Image write policy.
+The role an archive image source is created with in the Image write pipeline: a normal image or a required EPUB cover. Every source in one set shares it, and it distinguishes cover-specific outcomes from per-run Image write policy.
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **Emitted image role**:
@@ -125,7 +125,7 @@ One declared manifest resource considered for cover use by EPUB cover extraction
 _Avoid_: Cover match, cover entry, candidate path
 
 **Archive image discovery**:
-The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including source safety, Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
+The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
 
 **Archive resource identity**:
@@ -133,7 +133,7 @@ The stable identity of one archive payload across multiple document references w
 _Avoid_: ZIP index, resource path
 
 **EPUB resource archive**:
-The ordered custody of resources declared by an EPUB together with their available archive payloads. It owns deterministic ordering, the distinction between document-facing references and Archive resource identity, and scoped payload acquisition. Failure to establish that custody fails Document extraction, while the unavailability of one declared resource is a non-fatal acquisition fact. It excludes cover-candidate ordering, retry or completion decisions, fallback behavior, Archive image discovery, and Image file emission.
+The ordered custody of resources declared by an EPUB together with their available archive payloads. It owns deterministic ordering, the distinction between document-facing references and Archive resource identity, and scoped payload acquisition. It resolves each declared reference against the archive root once, and a reference that climbs above that root is an unavailable resource. Failure to establish that custody fails Document extraction, while the unavailability of one declared resource is a non-fatal acquisition fact. It excludes cover-candidate ordering, retry or completion decisions, fallback behavior, Archive image discovery, and Image file emission.
 _Avoid_: Direct ZIP adapter, resource list
 
 **EPUB declarations**:
