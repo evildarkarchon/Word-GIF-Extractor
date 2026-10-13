@@ -26,3 +26,7 @@ cargo run -- "path/to/document.docx"
 - **Issues** live in this repo's GitHub Issues, driven through the `gh` CLI. `.scratch/` is a read-only archive of the earlier local-markdown tickets. See `docs/agents/issue-tracker.md`.
 - **Triage labels**: the five canonical strings are used verbatim as GitHub labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Finished work is closed as completed rather than labelled. See `docs/agents/triage-labels.md`.
 - **Domain docs**: single-context (`GLOSSARY.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
+
+# Expired ADRs
+
+ADRs 0001 - 0016 are all up for re-evaluation, everything after is still binding
