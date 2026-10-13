@@ -429,19 +429,10 @@ impl RequiredCoverVisitor<'_, '_> {
         mime: &str,
         reader: &mut dyn Read,
     ) -> Result<RequiredCoverDisposition> {
-        match self
-            .pipeline
-            .attempt_required_cover(self.placement, manifest_path, mime, reader)
-        {
-            Ok((disposition, result)) => {
-                self.facts.append(result);
-                Ok(disposition)
-            }
-            Err(failure) => {
-                self.facts.append(failure.partial);
-                Err(failure.error)
-            }
-        }
+        let outcome =
+            self.pipeline
+                .attempt_required_cover(self.placement, manifest_path, mime, reader);
+        self.fold(outcome)
     }
 
     /// Records a required cover whose payload the EPUB adapter could not acquire.
@@ -477,10 +468,27 @@ impl RequiredCoverVisitor<'_, '_> {
         &mut self,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> Result<()> {
-        match self.pipeline.write_from(self.placement, traverse) {
-            Ok(result) => {
+        let outcome = self
+            .pipeline
+            .write_from(self.placement, traverse)
+            .map(|result| ((), result));
+        self.fold(outcome)
+    }
+
+    /// Appends one step's facts to this scope and hands back the step's value or error.
+    ///
+    /// The single fold every step of the sequence goes through: a successful step's
+    /// facts and a failed step's partial facts are both appended in the order they
+    /// happen, so the caller only ever sees the bare value or error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failed step's error once its partial facts are in this scope.
+    fn fold<T>(&mut self, outcome: ImageWriteOutcome<(T, ImageWriteResult)>) -> Result<T> {
+        match outcome {
+            Ok((value, result)) => {
                 self.facts.append(result);
-                Ok(())
+                Ok(value)
             }
             Err(failure) => {
                 self.facts.append(failure.partial);
