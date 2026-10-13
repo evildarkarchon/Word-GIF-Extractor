@@ -4,8 +4,8 @@
 > adapters, the identity type parameter, `CoverCandidate` and its `position`, and the
 > boolean flattening of the EPUB cover policy are deleted. EPUB cover extraction is
 > one concrete function over the real EPUB resource archive and Image write pipeline,
-> and the ordered fold of Image write pipeline facts now lives in the pipeline's scoped
-> cover entry. The text below records the design the code no longer has.
+> and the ordered fold of Image write pipeline facts now lives in the pipeline's
+> required-cover scope. The text below records the design the code no longer has.
 
 EPUB cover extraction is its own module: it owns cover candidate ordering, Archive resource identity exclusion, the acquisition-retry loop, the fallback decision, and the ordered fold of Image write pipeline facts. It reaches the archive and the pipeline through one injected `CoverAttempts` trait whose `&mut self` receiver serves both operations — two closure parameters were rejected because both operations need a mutable borrow of the same EPUB resource archive session, and two closures cannot each capture it mutably. The module is generic over the identity type, constrained to `Copy + Eq + Hash`, and owns its own `CoverCandidate` type rather than borrowing the EPUB adapter's plan entry.
 

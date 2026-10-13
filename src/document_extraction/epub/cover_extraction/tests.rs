@@ -332,19 +332,19 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
             },
         ),
     ];
-    for (case, cover_entry, cover_mime, cover_payload, pipeline, warning) in cases {
+    for (case, metadata_cover_path, cover_mime, cover_payload, pipeline, warning) in cases {
         let filename_cover = jpeg("filename-cover");
         let page = jpeg("page");
         let fixture = CoverFixture::new(
             &format!("completed-is-terminal-{case}"),
             &[
-                (cover_entry, &cover_payload),
+                (metadata_cover_path, &cover_payload),
                 ("OEBPS/images/cover.jpg", &filename_cover),
                 ("OEBPS/images/page.jpg", &page),
             ],
         );
         let declarations = [
-            declared("metadata-cover", cover_entry, cover_mime),
+            declared("metadata-cover", metadata_cover_path, cover_mime),
             declared("filename-cover", "OEBPS/images/cover.jpg", "image/jpeg"),
             declared("page", "OEBPS/images/page.jpg", "image/jpeg"),
         ];

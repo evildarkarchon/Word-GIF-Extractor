@@ -69,7 +69,7 @@ fn mime_source(
     )
 }
 
-/// Runs one required-cover attempt through the scoped cover entry.
+/// Runs one required-cover attempt through the required-cover scope.
 ///
 /// Returns the attempt's disposition beside the facts the scope folded, so a
 /// per-attempt test can assert both. An emission failure comes back as the

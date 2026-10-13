@@ -2,8 +2,8 @@
 //!
 //! One concrete function, [`extract_required_cover`], over the real EPUB resource
 //! archive catalog and payload reader and the real Image write pipeline. It decides
-//! which cover candidate to attempt and when to stop; the pipeline's scoped cover
-//! entry folds every fact the sequence produces. Fallback runs the sibling
+//! which cover candidate to attempt and when to stop; the pipeline's required-cover
+//! scope folds every fact the sequence produces. Fallback runs the sibling
 //! normal-image traversal, so cover extraction never calls its parent.
 //!
 //! ADR-0021 records why this is no longer generic over the Archive resource identity
