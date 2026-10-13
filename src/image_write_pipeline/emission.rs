@@ -5,7 +5,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::image_format::ImageFormat;
+use super::{EmittedImageRole, PreparedImage};
+use crate::output_placement::OutputPlacement;
 
 const MAX_COLLISION_ATTEMPTS: u32 = 1000;
 
@@ -19,17 +20,24 @@ pub(super) enum OutputNaming {
 }
 
 /// Emits one pipeline invocation's images without overwriting existing output.
-pub(super) struct ImageFileEmission<'name> {
-    base_name: &'name str,
+///
+/// Bound to one Output placement for its whole lifetime: the output directory and
+/// base name are given once at construction, and each image's directory is chosen
+/// here from its Emitted image role rather than passed in per image.
+pub(super) struct ImageFileEmission<'placement> {
+    output_dir: &'placement Path,
+    base_name: &'placement str,
     naming: OutputNaming,
     next_ordinal: usize,
 }
 
-impl<'name> ImageFileEmission<'name> {
-    /// Starts Image file emission after singular versus numbered naming is known.
-    pub(super) fn new(base_name: &'name str, naming: OutputNaming) -> Self {
+impl<'placement> ImageFileEmission<'placement> {
+    /// Starts Image file emission under one Output placement, after singular
+    /// versus numbered naming is known.
+    pub(super) fn new(placement: &'placement OutputPlacement, naming: OutputNaming) -> Self {
         Self {
-            base_name,
+            output_dir: placement.output_dir(),
+            base_name: placement.base_name(),
             naming,
             next_ordinal: 1,
         }
@@ -37,15 +45,26 @@ impl<'name> ImageFileEmission<'name> {
 
     /// Reserves and writes the next image without clobbering an existing file.
     ///
+    /// The image lands in the directory its Emitted image role sends it to: a
+    /// routed GIF in its GIF destination, every other role in the placement's
+    /// output directory. That directory is created before every file, so it
+    /// appears only once something is written to it.
+    ///
     /// Only an `AlreadyExists` create failure advances to another collision
     /// suffix. Other directory, create, write, and flush failures are returned
     /// immediately with destination-specific context.
-    pub(super) fn emit(
-        &mut self,
-        output_dir: &Path,
-        format: ImageFormat,
-        data: &[u8],
-    ) -> Result<()> {
+    pub(super) fn emit(&mut self, prepared: &PreparedImage<'_>) -> Result<()> {
+        // Exhaustive on purpose: a new Emitted image role must fail to compile
+        // here rather than silently defaulting to the document's output directory.
+        let output_dir = match prepared.role {
+            EmittedImageRole::RoutedGif(destination) => destination,
+            EmittedImageRole::Converted
+            | EmittedImageRole::ConversionSkipped
+            | EmittedImageRole::Preserved => self.output_dir,
+        };
+        let format = prepared.format;
+        let data = prepared.data.as_slice();
+
         fs::create_dir_all(output_dir).with_context(|| {
             format!(
                 "Failed to create output directory: {}",

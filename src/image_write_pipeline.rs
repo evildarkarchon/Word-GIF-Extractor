@@ -359,14 +359,12 @@ impl ImageWritePipeline {
                 return Ok((RequiredCoverDisposition::Completed, result));
             }
         };
-        let mut emission = ImageFileEmission::new(placement.base_name(), OutputNaming::Singular);
+        let mut emission = ImageFileEmission::new(placement, OutputNaming::Singular);
         // This path is bound to the required-cover purpose, so it records covers
         // whatever role the image took: a routed GIF cover is a routed cover.
         let tally = &mut result.tally;
         if let Err(error) =
-            emit_prepared_image(placement.output_dir(), &mut emission, prepared, |role| {
-                tally.record_cover(role)
-            })
+            emit_prepared_image(&mut emission, prepared, |role| tally.record_cover(role))
         {
             return Err(ImageWriteFailure {
                 partial: result,
@@ -516,8 +514,7 @@ enum NormalImageNaming<'policy, 'placement> {
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
-    output_dir: &'placement Path,
-    base_name: &'placement str,
+    placement: &'placement OutputPlacement,
     discovery_warnings: Vec<ImageWriteWarning>,
     conversion_warnings: Vec<ImageWriteWarning>,
     tally: EmittedImageTally,
@@ -529,8 +526,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     fn new(policy: &'policy ImageWritePolicy, placement: &'placement OutputPlacement) -> Self {
         Self {
             policy,
-            output_dir: placement.output_dir(),
-            base_name: placement.base_name(),
+            placement,
             discovery_warnings: Vec::new(),
             conversion_warnings: Vec::new(),
             tally: EmittedImageTally::default(),
@@ -562,7 +558,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
                 format,
                 reason,
             } => {
-                let base_name = self.base_name.to_string();
+                let base_name = self.placement.base_name().to_string();
                 self.conversion_warnings.push(match reason {
                     ConversionFallbackReason::Unsupported => {
                         ImageWriteWarning::ConversionSkipped { base_name, format }
@@ -606,7 +602,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
                 self.naming = NormalImageNaming::Pending(prepared);
             }
             NormalImageNaming::Pending(first) => {
-                let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Numbered);
+                let mut emission = ImageFileEmission::new(self.placement, OutputNaming::Numbered);
                 self.emit_prepared(&mut emission, first)?;
                 self.emit_prepared(&mut emission, prepared)?;
                 self.naming = NormalImageNaming::Numbering(emission);
@@ -633,9 +629,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         // binding holds because only this pipeline can build a required-cover
         // source, and it never hands one to a visitor.
         let tally = &mut self.tally;
-        emit_prepared_image(self.output_dir, emission, prepared, |role| {
-            tally.record_normal_image(role)
-        })
+        emit_prepared_image(emission, prepared, |role| tally.record_normal_image(role))
     }
 
     /// Completes singular lookahead and returns phase-ordered warning facts.
@@ -645,7 +639,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         if let NormalImageNaming::Pending(prepared) =
             std::mem::replace(&mut self.naming, NormalImageNaming::Undecided)
         {
-            let mut emission = ImageFileEmission::new(self.base_name, OutputNaming::Singular);
+            let mut emission = ImageFileEmission::new(self.placement, OutputNaming::Singular);
             if let Err(error) = self.emit_prepared(&mut emission, prepared) {
                 return Err(self.into_failure(error));
             }
@@ -740,7 +734,10 @@ fn prepare_image_for_write(
     }
 }
 
-/// Emits one prepared image using shared destination routing and count semantics.
+/// Emits one prepared image and records it with shared count semantics.
+///
+/// Image file emission chooses the image's directory from its Emitted image role;
+/// this helper only emits and records.
 ///
 /// This is the one place production counts images. It maps the Emitted image
 /// role onto the tally's destination-free role and hands it to `record` only once
@@ -750,22 +747,14 @@ fn prepare_image_for_write(
 ///
 /// Returns an error, recording nothing, when Image file emission fails.
 fn emit_prepared_image(
-    output_dir: &Path,
     emission: &mut ImageFileEmission<'_>,
     prepared: PreparedImage<'_>,
     record: impl FnOnce(TallyRole),
 ) -> Result<()> {
-    // Both matches stay exhaustive so a new Emitted image role fails to compile
-    // here rather than silently defaulting to the document's output directory
-    // or to no count at all.
-    let destination = match prepared.role {
-        EmittedImageRole::RoutedGif(destination) => destination,
-        EmittedImageRole::Converted
-        | EmittedImageRole::ConversionSkipped
-        | EmittedImageRole::Preserved => output_dir,
-    };
-    emission.emit(destination, prepared.format, &prepared.data)?;
+    emission.emit(&prepared)?;
 
+    // The match stays exhaustive so a new Emitted image role fails to compile
+    // here rather than silently defaulting to no count at all.
     record(match prepared.role {
         EmittedImageRole::RoutedGif(_) => TallyRole::RoutedGif,
         EmittedImageRole::Converted => TallyRole::Converted,
