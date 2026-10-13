@@ -616,3 +616,45 @@ fn invalid_percent_escape_warning_names_the_resolved_reference() {
         result.warnings
     );
 }
+
+#[test]
+fn escaping_reference_warns_and_later_image_is_extracted() {
+    let temp_dir = temp_test_dir("epub", "escaping-reference-warns");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    // From `OEBPS/`, two `..` segments climb above the archive root. The escaping
+    // reference sorts before the valid one (`.` precedes `i`), so the valid image is
+    // the later one and must survive the warning.
+    write_stored_epub_fixture(
+        &input_path,
+        &[
+            ("escaping", "../../outside.png", "image/png", None),
+            ("valid", "images/b.png", "image/png", None),
+        ],
+        &[("OEBPS/images/b.png", MINIMAL_PNG)],
+    );
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+    let selected = select_epub(&input_path, &output_dir);
+
+    let result = extract(selected, None, &pipeline)
+        .expect("an escaping reference should not abort the EPUB");
+
+    assert_eq!(result.tally.emitted(), 1);
+    assert!(
+        matches!(
+            &result.warnings[..],
+            [ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name,
+                detail,
+            }] if source_name == "OEBPS/../../outside.png"
+                && detail == "EPUB resource outside the archive: OEBPS/../../outside.png"
+        ),
+        "{:?}",
+        result.warnings
+    );
+    assert_eq!(
+        fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
+        MINIMAL_PNG
+    );
+}

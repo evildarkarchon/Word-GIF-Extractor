@@ -6,7 +6,7 @@ use std::path::Path;
 
 use crate::image_format::ImageFormat;
 
-use super::purpose::{ImageWritePurpose, SourceEligibility, UnidentifiedFormatAction};
+use super::purpose::{ImageWritePurpose, UnidentifiedFormatAction};
 use super::{AcceptedImage, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
@@ -30,8 +30,12 @@ const SVG_SEARCH_LIMIT: usize = 1024;
 
 /// Source facts supplied before discovery reads one archive resource.
 ///
-/// The optional path evidence encodes eligibility directly: normal sources
-/// include it, while required covers deliberately omit it.
+/// The optional path evidence encodes whether the name may identify a format:
+/// normal sources include it, while required covers deliberately omit it. No
+/// source name ever decides where a file is written; output names come only
+/// from the document's Output placement. That is why ADR-0020 deleted the
+/// path-traversal guard on source names and why none should return unless a
+/// source name starts reaching an output path.
 #[derive(Debug, Clone)]
 pub(crate) struct ArchiveImageSource {
     diagnostic_name: String,
@@ -40,7 +44,7 @@ pub(crate) struct ArchiveImageSource {
 }
 
 impl ArchiveImageSource {
-    /// Creates a normal archive source whose safe name may identify its format.
+    /// Creates a normal archive source whose name may identify its format.
     pub(crate) fn named(source_name: impl Into<String>) -> Self {
         let source_name = source_name.into();
         Self {
@@ -50,7 +54,7 @@ impl ArchiveImageSource {
         }
     }
 
-    /// Adds document-declared MIME evidence after magic and eligible path evidence.
+    /// Adds document-declared MIME evidence after magic and path evidence.
     #[must_use]
     pub(crate) fn with_mime(mut self, mime: impl Into<String>) -> Self {
         self.declared_mime = Some(mime.into());
@@ -117,27 +121,18 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
 
 /// Acquires and identifies one source through a statically selected Image write purpose.
 ///
-/// Identification checks magic bytes, an eligible source-path extension, then
+/// Identification checks magic bytes, a normal source's path extension, then
 /// declared MIME. Unidentified and requested-format decisions remain delegated
-/// to the purpose. Rejected or filtered sources consume at most 1,027 evidence
-/// bytes; accepted sources retain that prefix and append the remaining payload.
-/// Any read failure returns `AcquisitionFailed` with the existing warning facts.
+/// to the purpose. Every source is read; unidentified or filtered sources consume
+/// at most 1,027 evidence bytes, and accepted sources retain that prefix and
+/// append the remaining payload. Any read failure returns `AcquisitionFailed`
+/// with the existing warning facts.
 pub(super) fn discover_image<P: ImageWritePurpose>(
     source: &ArchiveImageSource,
     reader: &mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
     purpose: &P,
 ) -> DiscoveredImage {
-    if matches!(
-        purpose.source_eligibility(source),
-        SourceEligibility::Reject
-    ) {
-        return DiscoveredImage {
-            outcome: ArchiveImageDiscoveryOutcome::Completed,
-            warnings: Vec::new(),
-        };
-    }
-
     let mut warnings = Vec::new();
     let mut data = Vec::new();
     if let Err(error) = reader.take(FORMAT_EVIDENCE_LIMIT).read_to_end(&mut data) {
@@ -212,7 +207,7 @@ pub(super) fn discover_image<P: ImageWritePurpose>(
 
 /// Identifies a canonical format from one bounded evidence prefix and source facts.
 ///
-/// Magic bytes outrank an eligible source-path extension, which outranks declared
+/// Magic bytes outrank a normal source's path extension, which outranks declared
 /// MIME. The function performs no I/O and returns `None` when all supplied evidence
 /// is absent or unrecognized; callers enforce the 1,027-byte read boundary.
 fn identify_source(data: &[u8], source: &ArchiveImageSource) -> Option<IdentifiedImage> {

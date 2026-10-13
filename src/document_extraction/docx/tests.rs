@@ -4,9 +4,10 @@ use super::*;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    pipeline_accepting, temp_test_dir, write_docx, write_extension_fallback_docx,
+    MINIMAL_PNG, pipeline_accepting, temp_test_dir, write_docx, write_extension_fallback_docx,
 };
 use std::fs;
+use std::path::Path;
 
 #[test]
 fn returns_extension_fallback_warning_fact() {
@@ -62,4 +63,63 @@ fn preserves_zip_order_for_numbered_outputs() {
     assert_eq!(result.tally.emitted(), 2);
     assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), first);
     assert_eq!(fs::read(output_dir.join("sample_2.gif")).unwrap(), second);
+}
+
+/// Returns the sorted file names directly inside one directory.
+fn file_names_in(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(directory)
+        .expect("directory should be readable")
+        .map(|entry| {
+            entry
+                .expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Extracts a DOCX whose only entry is a valid PNG stored under `entry_name`, then
+/// asserts the image was emitted under the Output placement's base name and that
+/// nothing was written anywhere but the output directory.
+///
+/// The entry name is format evidence and warning identity only, so an unusual one
+/// must neither suppress the image nor steer where it is written.
+fn assert_entry_is_emitted_under_base_name(test_name: &str, entry_name: &str) {
+    let temp_dir = temp_test_dir("docx", test_name);
+    let input_path = temp_dir.join("sample.docx");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    write_docx(&input_path, &[(entry_name, MINIMAL_PNG)]);
+
+    let result = process_file(
+        &input_path,
+        &OutputPlacement::new(&output_dir, "sample"),
+        &pipeline_accepting([ImageFormat::Png]),
+    )
+    .expect("DOCX extraction should succeed");
+
+    assert_eq!(result.tally.emitted(), 1, "{entry_name} should be emitted");
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        fs::read(output_dir.join("sample.png")).unwrap(),
+        MINIMAL_PNG
+    );
+    assert_eq!(file_names_in(&output_dir), ["sample.png"]);
+    assert_eq!(file_names_in(&temp_dir), ["out", "sample.docx"]);
+}
+
+#[test]
+fn entry_name_with_parent_segments_is_emitted_under_base_name() {
+    assert_entry_is_emitted_under_base_name(
+        "parent-segment-entry-name",
+        "word/media/../../secret.png",
+    );
+}
+
+#[test]
+fn entry_name_with_colon_is_emitted_under_base_name() {
+    assert_entry_is_emitted_under_base_name("colon-entry-name", "word/media/image1.png:hidden");
 }

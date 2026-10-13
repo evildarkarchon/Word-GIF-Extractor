@@ -4,12 +4,6 @@ use crate::image_format::ImageFormat;
 
 use super::{ArchiveImageSource, ImageWriteWarning};
 
-/// Whether Archive image discovery may inspect one source.
-pub(super) enum SourceEligibility {
-    Inspect,
-    Reject,
-}
-
 /// Purpose-selected continuation after unidentified Image format evidence.
 pub(super) enum UnidentifiedFormatAction {
     ContinueWith(ImageFormat),
@@ -37,9 +31,6 @@ pub(super) struct UnidentifiedFormatDecision {
 /// those two decisions lived here, every caller had to handle the other
 /// purpose's outcome and the normal-image path carried an `unreachable!`.
 pub(super) trait ImageWritePurpose {
-    /// Decides whether discovery may touch the source reader.
-    fn source_eligibility(&self, source: &ArchiveImageSource) -> SourceEligibility;
-
     /// Decides how discovery proceeds when available evidence identifies no format.
     fn unidentified_format(&self, source: &ArchiveImageSource) -> UnidentifiedFormatDecision;
 
@@ -54,15 +45,6 @@ pub(super) trait ImageWritePurpose {
 pub(super) struct NormalImages;
 
 impl ImageWritePurpose for NormalImages {
-    /// Rejects unsafe normal-image sources before their readers are touched.
-    fn source_eligibility(&self, source: &ArchiveImageSource) -> SourceEligibility {
-        if is_normal_source_safe(source) {
-            SourceEligibility::Inspect
-        } else {
-            SourceEligibility::Reject
-        }
-    }
-
     /// Completes unidentified normal-image discovery without a warning.
     fn unidentified_format(&self, _source: &ArchiveImageSource) -> UnidentifiedFormatDecision {
         UnidentifiedFormatDecision {
@@ -82,11 +64,6 @@ impl ImageWritePurpose for NormalImages {
 pub(super) struct RequiredCover;
 
 impl ImageWritePurpose for RequiredCover {
-    /// Allows the required-cover reader supplied by the EPUB adapter.
-    fn source_eligibility(&self, _source: &ArchiveImageSource) -> SourceEligibility {
-        SourceEligibility::Inspect
-    }
-
     /// Defaults unidentified required-cover evidence to JPEG with the existing warning.
     fn unidentified_format(&self, source: &ArchiveImageSource) -> UnidentifiedFormatDecision {
         UnidentifiedFormatDecision {
@@ -102,28 +79,3 @@ impl ImageWritePurpose for RequiredCover {
         Some(ImageWriteWarning::UnsupportedCoverFormat { format })
     }
 }
-
-/// Returns whether discovery would inspect this normal-image source.
-fn is_normal_source_safe(source: &ArchiveImageSource) -> bool {
-    source
-        .path_evidence_name()
-        .is_some_and(is_safe_archive_path)
-}
-
-/// Returns whether an archive path is safe to use as image source evidence.
-fn is_safe_archive_path(name: &str) -> bool {
-    if name.contains('\0') || name.contains("..") {
-        return false;
-    }
-    if name.starts_with('/') || name.starts_with('\\') {
-        return false;
-    }
-    // Colons enable drive-letter and alternate-data-stream syntax on Windows.
-    if name.contains(':') {
-        return false;
-    }
-    true
-}
-
-#[cfg(test)]
-mod tests;
