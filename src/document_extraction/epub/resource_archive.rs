@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use percent_encoding::percent_decode;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io::Read;
 use std::marker::PhantomData;
 use std::path::Path;
 use zip::ZipArchive;
@@ -27,8 +27,12 @@ impl<'session> SessionBrand<'session> {
 }
 
 /// Opaque lookup key for one resource in its originating archive session.
+///
+/// Private to its catalog entry: callers address a payload by the entry they
+/// already hold, and the key's brand keeps an entry from one session from being
+/// acquired through another session's payload reader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct ResourceKey<'session> {
+struct ResourceKey<'session> {
     index: usize,
     _brand: SessionBrand<'session>,
 }
@@ -57,11 +61,6 @@ pub(super) struct EpubResource<'session> {
 }
 
 impl<'session> EpubResource<'session> {
-    /// Returns the opaque key used to lazily reacquire this session's resource.
-    pub(super) fn key(&self) -> ResourceKey<'session> {
-        self.key
-    }
-
     /// Returns the EPUB manifest identifier used for cover metadata matching.
     pub(super) fn id(&self) -> &str {
         &self.id
@@ -151,38 +150,29 @@ pub(super) enum ResourceAcquisition<T> {
     Unavailable(ResourceUnavailable),
 }
 
-/// Reader whose entry borrow and archive-session brand cannot escape its consumer.
-pub(super) struct ResourcePayload<'reader, 'session> {
-    reader: &'reader mut dyn Read,
-    _brand: SessionBrand<'session>,
-}
-
-impl Read for ResourcePayload<'_, '_> {
-    /// Reads from the currently acquired ZIP entry.
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.reader.read(buffer)
-    }
-}
-
 /// Concrete entry point for one independently reopened EPUB ZIP session.
 pub(super) struct EpubResourceArchive;
 
-/// Branded custody of one archive handle, its eager catalog, and lazy payload access.
-pub(super) struct EpubResourceArchiveSession<'session> {
+/// Branded custody of one archive handle and lazy payload access for its catalog.
+///
+/// It is lent beside the catalog rather than owning it, so a caller can read
+/// catalog entries while it acquires payloads, with no copy of the catalog.
+pub(super) struct EpubPayloadReader<'session> {
     archive: ZipArchive<fs::File>,
-    resources: Vec<EpubResource<'session>>,
     // Resolution stays archive-private, so this vector is built in exact catalog
-    // order and ResourceKey::index addresses both collections as one logical slot.
+    // order and ResourceKey::index addresses it and the catalog as one logical slot.
     resolutions: Vec<ResourceResolution>,
-    brand: SessionBrand<'session>,
+    _brand: SessionBrand<'session>,
 }
 
 impl EpubResourceArchive {
     /// Opens one EPUB ZIP session and runs an operation under a fresh invariant brand.
     ///
-    /// The complete deterministic catalog is built eagerly without reading payloads.
-    /// The higher-ranked callback prevents keys, identities, catalog entries, and
-    /// payload readers from escaping or being mixed with another session.
+    /// The complete deterministic catalog is built eagerly without reading payloads,
+    /// and the operation receives it beside the session's payload reader as two
+    /// separate borrows. The higher-ranked callback prevents keys, identities,
+    /// catalog entries, and the payload reader from escaping or being mixed with
+    /// another session.
     ///
     /// # Errors
     ///
@@ -191,7 +181,10 @@ impl EpubResourceArchive {
     pub(super) fn open<T>(
         input_path: &Path,
         declared_resources: &[EpubResourceDeclaration],
-        operation: impl for<'session> FnOnce(EpubResourceArchiveSession<'session>) -> T,
+        operation: impl for<'session> FnOnce(
+            &[EpubResource<'session>],
+            EpubPayloadReader<'session>,
+        ) -> T,
     ) -> Result<T> {
         let file = fs::File::open(input_path)
             .with_context(|| format!("Failed to open input file: {}", input_path.display()))?;
@@ -251,7 +244,7 @@ impl EpubResourceArchive {
 
         let brand = SessionBrand::new();
         let mut resolutions = Vec::with_capacity(resources.len());
-        let resources = resources
+        let resources: Vec<_> = resources
             .into_iter()
             .enumerate()
             .map(|(index, resource)| {
@@ -271,39 +264,33 @@ impl EpubResourceArchive {
                 }
             })
             .collect();
-        let session = EpubResourceArchiveSession {
+        let payloads = EpubPayloadReader {
             archive,
-            resources,
             resolutions,
-            brand,
+            _brand: brand,
         };
 
-        Ok(operation(session))
+        Ok(operation(&resources, payloads))
     }
 }
 
-impl<'session> EpubResourceArchiveSession<'session> {
-    /// Returns the deterministically ordered resource catalog.
-    pub(super) fn resources(&self) -> &[EpubResource<'session>] {
-        &self.resources
-    }
-
-    /// Lazily acquires one keyed resource and runs a scoped consumer operation.
+impl<'session> EpubPayloadReader<'session> {
+    /// Lazily acquires one catalog entry's payload and runs a scoped consumer operation.
     ///
     /// Acquisition is repeatable and sequential. Missing, malformed, or unopenable
     /// resources return `ResourceAcquisition::Unavailable` without invoking the
-    /// consumer; consumer errors propagate unchanged through the outer result.
+    /// consumer; consumer errors propagate unchanged through the outer result. The
+    /// consumer's higher-ranked reader lifetime keeps the entry borrow from escaping.
     ///
     /// # Errors
     ///
     /// Returns the consumer operation's error unchanged.
     pub(super) fn acquire<T>(
         &mut self,
-        key: ResourceKey<'session>,
-        operation: impl for<'reader> FnOnce(ResourcePayload<'reader, 'session>) -> Result<T>,
+        resource: &EpubResource<'session>,
+        operation: impl for<'reader> FnOnce(&'reader mut dyn Read) -> Result<T>,
     ) -> Result<ResourceAcquisition<T>> {
-        let resource = &self.resources[key.index];
-        let index = match &self.resolutions[key.index] {
+        let index = match &self.resolutions[resource.key.index] {
             ResourceResolution::Resolved(index) => *index,
             ResourceResolution::Unresolved(error) => {
                 return Ok(ResourceAcquisition::Unavailable(error.clone()));
@@ -320,11 +307,7 @@ impl<'session> EpubResourceArchiveSession<'session> {
                 ));
             }
         };
-        let payload = ResourcePayload {
-            reader: &mut entry,
-            _brand: self.brand,
-        };
-        operation(payload).map(ResourceAcquisition::Acquired)
+        operation(&mut entry).map(ResourceAcquisition::Acquired)
     }
 }
 

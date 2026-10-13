@@ -4,10 +4,10 @@ use super::*;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    MINIMAL_PNG, pipeline_accepting, temp_test_dir, write_docx, write_extension_fallback_docx,
+    MINIMAL_PNG, file_names_in, pipeline_accepting, temp_test_dir, write_docx,
+    write_extension_fallback_docx,
 };
 use std::fs;
-use std::path::Path;
 
 #[test]
 fn returns_extension_fallback_warning_fact() {
@@ -63,22 +63,6 @@ fn preserves_zip_order_for_numbered_outputs() {
     assert_eq!(result.tally.emitted(), 2);
     assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), first);
     assert_eq!(fs::read(output_dir.join("sample_2.gif")).unwrap(), second);
-}
-
-/// Returns the sorted file names directly inside one directory.
-fn file_names_in(directory: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(directory)
-        .expect("directory should be readable")
-        .map(|entry| {
-            entry
-                .expect("directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    names.sort();
-    names
 }
 
 /// Extracts a DOCX whose only entry is a valid PNG stored under `entry_name`, then

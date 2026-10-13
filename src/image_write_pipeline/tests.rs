@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
-use crate::test_support::{FailAfterReader, MINIMAL_PNG, pipeline_accepting, temp_test_dir};
+use crate::test_support::{
+    FailAfterReader, MINIMAL_PNG, pipeline_accepting, pipeline_converting, temp_test_dir,
+};
 use std::fs;
 use std::io::{self, Cursor, Read};
 use std::path::PathBuf;
@@ -69,6 +71,29 @@ fn mime_source(
     )
 }
 
+/// Runs one required-cover attempt through the required-cover scope.
+///
+/// Returns the attempt's disposition beside the facts the scope folded, so a
+/// per-attempt test can assert both. An emission failure comes back as the
+/// scope's failure, carrying whatever the attempt recorded before it.
+fn attempt_required_cover(
+    pipeline: &ImageWritePipeline,
+    placement: &OutputPlacement,
+    manifest_path: &str,
+    mime: &str,
+    reader: &mut dyn Read,
+) -> ImageWriteOutcome<(RequiredCoverDisposition, ImageWriteResult)> {
+    let mut disposition = None;
+    let result = pipeline.write_required_cover(placement, |cover_scope| {
+        disposition = Some(cover_scope.attempt(manifest_path, mime, reader)?);
+        Ok(())
+    })?;
+    Ok((
+        disposition.expect("the cover scope should have run its one attempt"),
+        result,
+    ))
+}
+
 /// Proves a defaulted cover is emitted under the format it was defaulted to.
 ///
 /// That the payload defaults to JPEG at all, and that the whole payload is read,
@@ -83,16 +108,16 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let original = vec![0x5a; 4096];
     let mut reader = Cursor::new(original.clone());
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&temp_dir, "sample"),
-            "OPS/cover.png",
-            "application/octet-stream",
-            &mut reader,
-        )
-        .expect("required cover write should succeed");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.png",
+        "application/octet-stream",
+        &mut reader,
+    )
+    .expect("required cover write should succeed");
 
-    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+    let RequiredCoverDisposition::Completed = disposition else {
         panic!("a readable required cover should complete the cover decision");
     };
     assert_eq!(result.tally.emitted(), 1);
@@ -135,16 +160,16 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
     let mut reader = Cursor::new(vec![0xff; 4096]);
     reader.get_mut()[..3].copy_from_slice(b"\xFF\xD8\xFF");
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&temp_dir, "sample"),
-            "OPS/cover.jpg",
-            "image/jpeg",
-            &mut reader,
-        )
-        .expect("format filtering should be a normal cover outcome");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.jpg",
+        "image/jpeg",
+        &mut reader,
+    )
+    .expect("format filtering should be a normal cover outcome");
 
-    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+    let RequiredCoverDisposition::Completed = disposition else {
         panic!("a filtered cover should complete rather than retry");
     };
     assert_eq!(result.tally.emitted(), 0);
@@ -161,16 +186,16 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
     let pipeline = pipeline_accepting([ImageFormat::Jpg]);
     let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&temp_dir, "sample"),
-            "OPS/cover.bin",
-            "application/octet-stream",
-            &mut reader,
-        )
-        .expect("a cover acquisition failure should be a typed outcome");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.bin",
+        "application/octet-stream",
+        &mut reader,
+    )
+    .expect("a cover acquisition failure should be a typed outcome");
 
-    let RequiredCoverWriteOutcome::Retry(result) = outcome else {
+    let RequiredCoverDisposition::Retry = disposition else {
         panic!("a tail read failure should permit another cover candidate");
     };
     assert_eq!(result.tally.emitted(), 0);
@@ -179,23 +204,23 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
 #[test]
 fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-skip");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
         None,
     );
     let mut reader = Cursor::new(b"<svg/>".to_vec());
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&temp_dir, "sample"),
-            "OPS/cover.svg",
-            "image/svg+xml",
-            &mut reader,
-        )
-        .expect("unsupported cover conversion should be a normal outcome");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.svg",
+        "image/svg+xml",
+        &mut reader,
+    )
+    .expect("unsupported cover conversion should be a normal outcome");
 
-    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+    let RequiredCoverDisposition::Completed = disposition else {
         panic!("conversion skip should complete rather than retry");
     };
     assert_eq!(result.tally.emitted(), 0);
@@ -211,23 +236,23 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
 #[test]
 fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-failure");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
         None,
     );
     let mut reader = Cursor::new(b"\x89PNG\r\n\x1A\ninvalid".to_vec());
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&temp_dir, "sample"),
-            "OPS/cover.png",
-            "image/png",
-            &mut reader,
-        )
-        .expect("cover conversion failure should be a normal outcome");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.png",
+        "image/png",
+        &mut reader,
+    )
+    .expect("cover conversion failure should be a normal outcome");
 
-    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+    let RequiredCoverDisposition::Completed = disposition else {
         panic!("conversion failure should complete rather than retry");
     };
     assert_eq!(result.tally.emitted(), 0);
@@ -244,23 +269,23 @@ fn required_gif_cover_routes_without_conversion() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-gif-routing");
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Gif]),
         ConversionTarget::Png,
         Some(gif_dir.clone()),
     );
     let mut reader = Cursor::new(b"GIF89a".to_vec());
 
-    let outcome = pipeline
-        .write_required_cover(
-            &OutputPlacement::new(&output_dir, "sample"),
-            "OPS/cover.gif",
-            "image/gif",
-            &mut reader,
-        )
-        .expect("routed required GIF should be emitted");
+    let (disposition, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&output_dir, "sample"),
+        "OPS/cover.gif",
+        "image/gif",
+        &mut reader,
+    )
+    .expect("routed required GIF should be emitted");
 
-    let RequiredCoverWriteOutcome::Completed(result) = outcome else {
+    let RequiredCoverDisposition::Completed = disposition else {
         panic!("a routed cover should complete");
     };
     assert_eq!(result.tally.emitted(), 1);
@@ -487,7 +512,7 @@ fn bom_prefixed_svg_at_end_of_evidence_window_is_discovered() {
 #[test]
 fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
     let temp_dir = temp_test_dir("pipeline", "phase-ordered-warnings");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg, ImageFormat::Png]),
         ConversionTarget::Png,
         None,
@@ -718,7 +743,7 @@ fn every_unreadable_normal_source_warns_whatever_its_name() {
 #[test]
 fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
     let temp_dir = temp_test_dir("pipeline", "normal-conversion-skip");
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
         ConversionTarget::Png,
         None,
@@ -756,7 +781,7 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
 fn normal_conversion_failure_writes_original_and_counts_skip() {
     let temp_dir = temp_test_dir("pipeline", "normal-conversion-failure");
     let original = b"\x89PNG\r\n\x1A\nnot a valid png".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
         None,
@@ -817,7 +842,7 @@ fn unconfigured_policy_produces_no_conversion_or_routing_counts() {
 fn matching_conversion_target_preserves_original_without_conversion_count() {
     let temp_dir = temp_test_dir("pipeline", "matching-conversion-target");
     let original = b"accepted through extension fallback".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Png,
         None,
@@ -920,7 +945,7 @@ fn routed_gif_bypasses_conversion() {
     let gif_dir = temp_dir.join("gifs");
     let output_dir = temp_dir.join("images");
     let original = b"GIF89a routed payload".to_vec();
-    let pipeline = pipeline_with_conversion(
+    let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Gif]),
         ConversionTarget::Png,
         Some(gif_dir.clone()),
@@ -997,26 +1022,6 @@ fn constructed_results_carry_their_facts_through_the_fold() {
     assert_eq!(earlier.tally.converted(), 2);
     assert_eq!(earlier.tally.conversion_skipped(), 1);
     assert_eq!(earlier.warnings, vec![earlier_warning, later_warning]);
-}
-
-/// Builds a pipeline with a default Conversion policy for interface tests.
-fn pipeline_with_conversion(
-    allowed_formats: HashSet<ImageFormat>,
-    target: ConversionTarget,
-    gif_output: Option<PathBuf>,
-) -> ImageWritePipeline {
-    let conversion = ConversionPolicy::try_from(ConversionRequest {
-        target,
-        quality: None,
-        lossless: false,
-    })
-    .expect("test conversion request should be valid");
-
-    ImageWritePipeline::new(ImageWritePolicy::new(
-        allowed_formats,
-        Some(conversion),
-        gif_output,
-    ))
 }
 
 /// Builds an Image write policy accepting every format, for direct preparation tests.
@@ -1154,11 +1159,18 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
 /// pipeline records why and leaves the next candidate to EPUB cover extraction.
 #[test]
 fn unavailable_required_cover_retries_with_its_acquisition_warning() {
+    let temp_dir = temp_test_dir("pipeline", "required-cover-unavailable");
     let pipeline = pipeline_accepting(ImageFormat::all_set());
+    let mut outcome = None;
 
-    let outcome = pipeline.required_cover_unavailable("OPS/cover.jpg", "entry is missing");
+    let result = pipeline
+        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |cover_scope| {
+            outcome = Some(cover_scope.unreadable("OPS/cover.jpg", "entry is missing"));
+            Ok(())
+        })
+        .expect("an unavailable required cover should not fail the cover scope");
 
-    let RequiredCoverWriteOutcome::Retry(result) = outcome else {
+    let Some(RequiredCoverDisposition::Retry) = outcome else {
         panic!("an unavailable required cover should leave the cover decision open");
     };
     assert_eq!(
@@ -1170,4 +1182,91 @@ fn unavailable_required_cover_retries_with_its_acquisition_warning() {
     );
     assert_eq!(result.tally.emitted(), 0);
     assert_eq!(result.tally.normal_images(), 0);
+}
+
+/// Proves the cover scope folds normal fallback facts after the cover attempts' facts.
+///
+/// The fallback's single image is named singularly, as a separate normal-image
+/// traversal would name it, and is recorded as a normal image rather than a cover.
+#[test]
+fn cover_scope_appends_fallback_facts_after_cover_attempt_facts() {
+    let temp_dir = temp_test_dir("pipeline", "cover-scope-fallback-order");
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+
+    let result = pipeline
+        .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |cover_scope| {
+            cover_scope.unreadable("OPS/cover.jpg", "entry is missing");
+            cover_scope.fallback(|visitor| {
+                visitor.visit(
+                    ArchiveImageSource::named("OPS/page.png"),
+                    &mut Cursor::new(b"not actually a png".to_vec()),
+                )
+            })
+        })
+        .expect("a fallback that emits should complete the cover scope");
+
+    assert_eq!(
+        result.warnings,
+        vec![
+            ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "OPS/cover.jpg".to_string(),
+                detail: "entry is missing".to_string(),
+            },
+            ImageWriteWarning::ExtensionFallback {
+                source_name: "OPS/page.png".to_string(),
+                format: ImageFormat::Png,
+            },
+        ]
+    );
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.normal_images(), 1);
+    assert_eq!(result.tally.covers(), 0);
+    assert_eq!(
+        fs::read(temp_dir.join("sample.png")).unwrap(),
+        b"not actually a png"
+    );
+}
+
+/// Proves an emission failure inside fallback keeps the cover attempts' earlier facts.
+///
+/// A file standing where the output directory should be makes the fallback's lone
+/// image fail to emit when its traversal finishes.
+#[test]
+fn cover_scope_fallback_emission_failure_keeps_earlier_cover_facts() {
+    let temp_dir = temp_test_dir("pipeline", "cover-scope-fallback-failure");
+    let blocked_output = temp_dir.join("not-a-directory");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    fs::write(&blocked_output, b"occupied").expect("blocking file should be creatable");
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+
+    let failure = pipeline
+        .write_required_cover(
+            &OutputPlacement::new(&blocked_output, "sample"),
+            |cover_scope| {
+                cover_scope.unreadable("OPS/cover.jpg", "entry is missing");
+                cover_scope.fallback(|visitor| {
+                    visitor.visit(
+                        ArchiveImageSource::named("OPS/page.png"),
+                        &mut Cursor::new(b"not actually a png".to_vec()),
+                    )
+                })
+            },
+        )
+        .expect_err("a failed fallback emission should fail the cover scope");
+
+    assert!(format!("{:#}", failure.error).contains("Failed to create output directory"));
+    assert_eq!(
+        failure.partial.warnings,
+        vec![
+            ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name: "OPS/cover.jpg".to_string(),
+                detail: "entry is missing".to_string(),
+            },
+            ImageWriteWarning::ExtensionFallback {
+                source_name: "OPS/page.png".to_string(),
+                format: ImageFormat::Png,
+            },
+        ]
+    );
+    assert_eq!(failure.partial.tally.emitted(), 0);
 }

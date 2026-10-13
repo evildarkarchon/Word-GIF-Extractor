@@ -46,10 +46,9 @@ fn exact_manifest_path_wins_before_percent_decoded_alias() {
             Path::new("OPS/image%20one.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            let acquired = archive
-                .acquire(key, |mut payload| {
+        |catalog, mut payloads| {
+            let acquired = payloads
+                .acquire(&catalog[0], |payload| {
                     let mut data = Vec::new();
                     payload.read_to_end(&mut data)?;
                     Ok(data)
@@ -75,13 +74,12 @@ fn percent_decoded_aliases_share_archive_resource_identity() {
             EpubResourceDeclaration::new("encoded", Path::new("OPS/image%20one.png"), "image/png"),
             EpubResourceDeclaration::new("decoded", Path::new("OPS/image one.png"), "image/png"),
         ],
-        |mut archive| {
-            let encoded = &archive.resources()[0];
-            let decoded = &archive.resources()[1];
+        |catalog, mut payloads| {
+            let encoded = &catalog[0];
+            let decoded = &catalog[1];
             assert_eq!(encoded.identity(), decoded.identity());
-            let encoded_key = encoded.key();
-            let acquired = archive
-                .acquire(encoded_key, |mut payload| {
+            let acquired = payloads
+                .acquire(encoded, |payload| {
                     let mut data = Vec::new();
                     payload.read_to_end(&mut data)?;
                     Ok(data)
@@ -106,11 +104,8 @@ fn unresolved_duplicate_manifest_paths_have_distinct_archive_resource_identities
             EpubResourceDeclaration::new("first", Path::new("OPS/missing.png"), "image/png"),
             EpubResourceDeclaration::new("second", Path::new("OPS/missing.png"), "image/png"),
         ],
-        |archive| {
-            assert_ne!(
-                archive.resources()[0].identity(),
-                archive.resources()[1].identity()
-            );
+        |catalog, _payloads| {
+            assert_ne!(catalog[0].identity(), catalog[1].identity());
         },
     )
     .expect("resource archive should open despite unresolved resources");
@@ -127,8 +122,8 @@ fn resources_are_ordered_by_resolved_path_with_manifest_fallback() {
             EpubResourceDeclaration::new("a", Path::new("OPS/a%20one.png"), "image/png"),
             EpubResourceDeclaration::new("missing", Path::new("OPS/missing.png"), "image/png"),
         ],
-        |archive| {
-            let ids: Vec<_> = archive.resources().iter().map(EpubResource::id).collect();
+        |catalog, _payloads| {
+            let ids: Vec<_> = catalog.iter().map(EpubResource::id).collect();
             assert_eq!(ids, ["a", "missing", "z"]);
         },
     )
@@ -157,9 +152,8 @@ fn resource_order_uses_manifest_id_ties_and_retains_equal_declaration_order() {
                 "unresolved-a",
             ),
         ],
-        |archive| {
-            let ordered: Vec<_> = archive
-                .resources()
+        |catalog, _payloads| {
+            let ordered: Vec<_> = catalog
                 .iter()
                 .map(|resource| (resource.id(), resource.mime()))
                 .collect();
@@ -190,10 +184,9 @@ fn invalid_percent_encoded_path_is_retained_as_typed_acquisition_failure() {
             Path::new("OPS/image%FF.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            let unavailable = archive
-                .acquire(key, |_| -> Result<()> {
+        |catalog, mut payloads| {
+            let unavailable = payloads
+                .acquire(&catalog[0], |_| -> Result<()> {
                     panic!("unresolved resource must not invoke the reader operation")
                 })
                 .expect("reader operation should not fail");
@@ -220,10 +213,9 @@ fn malformed_percent_escape_is_retained_as_typed_acquisition_failure() {
             Path::new("OPS/image%ZZ.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            let unavailable = archive
-                .acquire(key, |_| -> Result<()> {
+        |catalog, mut payloads| {
+            let unavailable = payloads
+                .acquire(&catalog[0], |_| -> Result<()> {
                     panic!("unresolved resource must not invoke the reader operation")
                 })
                 .expect("reader operation should not fail");
@@ -252,10 +244,9 @@ fn unopenable_resource_is_nonfatal_and_does_not_invoke_its_consumer() {
             Path::new("OPS/image.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            let acquisition = archive
-                .acquire(key, |_| -> Result<()> {
+        |catalog, mut payloads| {
+            let acquisition = payloads
+                .acquire(&catalog[0], |_| -> Result<()> {
                     panic!("unopenable resource must not invoke the consumer")
                 })
                 .expect("entry-open failure should remain non-fatal");
@@ -280,10 +271,11 @@ fn consumer_failure_propagates_with_its_concrete_error_identity() {
             Path::new("OPS/image.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            archive
-                .acquire(key, |_| -> Result<()> { Err(ConsumerFailure.into()) })
+        |catalog, mut payloads| {
+            payloads
+                .acquire(&catalog[0], |_| -> Result<()> {
+                    Err(ConsumerFailure.into())
+                })
                 .expect_err("consumer failure should remain fatal")
         },
     )
@@ -305,14 +297,13 @@ fn catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session() {
             Path::new("OPS/image.png"),
             "image/png",
         )],
-        |mut session| {
-            let resource = &session.resources()[0];
-            let key = resource.key();
+        |catalog, mut payloads| {
+            let resource = &catalog[0];
             assert_eq!(consumer_calls.get(), 0);
 
             for _ in 0..2 {
-                let acquisition = session
-                    .acquire(key, |mut payload| {
+                let acquisition = payloads
+                    .acquire(resource, |payload| {
                         consumer_calls.set(consumer_calls.get() + 1);
                         let mut data = Vec::new();
                         payload.read_to_end(&mut data)?;
@@ -343,10 +334,9 @@ fn reference_escaping_the_archive_root_is_unavailable_with_the_crate_spelling() 
             Path::new("OEBPS/../../outside.png"),
             "image/png",
         )],
-        |mut archive| {
-            let key = archive.resources()[0].key();
-            let acquisition = archive
-                .acquire(key, |_| -> Result<()> {
+        |catalog, mut payloads| {
+            let acquisition = payloads
+                .acquire(&catalog[0], |_| -> Result<()> {
                     panic!("an escaping reference must not invoke the consumer")
                 })
                 .expect("an escaping reference should remain non-fatal");
@@ -379,11 +369,8 @@ fn parent_relative_reference_shares_identity_with_its_resolved_spelling() {
             EpubResourceDeclaration::new("resolved", Path::new("Images/a.png"), "image/png"),
             EpubResourceDeclaration::new("parent", Path::new("OEBPS/../Images/a.png"), "image/png"),
         ],
-        |archive| {
-            assert_eq!(
-                archive.resources()[0].identity(),
-                archive.resources()[1].identity()
-            );
+        |catalog, _payloads| {
+            assert_eq!(catalog[0].identity(), catalog[1].identity());
         },
     )
     .expect("resource archive should open");

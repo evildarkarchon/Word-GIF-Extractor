@@ -37,13 +37,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
+use crate::conversion::{ConversionPolicy, ConversionRequest, ConversionTarget};
 use crate::document_search_surface::{
     DocumentSearchSurface, DocumentSearchTraversal, InspectedKind, TraversalFailure, TraversedEntry,
 };
 use crate::epub_declarations::{EpubDeclarationError, EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{ExtractionRunObservation, ExtractionRunObserver};
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
+use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy, ImageWriteWarning};
 
 /// A temporary test path, removed when a passing test drops it.
 ///
@@ -621,8 +622,9 @@ pub(crate) fn valid_png() -> Vec<u8> {
 ///
 /// No Conversion policy and no GIF destination: the shape nearly every pipeline
 /// test wants, so a call site names only the formats its test is about. A test
-/// that configures conversion or GIF routing spells out both constructors, which
-/// keeps what is unusual about it visible.
+/// that configures conversion uses [`pipeline_converting`], which still names the
+/// target and any GIF destination at the call site; a test that only routes GIFs
+/// spells out both constructors. Either way what is unusual about it stays visible.
 pub(crate) fn pipeline_accepting(
     formats: impl IntoIterator<Item = ImageFormat>,
 ) -> ImageWritePipeline {
@@ -631,6 +633,69 @@ pub(crate) fn pipeline_accepting(
         None,
         None,
     ))
+}
+
+/// Builds an Image write pipeline with a default Conversion policy to `target`.
+///
+/// The Conversion policy has no quality and is not lossless, the request every
+/// target accepts. `gif_output` is the policy's GIF destination, if the test routes
+/// GIFs as well.
+///
+/// # Panics
+///
+/// If the default conversion request for `target` stops validating.
+pub(crate) fn pipeline_converting(
+    allowed_formats: impl IntoIterator<Item = ImageFormat>,
+    target: ConversionTarget,
+    gif_output: Option<PathBuf>,
+) -> ImageWritePipeline {
+    let conversion = ConversionPolicy::try_from(ConversionRequest {
+        target,
+        quality: None,
+        lossless: false,
+    })
+    .expect("test conversion request should be valid");
+    ImageWritePipeline::new(ImageWritePolicy::new(
+        allowed_formats.into_iter().collect(),
+        Some(conversion),
+        gif_output,
+    ))
+}
+
+/// Returns the source names of archive acquisition warnings, in their observed order.
+///
+/// Every other warning kind is skipped, so a test can pin which resources failed to
+/// be acquired without restating each failure's detail text.
+pub(crate) fn acquisition_failure_sources(warnings: &[ImageWriteWarning]) -> Vec<&str> {
+    warnings
+        .iter()
+        .filter_map(|warning| match warning {
+            ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. } => {
+                Some(source_name.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns the sorted file names directly inside one directory.
+///
+/// # Panics
+///
+/// If the directory or one of its entries cannot be read.
+pub(crate) fn file_names_in(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(directory)
+        .expect("directory should be readable")
+        .map(|entry| {
+            entry
+                .expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 /// Fallback-directory resolver for intake calls that must never need one.
@@ -1057,6 +1122,35 @@ pub(crate) fn write_stored_epub_fixture(
         manifest_resources,
         archive_resources,
     );
+}
+
+/// Corrupts one uniquely identifiable stored payload without changing ZIP metadata.
+///
+/// Flips the payload's first byte, so its CRC check fails. Only payload bytes change,
+/// so the entry still opens and the failure surfaces when the payload is read, which
+/// is the acquisition failure a cover attempt retries on. Callers keep corrupted
+/// payloads shorter than Archive image discovery's evidence prefix, so the read that
+/// fails is the first one, before any format is identified, whichever byte is flipped.
+///
+/// # Panics
+///
+/// If `payload` does not occur exactly once in the archive at `path`.
+pub(crate) fn corrupt_stored_payload(path: &Path, payload: &[u8]) {
+    let mut archive_bytes = fs::read(path).expect("test EPUB should be readable");
+    let payload_start = archive_bytes
+        .windows(payload.len())
+        .position(|window| window == payload)
+        .expect("stored test payload should occur in the EPUB");
+    assert_eq!(
+        archive_bytes
+            .windows(payload.len())
+            .filter(|window| *window == payload)
+            .count(),
+        1,
+        "test payload must uniquely identify one archive entry"
+    );
+    archive_bytes[payload_start] ^= 0xff;
+    fs::write(path, archive_bytes).expect("corrupted test EPUB should be writable");
 }
 
 /// Writes an EPUB that declares a navigation document alongside its resources.

@@ -10,8 +10,8 @@ use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
 use crate::test_support::{
-    MINIMAL_PNG, SilentExtractionRunObserver, pipeline_accepting, temp_test_dir,
-    write_epub_with_one_image, write_stored_epub_fixture,
+    MINIMAL_PNG, SilentExtractionRunObserver, acquisition_failure_sources, corrupt_stored_payload,
+    pipeline_accepting, temp_test_dir, write_epub_with_one_image, write_stored_epub_fixture,
 };
 use std::fs;
 use std::path::Path;
@@ -42,38 +42,6 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
     }
 }
 
-/// Returns archive acquisition warning sources in their observed order.
-fn acquisition_failure_sources(warnings: &[ImageWriteWarning]) -> Vec<&str> {
-    warnings
-        .iter()
-        .filter_map(|warning| match warning {
-            ImageWriteWarning::ArchiveImageAcquisitionFailed { source_name, .. } => {
-                Some(source_name.as_str())
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Corrupts one uniquely identifiable stored payload without changing ZIP metadata.
-fn corrupt_stored_payload(path: &Path, payload: &[u8]) {
-    let mut archive_bytes = fs::read(path).expect("test EPUB should be readable");
-    let payload_start = archive_bytes
-        .windows(payload.len())
-        .position(|window| window == payload)
-        .expect("stored test payload should occur in the EPUB");
-    assert_eq!(
-        archive_bytes
-            .windows(payload.len())
-            .filter(|window| *window == payload)
-            .count(),
-        1,
-        "test payload must uniquely identify one archive entry"
-    );
-    archive_bytes[payload_start] ^= 0xff;
-    fs::write(path, archive_bytes).expect("corrupted test EPUB should be writable");
-}
-
 #[test]
 fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     let temp_dir = temp_test_dir("epub", "declared-cover-end-to-end");
@@ -82,8 +50,8 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     fs::create_dir_all(&output_dir).expect("output directory should be creatable");
     let cover = b"\xFF\xD8\xFFdeclared-cover";
     // The declared cover deliberately resolves after another resource, so it is not
-    // the plan's first entry: EPUB cover extraction addresses candidates by position,
-    // and an off-by-one there would acquire the wrong payload rather than fail.
+    // the catalog's first entry: an extraction that reached for the wrong catalog entry
+    // would acquire the wrong payload rather than fail.
     write_stored_epub_fixture(
         &input_path,
         &[
@@ -388,8 +356,8 @@ fn archive_parse_failure_after_selection_is_a_fatal_extraction_error() {
 ///
 /// `images/cover%2Ejpg`, `images/cover.jpg` and `images/cover%2ejpg` are three declared
 /// references to a single archive payload, so exactly one of them is ever acquired and
-/// the rest are excluded from normal fallback. EPUB cover extraction's own tests assume
-/// aliasing candidates share an identity; only a real archive can establish that they do.
+/// the rest are excluded from normal fallback. EPUB cover extraction's own tests pin the
+/// same exclusion at its interface; this one keeps it pinned through the EPUB adapter.
 #[test]
 fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
     let temp_dir = temp_test_dir("epub", "aliasing-cover-identity");
