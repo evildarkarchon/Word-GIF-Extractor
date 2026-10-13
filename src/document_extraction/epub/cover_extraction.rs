@@ -21,9 +21,9 @@ const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 ///
 /// Several distinct candidates can share one Archive resource identity, which is
 /// why `position` and `identity` are separate fields: `position` addresses the
-/// caller's own plan, while `identity` is what exclusion is decided on.
+/// caller's own catalog, while `identity` is what exclusion is decided on.
 pub(super) struct CoverCandidate<I> {
-    /// Index back into the caller's plan, used to reach a candidate's payload.
+    /// Index back into the caller's catalog, used to reach a candidate's payload.
     position: usize,
     /// Manifest identifier compared against the EPUB's declared cover.
     declared_id: String,
@@ -49,7 +49,7 @@ impl<I> CoverCandidate<I> {
         }
     }
 
-    /// Returns this candidate's index in the plan the caller built it from.
+    /// Returns this candidate's index in the catalog the caller built it from.
     pub(super) fn position(&self) -> usize {
         self.position
     }

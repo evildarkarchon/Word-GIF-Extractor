@@ -82,7 +82,7 @@ fn declared_cover_resource_is_acquired_and_emitted_as_one_file() {
     fs::create_dir_all(&output_dir).expect("output directory should be creatable");
     let cover = b"\xFF\xD8\xFFdeclared-cover";
     // The declared cover deliberately resolves after another resource, so it is not
-    // the plan's first entry: EPUB cover extraction addresses candidates by position,
+    // the catalog's first entry: EPUB cover extraction addresses candidates by position,
     // and an off-by-one there would acquire the wrong payload rather than fail.
     write_stored_epub_fixture(
         &input_path,
