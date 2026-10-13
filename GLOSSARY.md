@@ -97,8 +97,8 @@ The project policy for turning buffered archive image sources into files on disk
 _Avoid_: Save helper, output utility
 
 **Image file emission**:
-The per-image responsibility within the Image write pipeline for claiming a collision-free output name and completing one file without overwriting existing output. It excludes Archive image discovery, conversion, and extraction counts.
-_Avoid_: Atomic image emission, output writer
+The responsibility within the Image write pipeline for naming, placing and completing every image one pipeline invocation emits under an Output placement: whether names are singular or numbered, each image's ordinal across every image it emits including routed GIFs, the directory its Emitted image role sends it to, and a collision-free name claimed without overwriting existing output. It excludes Archive image discovery, conversion, the Image write purpose, and extraction counts.
+_Avoid_: Atomic image emission, output writer, naming helper
 
 **Image write policy**:
 The valid per-run choices that govern how the Image write pipeline accepts and emits images, including requested Image formats, an optional Conversion policy, and GIF destination.
