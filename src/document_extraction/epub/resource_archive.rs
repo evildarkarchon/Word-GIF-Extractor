@@ -67,7 +67,8 @@ impl<'session> EpubResource<'session> {
         &self.id
     }
 
-    /// Returns the normalized manifest path used for diagnostics and format evidence.
+    /// Returns the manifest path resolved against the archive root, used for diagnostics
+    /// and format evidence; a reference escaping the root keeps the `epub` crate's spelling.
     pub(super) fn manifest_path(&self) -> &str {
         &self.manifest_path
     }
@@ -103,6 +104,11 @@ pub(super) enum ResourceUnavailable {
         manifest_path: String,
         detail: String,
     },
+    /// The reference's `..` segments climb above the archive root. It keeps the
+    /// spelling the `epub` crate produced, because there is no resolved spelling.
+    OutsideArchive {
+        manifest_path: String,
+    },
 }
 
 impl fmt::Display for ResourceUnavailable {
@@ -126,6 +132,12 @@ impl fmt::Display for ResourceUnavailable {
                 formatter,
                 "Could not open EPUB resource {manifest_path}: {detail}"
             ),
+            ResourceUnavailable::OutsideArchive { manifest_path } => {
+                write!(
+                    formatter,
+                    "EPUB resource outside the archive: {manifest_path}"
+                )
+            }
         }
     }
 }
@@ -189,10 +201,21 @@ impl EpubResourceArchive {
             .iter()
             .enumerate()
             .map(|(declaration_index, resource)| {
-                let manifest_path = archive_path(resource.path());
-                let resolution = match resolve_resource(&archive, &manifest_path) {
-                    Ok(index) => ResourceResolution::Resolved(index),
-                    Err(error) => ResourceResolution::Unresolved(error),
+                let reference = archive_path(resource.path());
+                let (manifest_path, resolution) = match resolve_reference(&reference) {
+                    Some(resolved) => {
+                        let resolution = match resolve_resource(&archive, &resolved) {
+                            Ok(index) => ResourceResolution::Resolved(index),
+                            Err(error) => ResourceResolution::Unresolved(error),
+                        };
+                        (resolved, resolution)
+                    }
+                    None => (
+                        reference.clone(),
+                        ResourceResolution::Unresolved(ResourceUnavailable::OutsideArchive {
+                            manifest_path: reference,
+                        }),
+                    ),
                 };
                 let identity = match resolution {
                     ResourceResolution::Resolved(index) => ResourceIdentityKind::Resolved(index),
@@ -200,12 +223,18 @@ impl EpubResourceArchive {
                         ResourceIdentityKind::Unresolved(declaration_index)
                     }
                 };
+                // The resolved spelling already has no dot or empty segments, so it is
+                // the sort key as it stands. A resolved reference sorts by the entry
+                // name its lookup reached, which is that spelling or its percent-decoded
+                // form, so percent-encoded aliases keep sorting where their payload is.
+                // This departs from the letter of ADR-0020, which names the resolved
+                // spelling itself as the sort key: for a decoded match that would sort
+                // `%7A.png` before `a.png` and renumber output that extracts today.
                 let sort_path = match &resolution {
                     ResourceResolution::Resolved(index) => archive
                         .name_for_index(*index)
-                        .map(normalized_sort_path)
-                        .unwrap_or_else(|| normalized_sort_path(&manifest_path)),
-                    ResourceResolution::Unresolved(_) => normalized_sort_path(&manifest_path),
+                        .map_or_else(|| manifest_path.clone(), str::to_string),
+                    ResourceResolution::Unresolved(_) => manifest_path.clone(),
                 };
                 CatalogSeed {
                     id: resource.id().to_string(),
@@ -308,24 +337,37 @@ struct CatalogSeed {
     sort_path: String,
 }
 
-/// Converts an EPUB manifest path to the ZIP lookup spelling used by the resource archive.
+/// Normalises an EPUB manifest path's separators to `/` ahead of reference resolution.
 fn archive_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Builds a stable lexical sort key without changing the ZIP lookup path.
-fn normalized_sort_path(path: &str) -> String {
-    path.split('/')
-        .filter(|segment| !segment.is_empty() && *segment != ".")
-        .collect::<Vec<_>>()
-        .join("/")
+/// Resolves a separator-normalised reference against the archive root.
+///
+/// Empty and `.` segments are dropped, so a leading `/` means the archive root, and
+/// each `..` removes the segment before it. Returns `None` when a `..` would climb
+/// above the root; such a reference is not clamped, because no archive entry is
+/// the one it names.
+fn resolve_reference(reference: &str) -> Option<String> {
+    let mut segments = Vec::new();
+    for segment in reference.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop()?;
+            }
+            segment => segments.push(segment),
+        }
+    }
+    Some(segments.join("/"))
 }
 
-/// Resolves a manifest path using exact spelling before a percent-decoded alias.
+/// Looks up a resolved manifest path using exact spelling before a percent-decoded alias.
 ///
-/// Returns the matching ZIP index. After exact lookup fails, malformed escapes
-/// and decoded bytes that are not UTF-8 return `InvalidPercentEncoding`; a
-/// valid decoded alias that does not exist returns `NotFound`.
+/// `manifest_path` is the spelling [`resolve_reference`] produced; the raw, unresolved
+/// spelling is never looked up. Returns the matching ZIP index. After exact lookup
+/// fails, malformed escapes and decoded bytes that are not UTF-8 return
+/// `InvalidPercentEncoding`; a valid decoded alias that does not exist returns `NotFound`.
 fn resolve_resource(
     archive: &ZipArchive<fs::File>,
     manifest_path: &str,

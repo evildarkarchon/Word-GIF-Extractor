@@ -330,3 +330,61 @@ fn catalog_acquisition_is_lazy_repeatable_and_keyed_to_its_session() {
 
     assert_eq!(consumer_calls.get(), 2);
 }
+
+#[test]
+fn reference_escaping_the_archive_root_is_unavailable_with_the_crate_spelling() {
+    let path = temp_epub_path("resource-archive", "outside-archive");
+    // An entry the escaping reference would reach if it were clamped to the root.
+    write_zip_archive(&path, &[("outside.png", b"clamped")]);
+    EpubResourceArchive::open(
+        &path,
+        &[EpubResourceDeclaration::new(
+            "escaping",
+            Path::new("OEBPS/../../outside.png"),
+            "image/png",
+        )],
+        |mut archive| {
+            let key = archive.resources()[0].key();
+            let acquisition = archive
+                .acquire(key, |_| -> Result<()> {
+                    panic!("an escaping reference must not invoke the consumer")
+                })
+                .expect("an escaping reference should remain non-fatal");
+
+            let ResourceAcquisition::Unavailable(unavailable) = acquisition else {
+                panic!("an escaping reference should be unavailable");
+            };
+            assert_eq!(
+                unavailable,
+                ResourceUnavailable::OutsideArchive {
+                    manifest_path: "OEBPS/../../outside.png".to_string(),
+                }
+            );
+            assert_eq!(
+                unavailable.to_string(),
+                "EPUB resource outside the archive: OEBPS/../../outside.png"
+            );
+        },
+    )
+    .expect("resource archive should open despite an escaping reference");
+}
+
+#[test]
+fn parent_relative_reference_shares_identity_with_its_resolved_spelling() {
+    let path = temp_epub_path("resource-archive", "dot-segment-identity");
+    write_zip_archive(&path, &[("Images/a.png", b"shared")]);
+    EpubResourceArchive::open(
+        &path,
+        &[
+            EpubResourceDeclaration::new("resolved", Path::new("Images/a.png"), "image/png"),
+            EpubResourceDeclaration::new("parent", Path::new("OEBPS/../Images/a.png"), "image/png"),
+        ],
+        |archive| {
+            assert_eq!(
+                archive.resources()[0].identity(),
+                archive.resources()[1].identity()
+            );
+        },
+    )
+    .expect("resource archive should open");
+}
