@@ -1,9 +1,10 @@
 //! EPUB cover extraction: candidate ordering, identity exclusion, retry, and fallback.
 //!
-//! This module owns the cover decision and nothing else. Acquiring a payload and
-//! writing it are supplied by an injected [`CoverAttempts`] adapter, so the module
-//! names no archive type and no Image write pipeline entry point: "what does cover
-//! extraction depend on" is answerable from the imports below.
+//! The cover decision, [`extract_required_cover`], names no archive type and no
+//! Image write pipeline entry point: acquiring a payload and writing it are supplied
+//! by an injected [`CoverAttempts`] adapter. The production adapter,
+//! [`EpubCoverAttempts`], lives beside the decision in this module; its fallback runs
+//! the sibling normal-image traversal, so cover extraction never calls its parent.
 //!
 //! ADR-0005 records why the identity type stays generic instead of naming the
 //! branded Archive resource identity directly.
@@ -12,7 +13,15 @@ use std::collections::HashSet;
 use std::hash::Hash;
 use std::path::Path;
 
-use crate::image_write_pipeline::{ImageWriteOutcome, ImageWriteResult, RequiredCoverWriteOutcome};
+use crate::image_write_pipeline::{
+    ImageWriteOutcome, ImageWritePipeline, ImageWriteResult, RequiredCoverWriteOutcome,
+};
+use crate::output_placement::OutputPlacement;
+
+use super::normal_images;
+use super::resource_archive::{
+    ArchiveResourceIdentity, EpubPayloadReader, EpubResource, ResourceAcquisition,
+};
 
 /// Common JPEG file extensions for cover image fallback detection
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
@@ -79,6 +88,99 @@ pub(super) trait CoverAttempts<I> {
     /// Returns an error when normal-image emission fails, retaining the facts
     /// produced before the failure.
     fn fallback(&mut self, excluded_identities: &HashSet<I>) -> ImageWriteOutcome;
+}
+
+/// Copies the catalog into the cover candidates EPUB cover extraction orders.
+///
+/// The catalog index becomes the candidate position, which is how [`EpubCoverAttempts`]
+/// gets back to a catalog entry in constant time. Manifest-path lookup was rejected:
+/// it is a linear scan, and aliasing spellings make it non-unique.
+pub(super) fn cover_candidates<'session>(
+    catalog: &[EpubResource<'session>],
+) -> Vec<CoverCandidate<ArchiveResourceIdentity<'session>>> {
+    catalog
+        .iter()
+        .enumerate()
+        .map(|(position, resource)| {
+            CoverCandidate::new(
+                position,
+                resource.id(),
+                resource.manifest_path(),
+                resource.identity(),
+            )
+        })
+        .collect()
+}
+
+/// Production adapter giving EPUB cover extraction one archive session and pipeline.
+///
+/// It lives beside the cover decision because its fallback operation runs the sibling
+/// normal-image traversal rather than the EPUB adapter's own code; owning it in the
+/// EPUB adapter would route cover extraction back through its parent, the mutual
+/// dependency ADR-0004 removed elsewhere in this crate.
+pub(super) struct EpubCoverAttempts<'attempts, 'session> {
+    pub(super) catalog: &'attempts [EpubResource<'session>],
+    pub(super) payloads: &'attempts mut EpubPayloadReader<'session>,
+    pub(super) placement: &'attempts OutputPlacement,
+    pub(super) pipeline: &'attempts ImageWritePipeline,
+}
+
+impl<'session> CoverAttempts<ArchiveResourceIdentity<'session>>
+    for EpubCoverAttempts<'_, 'session>
+{
+    /// Acquires one cover candidate's catalog entry and writes it through the cover purpose.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the candidate was not built by [`cover_candidates`] from this
+    /// adapter's catalog, since its position indexes that catalog directly.
+    fn attempt(
+        &mut self,
+        candidate: &CoverCandidate<ArchiveResourceIdentity<'session>>,
+    ) -> ImageWriteOutcome<RequiredCoverWriteOutcome> {
+        // Destructured so the acquisition closure's catalog and pipeline borrows stay
+        // disjoint from the mutable payload reader borrow `acquire` takes around it.
+        let Self {
+            catalog,
+            payloads,
+            placement,
+            pipeline,
+        } = self;
+        let resource = &catalog[candidate.position()];
+
+        // The consumer never fails: the pipeline's whole outcome, including an
+        // emission failure and the facts it retains, travels back as the acquired
+        // value. `acquire` can therefore only return `Ok` here, and `?` exists to
+        // satisfy its signature rather than to handle a reachable error.
+        let acquisition = payloads.acquire(resource, |payload| {
+            Ok(pipeline.write_required_cover(
+                placement,
+                resource.manifest_path(),
+                resource.mime(),
+                payload,
+            ))
+        })?;
+        match acquisition {
+            ResourceAcquisition::Acquired(outcome) => outcome,
+            ResourceAcquisition::Unavailable(error) => {
+                Ok(pipeline.required_cover_unavailable(resource.manifest_path(), error))
+            }
+        }
+    }
+
+    /// Runs normal-image traversal over the same catalog, skipping attempted payloads.
+    fn fallback(
+        &mut self,
+        excluded_identities: &HashSet<ArchiveResourceIdentity<'session>>,
+    ) -> ImageWriteOutcome {
+        normal_images::extract_all_images(
+            self.catalog,
+            self.payloads,
+            excluded_identities,
+            self.placement,
+            self.pipeline,
+        )
+    }
 }
 
 /// Extracts one required EPUB cover and optionally falls back to normal images.
