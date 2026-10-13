@@ -16,7 +16,7 @@ use crate::output_placement::OutputPlacement;
 
 pub(crate) use self::discovery::ArchiveImageSource;
 use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
-use self::emission::{ImageFileEmission, OutputNaming};
+use self::emission::ImageFileEmission;
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 #[derive(Debug)]
@@ -310,8 +310,9 @@ impl ImageWritePipeline {
     /// facts are raw so the pipeline builds the cover's evidence itself, and a caller
     /// cannot hand it a normal source that would enable path-extension fallback.
     ///
-    /// An emitted cover is named singularly after the placement's base name, since a
-    /// cover attempt never has a second image to number against.
+    /// The attempt stages its single prepared image with Image file emission and then
+    /// finishes it, so finishing names the cover singularly after the placement's
+    /// base name: a cover attempt never has a second image to number against.
     ///
     /// Read failures return `Retry`, so EPUB cover extraction may try its next
     /// candidate. Filtering, conversion fallback and successful emission return
@@ -359,13 +360,15 @@ impl ImageWritePipeline {
                 return Ok((RequiredCoverDisposition::Completed, result));
             }
         };
-        let mut emission = ImageFileEmission::new(placement, OutputNaming::Singular);
+        let mut emission = ImageFileEmission::new(placement);
         // This path is bound to the required-cover purpose, so it records covers
         // whatever role the image took: a routed GIF cover is a routed cover.
         let tally = &mut result.tally;
-        if let Err(error) =
-            emit_prepared_image(&mut emission, prepared, |role| tally.record_cover(role))
-        {
+        let mut record_cover = |role| tally.record_cover(tally_role(role));
+        let emitted = emission
+            .stage(prepared, &mut record_cover)
+            .and_then(|()| emission.finish(record_cover));
+        if let Err(error) = emitted {
             return Err(ImageWriteFailure {
                 partial: result,
                 error,
@@ -496,29 +499,15 @@ impl RequiredCoverVisitor<'_, '_> {
     }
 }
 
-/// Where the normal-images visitor stands on singular versus numbered naming.
-///
-/// A lone image is named after the base name alone and several are numbered, so the
-/// first prepared image cannot be emitted until the visitor knows whether a second
-/// follows. These three states are the whole of that wait: holding an image back
-/// and numbering are never both true.
-enum NormalImageNaming<'policy, 'placement> {
-    /// No image has been prepared yet.
-    Undecided,
-    /// One image is held back until the next one, or the end of traversal, names it.
-    Pending(PreparedImage<'policy>),
-    /// A second image arrived, so every image from here on is numbered.
-    Numbering(ImageFileEmission<'placement>),
-}
-
 /// Scoped authority for per-resource discovery, preparation, and ordered emission.
+///
+/// It holds one Image file emission for its whole traversal and stages every
+/// prepared image with it; naming and placement are emission's, not the visitor's.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
     placement: &'placement OutputPlacement,
-    discovery_warnings: Vec<ImageWriteWarning>,
-    conversion_warnings: Vec<ImageWriteWarning>,
-    tally: EmittedImageTally,
-    naming: NormalImageNaming<'policy, 'placement>,
+    facts: NormalImageFacts,
+    emission: ImageFileEmission<'policy, 'placement>,
 }
 
 impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
@@ -527,10 +516,8 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         Self {
             policy,
             placement,
-            discovery_warnings: Vec::new(),
-            conversion_warnings: Vec::new(),
-            tally: EmittedImageTally::default(),
-            naming: NormalImageNaming::Undecided,
+            facts: NormalImageFacts::default(),
+            emission: ImageFileEmission::new(placement),
         }
     }
 
@@ -544,7 +531,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         reader: &mut dyn Read,
     ) -> Result<()> {
         let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
-        self.discovery_warnings.extend(discovered.warnings);
+        self.facts.discovery_warnings.extend(discovered.warnings);
 
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
@@ -559,7 +546,7 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
                 reason,
             } => {
                 let base_name = self.placement.base_name().to_string();
-                self.conversion_warnings.push(match reason {
+                self.facts.conversion_warnings.push(match reason {
                     ConversionFallbackReason::Unsupported => {
                         ImageWriteWarning::ConversionSkipped { base_name, format }
                     }
@@ -575,7 +562,12 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
             }
         };
 
-        self.stage_prepared(prepared)
+        // This visitor is bound to the normal-images purpose, so it records
+        // normal images; the role-mapping function supplies only the role. The
+        // binding holds because only this pipeline can build a required-cover
+        // source, and it never hands one to a visitor.
+        self.emission
+            .stage(prepared, normal_image_recorder(&mut self.facts.tally))
     }
 
     /// Records a source that the document adapter could not open.
@@ -583,72 +575,62 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     /// Every such source warns, whatever its name: a source name never decides
     /// where a file is written, so no name is grounds for a silent skip.
     pub(crate) fn unreadable(&mut self, source: ArchiveImageSource, error: impl fmt::Display) {
-        self.discovery_warnings
+        self.facts
+            .discovery_warnings
             .push(ImageWriteWarning::archive_image_acquisition_failed(
                 source.diagnostic_name(),
                 error,
             ));
     }
 
-    /// Holds the first prepared image until singular versus multiple naming is known.
+    /// Finishes Image file emission and returns phase-ordered warning facts.
     ///
-    /// Returns an error if switching to multiple naming cannot emit either prepared image.
-    fn stage_prepared(&mut self, prepared: PreparedImage<'policy>) -> Result<()> {
-        // The state is taken out so emission can borrow the visitor mutably. An
-        // emission error leaves it `Undecided`, which nothing reads again: the
-        // traversal aborts on that error and the visitor becomes a failure.
-        match std::mem::replace(&mut self.naming, NormalImageNaming::Undecided) {
-            NormalImageNaming::Undecided => {
-                self.naming = NormalImageNaming::Pending(prepared);
-            }
-            NormalImageNaming::Pending(first) => {
-                let mut emission = ImageFileEmission::new(self.placement, OutputNaming::Numbered);
-                self.emit_prepared(&mut emission, first)?;
-                self.emit_prepared(&mut emission, prepared)?;
-                self.naming = NormalImageNaming::Numbering(emission);
-            }
-            NormalImageNaming::Numbering(mut emission) => {
-                self.emit_prepared(&mut emission, prepared)?;
-                self.naming = NormalImageNaming::Numbering(emission);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Emits one prepared image and records only successfully completed output.
+    /// Finishing writes a still-held-back lone image under the singular name.
     ///
-    /// Returns an error when Image file emission cannot create or complete the output.
-    fn emit_prepared(
-        &mut self,
-        emission: &mut ImageFileEmission<'_>,
-        prepared: PreparedImage<'policy>,
-    ) -> Result<()> {
-        // This visitor is bound to the normal-images purpose, so it records
-        // normal images; the counting function supplies only the role. The
-        // binding holds because only this pipeline can build a required-cover
-        // source, and it never hands one to a visitor.
-        let tally = &mut self.tally;
-        emit_prepared_image(emission, prepared, |role| tally.record_normal_image(role))
-    }
-
-    /// Completes singular lookahead and returns phase-ordered warning facts.
+    /// # Errors
     ///
-    /// Returns an error if the lone pending image cannot be emitted.
+    /// Returns a failure, retaining every fact recorded so far, if that lone image
+    /// cannot be emitted.
     fn finish(mut self) -> ImageWriteOutcome {
-        if let NormalImageNaming::Pending(prepared) =
-            std::mem::replace(&mut self.naming, NormalImageNaming::Undecided)
-        {
-            let mut emission = ImageFileEmission::new(self.placement, OutputNaming::Singular);
-            if let Err(error) = self.emit_prepared(&mut emission, prepared) {
-                return Err(self.into_failure(error));
-            }
+        // Finishing consumes the emission, moving only that field out of `self`; the
+        // facts stay reachable, so the lone image is recorded before they are collected.
+        let finished = self
+            .emission
+            .finish(normal_image_recorder(&mut self.facts.tally));
+        let result = self.facts.into_result();
+        match finished {
+            Ok(()) => Ok(result),
+            Err(error) => Err(ImageWriteFailure {
+                partial: result,
+                error,
+            }),
         }
-
-        Ok(self.into_result())
     }
 
-    /// Collects phase-ordered facts after traversal succeeds.
+    /// Retains facts accumulated before a traversal or emission failure.
+    fn into_failure(self, error: Error) -> ImageWriteFailure {
+        ImageWriteFailure {
+            partial: self.facts.into_result(),
+            error,
+        }
+    }
+}
+
+/// Facts one normal-image visitor accumulates over its traversal.
+///
+/// Discovery and conversion warnings are kept apart while the traversal runs, so
+/// collecting them can report every discovery warning before any conversion warning
+/// whichever order the sources produced them in.
+#[derive(Default)]
+struct NormalImageFacts {
+    discovery_warnings: Vec<ImageWriteWarning>,
+    conversion_warnings: Vec<ImageWriteWarning>,
+    tally: EmittedImageTally,
+}
+
+impl NormalImageFacts {
+    /// Collects these facts with discovery warnings before conversion warnings, the
+    /// phase order every Image write result reports.
     fn into_result(self) -> ImageWriteResult {
         ImageWriteResult::new(
             self.tally,
@@ -657,14 +639,6 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
                 .chain(self.conversion_warnings)
                 .collect(),
         )
-    }
-
-    /// Retains facts accumulated before a traversal or emission failure.
-    fn into_failure(self, error: Error) -> ImageWriteFailure {
-        ImageWriteFailure {
-            partial: self.into_result(),
-            error,
-        }
     }
 }
 
@@ -734,35 +708,31 @@ fn prepare_image_for_write(
     }
 }
 
-/// Emits one prepared image and records it with shared count semantics.
+/// Maps an Emitted image role onto the Emitted image tally's destination-free role.
 ///
-/// Image file emission chooses the image's directory from its Emitted image role;
-/// this helper only emits and records.
-///
-/// This is the one place production counts images. It maps the Emitted image
-/// role onto the tally's destination-free role and hands it to `record` only once
-/// the file is complete. `record` is how the caller's Image write purpose arrives:
-/// each caller is statically bound to one purpose and records into its tally under
-/// it, so no runtime purpose value is passed here.
-///
-/// Returns an error, recording nothing, when Image file emission fails.
-fn emit_prepared_image(
-    emission: &mut ImageFileEmission<'_>,
-    prepared: PreparedImage<'_>,
-    record: impl FnOnce(TallyRole),
-) -> Result<()> {
-    emission.emit(&prepared)?;
-
+/// This is the one place production maps roles for counting (ADR-0017). Both
+/// visitors' recording closures call it with each role Image file emission reports
+/// once a file is complete, and record the result under their own Image write
+/// purpose: each caller is statically bound to one purpose, so no runtime purpose
+/// value is passed here.
+fn tally_role(role: EmittedImageRole<'_>) -> TallyRole {
     // The match stays exhaustive so a new Emitted image role fails to compile
     // here rather than silently defaulting to no count at all.
-    record(match prepared.role {
+    match role {
         EmittedImageRole::RoutedGif(_) => TallyRole::RoutedGif,
         EmittedImageRole::Converted => TallyRole::Converted,
         EmittedImageRole::ConversionSkipped => TallyRole::ConversionSkipped,
         EmittedImageRole::Preserved => TallyRole::Preserved,
-    });
+    }
+}
 
-    Ok(())
+/// Returns the recording callback that counts each completed file as a normal image.
+///
+/// The one home of the normal-image recording rule: the normal-image visitor stages
+/// and finishes through it, and it maps roles only through [`tally_role`] (ADR-0017).
+/// The callback borrows `tally` mutably until it is dropped.
+fn normal_image_recorder(tally: &mut EmittedImageTally) -> impl FnMut(EmittedImageRole<'_>) + '_ {
+    move |role: EmittedImageRole<'_>| tally.record_normal_image(tally_role(role))
 }
 
 #[cfg(test)]
