@@ -445,3 +445,174 @@ fn aliasing_manifest_spellings_resolve_to_one_archive_identity() {
         1
     );
 }
+
+/// Extracts normal images from an EPUB declaring one image by `href` and storing it at
+/// `entry`, then asserts it was emitted as the only file with no warnings.
+///
+/// Every fixture's package document is `OEBPS/content.opf`, so `href` is relative to
+/// `OEBPS/` unless it is path-absolute.
+fn assert_reference_is_emitted(test_name: &str, href: &str, entry: &str) {
+    let temp_dir = temp_test_dir("epub", test_name);
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    write_stored_epub_fixture(
+        &input_path,
+        &[("image", href, "image/png", None)],
+        &[(entry, MINIMAL_PNG)],
+    );
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+    let selected = select_epub(&input_path, &output_dir);
+
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
+
+    assert_eq!(result.tally.emitted(), 1, "{href} should be emitted");
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        fs::read(output_dir.join("Tester - Magic Test.png")).unwrap(),
+        MINIMAL_PNG
+    );
+}
+
+#[test]
+fn parent_relative_reference_from_package_directory_is_emitted() {
+    assert_reference_is_emitted(
+        "parent-relative-reference",
+        "../Images/a.png",
+        "Images/a.png",
+    );
+}
+
+#[test]
+fn path_absolute_reference_resolves_against_the_archive_root() {
+    assert_reference_is_emitted("path-absolute-reference", "/Images/a.png", "Images/a.png");
+}
+
+#[test]
+fn current_directory_reference_is_emitted() {
+    assert_reference_is_emitted(
+        "current-directory-reference",
+        "./images/a.png",
+        "OEBPS/images/a.png",
+    );
+}
+
+#[test]
+fn numbered_output_follows_resolved_rather_than_raw_reference_order() {
+    let temp_dir = temp_test_dir("epub", "resolved-reference-order");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    let mut first_resolved = MINIMAL_PNG.to_vec();
+    first_resolved.push(1);
+    let mut second_resolved = MINIMAL_PNG.to_vec();
+    second_resolved.push(2);
+    // Raw, `OEBPS/../Z/b.png` sorts before `OEBPS/images/a.png` because `.` precedes
+    // `i`; resolved, `Z/b.png` sorts after it because `Z` follows `O`.
+    write_stored_epub_fixture(
+        &input_path,
+        &[
+            ("outside", "../Z/b.png", "image/png", None),
+            ("inside", "images/a.png", "image/png", None),
+        ],
+        &[
+            ("Z/b.png", &second_resolved),
+            ("OEBPS/images/a.png", &first_resolved),
+        ],
+    );
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+    let selected = select_epub(&input_path, &output_dir);
+
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
+
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(
+        fs::read(output_dir.join("Tester - Magic Test_1.png")).unwrap(),
+        first_resolved
+    );
+    assert_eq!(
+        fs::read(output_dir.join("Tester - Magic Test_2.png")).unwrap(),
+        second_resolved
+    );
+}
+
+#[test]
+fn parent_relative_required_cover_is_emitted_without_falling_back() {
+    let temp_dir = temp_test_dir("epub", "parent-relative-cover");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    let cover = b"\xFF\xD8\xFFparent-relative-cover";
+    write_stored_epub_fixture(
+        &input_path,
+        &[
+            ("page", "images/page.png", "image/png", None),
+            (
+                "metadata-cover",
+                "../Covers/cover.jpg",
+                "image/jpeg",
+                Some("cover-image"),
+            ),
+        ],
+        &[
+            ("OEBPS/images/page.png", MINIMAL_PNG),
+            ("Covers/cover.jpg", cover),
+        ],
+    );
+    let pipeline = pipeline_accepting([ImageFormat::Jpg, ImageFormat::Png]);
+    let selected = select_epub(&input_path, &output_dir);
+
+    let result = extract(
+        selected,
+        Some(EpubCoverPolicy::CoverThenNormalImages),
+        &pipeline,
+    )
+    .expect("a parent-relative cover should be acquired and emitted");
+
+    assert_eq!(result.tally.emitted(), 1);
+    assert_eq!(result.tally.normal_images(), 0);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        fs::read(output_dir.join("Tester - Magic Test.jpg")).unwrap(),
+        cover
+    );
+    assert_eq!(
+        fs::read_dir(&output_dir)
+            .expect("output directory should remain readable")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn invalid_percent_escape_warning_names_the_reference_as_before() {
+    let temp_dir = temp_test_dir("epub", "invalid-percent-escape-warning");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("out");
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    write_stored_epub_fixture(
+        &input_path,
+        &[("image", "images/image%ZZ.png", "image/png", None)],
+        &[("OEBPS/images/other.png", MINIMAL_PNG)],
+    );
+    let pipeline = pipeline_accepting([ImageFormat::Png]);
+    let selected = select_epub(&input_path, &output_dir);
+
+    let result = extract(selected, None, &pipeline).expect("EPUB extraction should succeed");
+
+    assert_eq!(result.tally.emitted(), 0);
+    assert!(
+        matches!(
+            &result.warnings[..],
+            [ImageWriteWarning::ArchiveImageAcquisitionFailed {
+                source_name,
+                detail,
+            }] if source_name == "OEBPS/images/image%ZZ.png"
+                && detail == "Invalid UTF-8 percent encoding in EPUB resource \
+                    OEBPS/images/image%ZZ.png: percent escape at byte 18 must contain \
+                    two hexadecimal digits"
+        ),
+        "{:?}",
+        result.warnings
+    );
+}
