@@ -24,15 +24,23 @@ use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 #[cfg(test)]
 use crate::extraction_run_observation::{ConversionFacts, ExtractionOutputKind};
 
-/// Opaque, ready-to-execute handoff produced by Extraction run intake.
+/// Ready-to-execute handoff produced by Extraction run intake, held as plain data.
 ///
-/// Construction takes the policies that govern the run — any EPUB cover policy
-/// and the Image write policy — and retains no facts derived from either. An
-/// Extraction run consumes this request by value and asks Document extraction
-/// for the derived facts when it needs them.
+/// The request carries the policies that govern the run — any EPUB cover policy
+/// and the Image write policy — as values, and retains no facts derived from
+/// either. An Extraction run consumes it by value, builds Document extraction from
+/// those policies, and asks Document extraction for the derived facts when it
+/// needs them.
+///
+/// [`PartialEq`] is derived only under `cfg(test)`. It lets intake's tests compare
+/// what intake decided against an expected request; production never compares
+/// requests, so equality is not part of what the request offers its callers.
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ExtractionRunRequest {
     selection_inputs: RunSelectionInputs,
-    document_extraction: DocumentExtraction,
+    epub_cover_policy: Option<EpubCoverPolicy>,
+    image_write_policy: ImageWritePolicy,
 }
 
 impl ExtractionRunRequest {
@@ -45,8 +53,6 @@ impl ExtractionRunRequest {
         epub_cover_policy: Option<EpubCoverPolicy>,
         image_write_policy: ImageWritePolicy,
     ) -> Self {
-        let image_write_pipeline = ImageWritePipeline::new(image_write_policy);
-
         Self {
             selection_inputs: RunSelectionInputs {
                 inputs,
@@ -54,16 +60,21 @@ impl ExtractionRunRequest {
                 output,
                 epub_filter,
             },
-            document_extraction: DocumentExtraction::new(epub_cover_policy, image_write_pipeline),
+            epub_cover_policy,
+            image_write_policy,
         }
     }
 }
 
 /// What the run hands Document selection, apart from cover intent.
 ///
-/// Cover intent is absent on purpose: [`run`] reads it from the request's own
-/// Document extraction, so it can never disagree with the extraction that
-/// honours it.
+/// Cover intent is absent on purpose: [`run`] reads it from the Document
+/// extraction it builds from the request's policies, so it can never disagree
+/// with the extraction that honours it.
+///
+/// [`PartialEq`] is test-only for the reason given on [`ExtractionRunRequest`].
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 struct RunSelectionInputs {
     inputs: Vec<PathBuf>,
     recursive: bool,
@@ -78,17 +89,25 @@ struct RunSelectionInputs {
 /// run fallible or stop later documents. The final observation carries the same
 /// outcome returned by this operation, and nothing is observed afterward.
 ///
-/// This entry is the production composition: it unpacks the request and runs it
-/// against the real filesystem, real EPUB files and the request's own Document
-/// extraction. The sequencing itself lives in [`run_with`].
+/// This entry is the production composition: it unpacks the request, builds
+/// Document extraction from the request's policies, and runs it against the real
+/// filesystem and real EPUB files. The sequencing itself lives in [`run_with`].
 pub fn run(
     request: ExtractionRunRequest,
     observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {
     let ExtractionRunRequest {
         selection_inputs,
-        document_extraction,
+        epub_cover_policy,
+        image_write_policy,
     } = request;
+    // The request carries policies rather than the modules built from them, so
+    // that what intake decided stays inspectable; the collaborators exist only
+    // from here on.
+    let document_extraction = DocumentExtraction::new(
+        epub_cover_policy,
+        ImageWritePipeline::new(image_write_policy),
+    );
     // Both facts are read from their single owner here, before the inner
     // function receives anything that can extract, so they are fixed at the
     // moment the run begins rather than cached in the request (ADR-0006,

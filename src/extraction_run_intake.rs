@@ -160,7 +160,7 @@ pub enum PreRunNotice {
 
 /// Intake result containing one executable request and its ordered pre-run notices.
 pub struct PreparedExtractionRun {
-    /// Opaque request consumed by the Extraction run exactly once.
+    /// Plain-data request consumed by the Extraction run exactly once.
     pub request: ExtractionRunRequest,
     /// Ordered pre-run facts for adapter rendering.
     pub notices: Vec<PreRunNotice>,
@@ -236,8 +236,8 @@ pub fn prepare(
     };
 
     // Intake selects all three Image write policy ingredients, so it assembles the
-    // policy here and hands the finished value over. The request wraps it in the
-    // Image write pipeline itself, which keeps pipeline types out of intake.
+    // policy here and hands the finished value over. The request keeps it as a
+    // value; the Extraction run builds the Image write pipeline from it.
     let image_write_policy = ImageWritePolicy::new(allowed_formats, conversion, gif_output);
 
     let request = ExtractionRunRequest::new(
