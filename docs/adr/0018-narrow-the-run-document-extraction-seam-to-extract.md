@@ -1,5 +1,16 @@
 # Narrow the Extraction run's Document extraction seam to extract
 
+> **Implementation note (2026-10-29).** The decision below stands. Since #98 the
+> Extraction run request holds its EPUB cover policy and Image write policy as plain
+> data rather than a built `DocumentExtraction`, so intake's tests can compare what
+> intake decided. `run` builds `DocumentExtraction` from those policies immediately
+> after destructuring the request, then asks it for cover intent and the Applicable
+> outcome facts, so "the request's own `DocumentExtraction`" below now means the one
+> `run` builds from the request. Nothing else changes: the request still retains
+> nothing derived from its policies, Document extraction still reports both facts, the
+> Image write policy still owns them, and cover intent still travels as its own
+> parameter.
+
 ADR-0016 gave the Extraction run a run-private trait with three methods: whether EPUB cover extraction is configured, the Applicable outcome facts, and `extract`. The first two are read exactly once each, at the top of the run's inner function, and are never asked again. The seam therefore carried two methods for two values fixed before the first document is selected. Both adapters only forwarded them. The production implementation forwarded all three methods to inherent methods of the same names, which is why it had to name `DocumentExtraction` explicitly at every call to avoid recursing into itself. The scripted adapter wrapped a real `DocumentExtraction`, built from a real `ImageWritePolicy` and, where conversion mattered, a real `ConversionPolicy`, solely to forward the two facts back. Of the fourteen run tests that use it, eleven built an Image write policy only to forward its defaults. The seam now covers per-document extraction alone. `run` asks the request's own `DocumentExtraction` for cover intent and the Applicable outcome facts once, and hands both to the inner function as plain values, before the inner function receives anything that can extract.
 
 ADR-0006's paragraph on Applicable outcome facts is not overturned, and this is the part a later reader is most likely to misread. It kept the chain from the Extraction run through Document extraction to the Image write policy, and it rejected caching the two facts when the request is built, because that copy would have to be kept correct by construction. Both still hold. The request retains nothing derived from its policies, Document extraction is still the module that reports the facts, and the Image write policy is still their single owner. What changes is only the transport between `run` and the inner function. ADR-0016's third paragraph treated a value reaching the inner function as that construction-time copy, and that is the step superseded here. The facts are read from their owner at the moment the run begins, both policies are immutable for the run, and the inner function consumes each fact before any document is extracted, so there is nothing a copy could fall out of step with. The rule ADR-0006 recorded about cover intent also stands. Cover intent is classification input rather than an Applicable outcome fact group, so it reaches the inner function as its own parameter and does not ride inside the Applicable outcome facts.
