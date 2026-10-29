@@ -19,7 +19,12 @@ use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
 use self::emission::ImageFileEmission;
 
 /// Valid per-run choices interpreted by the Image write pipeline.
+///
+/// [`PartialEq`] is derived only under `cfg(test)`, so that Extraction run
+/// intake's tests can compare the policy intake built; production never compares
+/// policies.
 #[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub(crate) struct ImageWritePolicy {
     allowed_formats: HashSet<ImageFormat>,
     conversion: Option<ConversionPolicy>,
