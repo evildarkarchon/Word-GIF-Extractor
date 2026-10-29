@@ -2,15 +2,9 @@
 //! Extraction run request.
 
 use super::*;
-use crate::extraction_run::run;
-use crate::extraction_run_observation::{ExtractionRunOutcome, ProducedOutput};
-use crate::test_support::{
-    SilentExtractionRunObserver, TempTestPath, no_fallback_directory, temp_test_dir, valid_png,
-    write_docx,
-};
+use crate::test_support::no_fallback_directory;
 use clap::Parser;
 use std::cell::Cell;
-use std::fs;
 
 /// Fallback directory the resolver in [`prepare_from`] hands to intake.
 ///
@@ -26,78 +20,63 @@ fn prepare_from<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
         .expect("extraction run intake should succeed")
 }
 
-/// Prepares and executes one archive-backed DOCX request through the public operation seam.
+/// Prepares a run that names its inputs, with a resolver that panics if asked.
 ///
-/// The returned guard owns the temporary directory. A caller binds it to a named
-/// variable, `_temp_dir` when unused, because `_` would drop it at once and remove
-/// the directory while the test is still reading its output.
-fn run_docx(
-    test_name: &str,
-    sources: Vec<(&str, Vec<u8>)>,
-    extra_args: &[&str],
-) -> (PreparedExtractionRun, TempTestPath, PathBuf) {
-    let temp_dir = temp_test_dir("intake", test_name);
-    let input_path = temp_dir.join("input.docx");
-    let output_dir = temp_dir.join("output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    let entries: Vec<(&str, &[u8])> = sources
-        .iter()
-        .map(|(name, data)| (*name, data.as_slice()))
-        .collect();
-    write_docx(&input_path, &entries);
-
-    let input = input_path.to_string_lossy().into_owned();
-    let output = output_dir.to_string_lossy().into_owned();
-    let mut args = vec!["test".to_string(), input, "--output".to_string(), output];
-    args.extend(extra_args.iter().map(|argument| (*argument).to_string()));
+/// Every request-shape test below names `book.epub`, so the fallback directory is
+/// never needed; [`no_fallback_directory`] makes a regression there loud.
+fn prepare_named<const N: usize>(args: [&str; N]) -> PreparedExtractionRun {
     let args = Args::try_parse_from(args).expect("test args should parse");
-    let prepared =
-        prepare(args, no_fallback_directory).expect("extraction run intake should succeed");
-
-    (prepared, temp_dir, output_dir)
+    prepare(args, no_fallback_directory).expect("extraction run intake should succeed")
 }
 
-/// Executes one intake-produced request exactly once.
-fn execute(prepared: PreparedExtractionRun) -> ExtractionRunOutcome {
-    let mut observer = SilentExtractionRunObserver;
-    run(prepared.request, &mut observer)
+/// Builds the request intake should produce for a run naming only `book.epub`.
+///
+/// The request is compared whole, so a test also proves that the flags it passes
+/// changed nothing besides the policy it names. Recursion and the output
+/// directory are left at their no-flags values; the inputs test spells its own.
+fn expected_for_book(
+    epub_filter: EpubFilter,
+    epub_cover_policy: Option<EpubCoverPolicy>,
+    image_write_policy: ImageWritePolicy,
+) -> ExtractionRunRequest {
+    ExtractionRunRequest::new(
+        vec![PathBuf::from("book.epub")],
+        false,
+        None,
+        epub_filter,
+        epub_cover_policy,
+        image_write_policy,
+    )
 }
 
-/// Extracts produced-output facts from a semantic outcome.
-fn produced(outcome: ExtractionRunOutcome) -> ProducedOutput {
-    match outcome {
-        ExtractionRunOutcome::ProducedOutput(output) => output,
-        other => {
-            panic!("expected produced output, got {other:?}");
-        }
-    }
+/// The Image write policy of a run passing no format, conversion or GIF flags.
+fn accepting_formats(allowed_formats: HashSet<ImageFormat>) -> ImageWritePolicy {
+    ImageWritePolicy::new(allowed_formats, None, None)
 }
 
 #[test]
 fn combines_positional_and_named_inputs() {
-    let temp_dir = temp_test_dir("intake", "combined-inputs");
-    let first = temp_dir.join("first.docx");
-    let second = temp_dir.join("second.docx");
-    let output_dir = temp_dir.join("output");
-    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-    write_docx(&first, &[("word/media/first.png", b"\x89PNG\r\n\x1A\n")]);
-    write_docx(&second, &[("word/media/second.png", b"\x89PNG\r\n\x1A\n")]);
-    let args = Args::try_parse_from([
+    let prepared = prepare_named([
         "test",
-        first.to_string_lossy().as_ref(),
+        "first.docx",
         "--input",
-        second.to_string_lossy().as_ref(),
+        "second.docx",
         "--output",
-        output_dir.to_string_lossy().as_ref(),
-    ])
-    .expect("test args should parse");
-    let prepared =
-        prepare(args, no_fallback_directory).expect("Extraction run intake should succeed");
+        "output",
+    ]);
 
     assert!(prepared.notices.is_empty());
-    let output = produced(execute(prepared));
-    assert_eq!(output.emitted_images(), 2);
-    assert_eq!(output.documents_with_output(), 2);
+    assert_eq!(
+        prepared.request,
+        ExtractionRunRequest::new(
+            vec![PathBuf::from("first.docx"), PathBuf::from("second.docx")],
+            false,
+            Some(PathBuf::from("output")),
+            EpubFilter::default(),
+            None,
+            accepting_formats(ImageFormat::all_set()),
+        )
+    );
 }
 
 #[test]
@@ -175,15 +154,7 @@ fn returns_defaulted_input_before_ignored_format_notices() {
 
 #[test]
 fn parses_allowed_formats_and_records_ignored_tokens() {
-    let (prepared, _temp_dir, output_dir) = run_docx(
-        "selected-formats",
-        vec![
-            ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
-            ("photo.bin", b"\xFF\xD8\xFF".to_vec()),
-            ("animation.bin", b"GIF89a".to_vec()),
-        ],
-        &["--formats", "png,unknown,jpeg"],
-    );
+    let prepared = prepare_named(["test", "book.epub", "--formats", "png,unknown,jpeg"]);
 
     assert_eq!(
         prepared.notices,
@@ -191,19 +162,19 @@ fn parses_allowed_formats_and_records_ignored_tokens() {
             format: "unknown".to_string(),
         }]
     );
-    assert_eq!(produced(execute(prepared)).emitted_images(), 2);
-    assert!(output_dir.join("input_1.png").exists());
-    assert!(output_dir.join("input_2.jpg").exists());
-    assert!(!output_dir.join("input_3.gif").exists());
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            accepting_formats(HashSet::from([ImageFormat::Png, ImageFormat::Jpg])),
+        )
+    );
 }
 
 #[test]
 fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
-    let (prepared, _temp_dir, output_dir) = run_docx(
-        "all-formats-fallback",
-        vec![("vector.bin", b"<svg/>".to_vec())],
-        &["--formats", "unknown"],
-    );
+    let prepared = prepare_named(["test", "book.epub", "--formats", "unknown"]);
 
     assert_eq!(
         prepared.notices,
@@ -211,59 +182,120 @@ fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
             format: "unknown".to_string(),
         }]
     );
-    assert_eq!(produced(execute(prepared)).emitted_images(), 1);
-    assert!(output_dir.join("input.svg").exists());
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            accepting_formats(ImageFormat::all_set()),
+        )
+    );
 }
 
 #[test]
 fn gif_only_overrides_format_selection() {
-    let (prepared, _temp_dir, output_dir) = run_docx(
-        "gif-only",
-        vec![
-            ("image.bin", b"\x89PNG\r\n\x1A\n".to_vec()),
-            ("animation.bin", b"GIF89a".to_vec()),
-        ],
-        &["--formats", "png,jpg", "--gif-only"],
-    );
+    let prepared = prepare_named(["test", "book.epub", "--formats", "png,jpg", "--gif-only"]);
 
-    assert_eq!(produced(execute(prepared)).emitted_images(), 1);
-    assert!(output_dir.join("input.gif").exists());
-    assert!(!output_dir.join("input.png").exists());
+    assert!(prepared.notices.is_empty());
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            accepting_formats(HashSet::from([ImageFormat::Gif])),
+        )
+    );
 }
 
+/// Verifies `--convert` alone builds the target's Conversion policy with no overrides.
+///
+/// What that policy's defaults are is Conversion policy's own subject; this pins
+/// only that intake passes no quality or lossless setting the user did not ask for.
 #[test]
 fn builds_default_conversion_policy() {
-    let (prepared, _temp_dir, output_dir) = run_docx(
-        "default-conversion",
-        vec![("image.png", valid_png())],
-        &["--convert", "jpg"],
-    );
+    let prepared = prepare_named(["test", "book.epub", "--convert", "jpg"]);
+    let conversion = ConversionPolicy::try_from(ConversionRequest {
+        target: ConversionTarget::Jpg,
+        quality: None,
+        lossless: false,
+    })
+    .expect("a bare JPEG conversion request should be valid");
 
-    let output = produced(execute(prepared));
-    assert_eq!(output.emitted_images(), 1);
+    assert!(prepared.notices.is_empty());
     assert_eq!(
-        output
-            .conversion()
-            .expect("conversion facts should apply")
-            .converted_images(),
-        1
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            ImageWritePolicy::new(ImageFormat::all_set(), Some(conversion), None),
+        )
     );
-    assert!(output_dir.join("input.jpg").exists());
 }
 
 #[test]
-fn builds_validated_epub_cover_extraction_policy() {
-    let (prepared, _temp_dir, _) = run_docx(
-        "cover-policy",
-        Vec::new(),
-        &["--cover-only", "--cover-fallback"],
-    );
+fn cover_only_builds_the_cover_only_policy() {
+    let prepared = prepare_named(["test", "book.epub", "--cover-only"]);
 
-    // The only input is a DOCX, which a cover run does not consider eligible, so
-    // nothing survives selection and the run reports no documents rather than no
-    // output. The assertion is about intake having built a cover policy at all:
-    // without one the same DOCX would have been selected and extracted.
-    assert_eq!(execute(prepared), ExtractionRunOutcome::NoDocuments);
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            Some(EpubCoverPolicy::CoverOnly),
+            accepting_formats(ImageFormat::all_set()),
+        )
+    );
+}
+
+#[test]
+fn cover_fallback_builds_the_cover_then_normal_images_policy() {
+    let prepared = prepare_named(["test", "book.epub", "--cover-only", "--cover-fallback"]);
+
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            Some(EpubCoverPolicy::CoverThenNormalImages),
+            accepting_formats(ImageFormat::all_set()),
+        )
+    );
+}
+
+#[test]
+fn title_and_author_reach_the_epub_filter() {
+    let prepared = prepare_named([
+        "test",
+        "book.epub",
+        "--title",
+        "Magic",
+        "--author",
+        "Tester",
+    ]);
+
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter {
+                title: Some("Magic".to_string()),
+                author: Some("Tester".to_string()),
+            },
+            None,
+            accepting_formats(ImageFormat::all_set()),
+        )
+    );
+}
+
+#[test]
+fn gif_output_reaches_the_image_write_policy() {
+    let prepared = prepare_named(["test", "book.epub", "--gif-output", "gifs"]);
+
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            ImageWritePolicy::new(ImageFormat::all_set(), None, Some(PathBuf::from("gifs"))),
+        )
+    );
 }
 
 #[test]
