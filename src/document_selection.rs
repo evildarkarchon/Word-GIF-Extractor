@@ -2,9 +2,9 @@
 
 mod discovery;
 mod document_identity;
-mod progress;
+mod phases;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::DocumentSearchSurface;
@@ -12,10 +12,8 @@ use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::ExtractionRunObserver;
 use crate::output_placement::OutputPlacement;
 
-use self::document_identity::{DedupeKey, DocumentIdentity, EpubFilterTerms};
-use self::progress::{
-    DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
-};
+use self::document_identity::DocumentIdentity;
+use self::phases::{DocumentDiscoveryProgress, DocumentSelectionLifecycle};
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -264,12 +262,8 @@ pub fn select_documents(
     } else {
         docx_files
     };
-    let filtered = if !options.epub_filter.is_empty() {
-        filter_epub_files(epubs, options.epub_filter, declarations, &mut lifecycle)
-    } else {
-        epubs
-    };
-    let deduplicated = deduplicate_epubs_by_declarations(filtered, declarations, &mut lifecycle);
+    let filtered = lifecycle.filtering(options.epub_filter, epubs, declarations);
+    let deduplicated = lifecycle.deduplicating(filtered, declarations);
 
     // The one join that makes the Selected documents: EPUBs first, then other
     // documents, each in encounter order. The order is kept on purpose rather than
@@ -388,89 +382,6 @@ fn skip_non_epub_candidates(
             lifecycle.skipped_non_epub_input(path);
         }
     }
-}
-
-/// Filters EPUB candidates by title and creator declarations.
-fn filter_epub_files(
-    epub_files: Vec<EpubCandidate>,
-    filter: &EpubFilter,
-    declarations: &dyn EpubDeclarationSource,
-    lifecycle: &mut DocumentSelectionLifecycle<'_>,
-) -> Vec<EpubCandidate> {
-    let terms = EpubFilterTerms::new(filter);
-
-    lifecycle.filtering(
-        filter,
-        epub_files,
-        |EpubCandidate { path, .. }, diagnostics| {
-            match declarations.acquire(&path) {
-                Ok(declarations)
-                    if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
-                        .matches(&terms) =>
-                {
-                    EpubFilterCheck::Matched(EpubCandidate {
-                        path,
-                        epub_declarations: Some(declarations),
-                    })
-                }
-                Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
-                Err(error) => {
-                    // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    diagnostics.declarations_unreadable(path, error.to_string());
-                    EpubFilterCheck::Rejected
-                }
-            }
-        },
-    )
-}
-
-/// Deduplicates EPUB files based on their creator and title declarations.
-///
-/// Keeps the first occurrence of each unique (author, title) combination.
-/// EPUBs without a non-blank creator or title declaration are deduplicated by filename.
-fn deduplicate_epubs_by_declarations(
-    epub_files: Vec<EpubCandidate>,
-    declarations: &dyn EpubDeclarationSource,
-    lifecycle: &mut DocumentSelectionLifecycle<'_>,
-) -> Vec<EpubCandidate> {
-    // Track the Document identity keys already seen. Keys are case-insensitive,
-    // and declared keys never equal filename keys.
-    let mut seen: HashSet<DedupeKey> = HashSet::new();
-
-    lifecycle.deduplicating(
-        epub_files,
-        |EpubCandidate {
-             path,
-             epub_declarations,
-         },
-         diagnostics| {
-            // ADR-0002: declarations retained by filtering are authoritative for the
-            // run, so deduplication asks the source only when it has none. From here
-            // on, `None` means selection could not read the declarations.
-            let epub_declarations =
-                match EpubDeclarations::retained_or_acquire(epub_declarations, &path, declarations)
-                {
-                    Ok(declarations) => Some(declarations),
-                    Err(error) => {
-                        diagnostics.declarations_unreadable(path.clone(), error.to_string());
-                        None
-                    }
-                };
-
-            let key = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
-                .dedupe_key();
-
-            // Only add if we haven't seen this combination before.
-            if seen.insert(key) {
-                EpubDeduplicationCheck::Unique(EpubCandidate {
-                    path,
-                    epub_declarations,
-                })
-            } else {
-                EpubDeduplicationCheck::Duplicate
-            }
-        },
-    )
 }
 
 /// Builds one selected EPUB from a filtered and deduplicated candidate.
