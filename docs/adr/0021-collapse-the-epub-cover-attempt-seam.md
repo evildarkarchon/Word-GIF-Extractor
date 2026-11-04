@@ -5,6 +5,16 @@
 > pipeline. The required-cover scope folds every step's facts forward with
 > `ImageWriteResult::append`, which did become private, so `prepend` had no caller left.
 
+> **Amended by ADR-0023 (2026-11-03).** The required-cover scope's attempt and
+> unreadable operations described below no longer return a `RequiredCoverDisposition`,
+> and that type is deleted. Each operation records its facts into the scope and returns
+> only an emission error; EPUB cover extraction asks the scope whether it has written a
+> cover, answered from the scope's own Emitted image tally. A usable cover now means a
+> written cover, so a filtered candidate hands over like an unreadable one. The rest of
+> the decision stands: EPUB cover extraction is still one concrete function over the
+> real session and the real pipeline, fallback still runs a fresh normal-image visitor
+> whose facts follow the cover attempts', and typestate is still rejected.
+
 ADR-0005 made EPUB cover extraction reach the archive and the Image write pipeline through an injected `CoverAttempts` trait, and made it generic over the Archive resource identity so its tests could pass a plain integer instead of opening an archive. That generic now costs more than it buys. Every catalog entry is copied twice on its way to a cover attempt. The EPUB adapter clones each `EpubResource` into an `EpubImagePlan`, because `resources()` borrows the EPUB resource archive session immutably while `acquire` borrows it mutably. It then clones the id and manifest path again into a `CoverCandidate`. One number is spelled three times along the way: the resource key's index, the plan index and the candidate's `position`. The production adapter documents a panic for a `position` that does not address its plan. The cover decision itself is about forty lines. To reach it a caller has to learn a two-method trait, a candidate type, a type parameter and four arguments, and the decision's own module folds Image write pipeline facts by hand, writing the same prepend-on-error block twice. EPUB cover extraction becomes one concrete function over the real session and the real pipeline, and the trait, its two adapters and the generic are deleted. This supersedes ADR-0005.
 
 ADR-0005's reason for the generic was that `ArchiveResourceIdentity` is branded and can be obtained only by opening an archive, which opens a file, so every test of ordering, exclusion and retry would have to write a ZIP and read files back. Half of that no longer holds. The EPUB resource archive's own tests already open real branded sessions from a temporary ZIP and hand-built `EpubResourceDeclaration`s, with no output directory. A test of a cover decision therefore needs a real session, which is cheap, and a temporary output directory, which every test that writes images already has. Each of the ten behaviours the `CannedAttempts` fake scripted can be produced with real inputs:

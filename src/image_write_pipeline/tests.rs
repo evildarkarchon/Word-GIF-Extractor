@@ -73,23 +73,25 @@ fn mime_source(
 
 /// Runs one required-cover attempt through the required-cover scope.
 ///
-/// Returns the attempt's disposition beside the facts the scope folded, so a
-/// per-attempt test can assert both. An emission failure comes back as the
-/// scope's failure, carrying whatever the attempt recorded before it.
+/// Returns the scope's answer to "has this scope written a cover?" after the
+/// attempt, beside the facts the scope folded, so a per-attempt test can assert
+/// both. An emission failure comes back as the scope's failure, carrying whatever
+/// the attempt recorded before it.
 fn attempt_required_cover(
     pipeline: &ImageWritePipeline,
     placement: &OutputPlacement,
     manifest_path: &str,
     mime: &str,
     reader: &mut dyn Read,
-) -> ImageWriteOutcome<(RequiredCoverDisposition, ImageWriteResult)> {
-    let mut disposition = None;
+) -> ImageWriteOutcome<(bool, ImageWriteResult)> {
+    let mut has_written_cover = None;
     let result = pipeline.write_required_cover(placement, |cover_scope| {
-        disposition = Some(cover_scope.attempt(manifest_path, mime, reader)?);
+        cover_scope.attempt(manifest_path, mime, reader)?;
+        has_written_cover = Some(cover_scope.has_written_cover());
         Ok(())
     })?;
     Ok((
-        disposition.expect("the cover scope should have run its one attempt"),
+        has_written_cover.expect("the cover scope should have run its one attempt"),
         result,
     ))
 }
@@ -108,7 +110,7 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     let original = vec![0x5a; 4096];
     let mut reader = Cursor::new(original.clone());
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&temp_dir, "sample"),
         "OPS/cover.png",
@@ -117,9 +119,10 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     )
     .expect("required cover write should succeed");
 
-    let RequiredCoverDisposition::Completed = disposition else {
-        panic!("a readable required cover should complete the cover decision");
-    };
+    assert!(
+        has_written_cover,
+        "a readable required cover should be a written cover"
+    );
     assert_eq!(result.tally.emitted(), 1);
     assert_eq!(result.tally.gifs_routed(), 0);
     assert_eq!(result.tally.converted(), 0);
@@ -145,22 +148,25 @@ fn required_cover_defaults_unidentified_evidence_to_jpeg_and_emits_it() {
     assert!(!temp_dir.join("sample.png").exists());
 }
 
-/// Pins that a completed discovery is a *final* cover decision.
+/// Pins that a filtered cover leaves the cover search open.
 ///
 /// Discovery cannot produce this fact: it reports that the cover's format was
-/// filtered, and the mapping from that report to "stop looking for a cover"
-/// belongs to the pipeline. The pair below — completed is final, a failed
-/// acquisition is retryable — is the whole contract the EPUB cover retry loop is
-/// built on, which is why it stays here after the surrounding assertions moved
-/// down to Archive image discovery's own tests.
+/// filtered, and whether that leaves the scope without a written cover is the
+/// pipeline's. The pair below — a filtered cover and a failed acquisition both
+/// write nothing — is the whole contract the EPUB cover hand-over loop is built
+/// on, which is why it stays here after the surrounding assertions moved down to
+/// Archive image discovery's own tests.
+///
+/// Rewritten from the old rule, under which a filtered cover completed the cover
+/// decision and ended the search (ADR-0023).
 #[test]
-fn required_cover_completing_without_emission_is_a_final_outcome() {
+fn required_cover_filtered_without_emission_leaves_no_written_cover() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-filter");
     let pipeline = pipeline_accepting([ImageFormat::Png]);
     let mut reader = Cursor::new(vec![0xff; 4096]);
     reader.get_mut()[..3].copy_from_slice(b"\xFF\xD8\xFF");
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&temp_dir, "sample"),
         "OPS/cover.jpg",
@@ -169,24 +175,31 @@ fn required_cover_completing_without_emission_is_a_final_outcome() {
     )
     .expect("format filtering should be a normal cover outcome");
 
-    let RequiredCoverDisposition::Completed = disposition else {
-        panic!("a filtered cover should complete rather than retry");
-    };
+    assert!(
+        !has_written_cover,
+        "a filtered cover should hand over to the next candidate"
+    );
     assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::UnsupportedCoverFormat {
+            format: ImageFormat::Jpg,
+        }]
+    );
 }
 
-/// Pins that a failed acquisition leaves the cover decision open.
+/// Pins that a failed acquisition leaves the cover search open.
 ///
-/// The counterpart to the test above: the retry loop only tries another
-/// candidate because acquisition failure maps to this arm, so the arm is
-/// asserted rather than inferred from the warning it happens to carry.
+/// The counterpart to the test above: the hand-over loop only tries another
+/// candidate because a failed acquisition writes no cover, so the scope's answer
+/// is asserted rather than inferred from the warning it happens to carry.
 #[test]
 fn required_cover_acquisition_failure_permits_another_candidate() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-tail-failure");
     let pipeline = pipeline_accepting([ImageFormat::Jpg]);
     let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&temp_dir, "sample"),
         "OPS/cover.bin",
@@ -195,14 +208,15 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
     )
     .expect("a cover acquisition failure should be a typed outcome");
 
-    let RequiredCoverDisposition::Retry = disposition else {
-        panic!("a tail read failure should permit another cover candidate");
-    };
+    assert!(
+        !has_written_cover,
+        "a tail read failure should permit another cover candidate"
+    );
     assert_eq!(result.tally.emitted(), 0);
 }
 
 /// Proves an unsupported cover conversion still writes the cover, in its original
-/// format, as a conversion-skipped cover that completes the attempt.
+/// format, as a conversion-skipped cover that the scope reports as written.
 ///
 /// Rewritten from the old rule, under which the attempt completed without writing
 /// and with a cover-only warning variant (ADR-0023).
@@ -216,7 +230,7 @@ fn required_cover_conversion_skip_is_final_and_writes_the_original_bytes() {
     );
     let mut reader = Cursor::new(b"<svg/>".to_vec());
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&temp_dir, "sample"),
         "OPS/cover.svg",
@@ -225,9 +239,10 @@ fn required_cover_conversion_skip_is_final_and_writes_the_original_bytes() {
     )
     .expect("unsupported cover conversion should be a normal outcome");
 
-    let RequiredCoverDisposition::Completed = disposition else {
-        panic!("conversion skip should complete rather than retry");
-    };
+    assert!(
+        has_written_cover,
+        "a conversion-skipped cover should be a written cover"
+    );
     assert_eq!(result.tally.covers(), 1);
     assert_eq!(result.tally.conversion_skipped(), 1);
     assert_eq!(
@@ -256,7 +271,7 @@ fn required_cover_conversion_failure_is_final_and_writes_the_original_bytes() {
     let corrupt_png = b"\x89PNG\r\n\x1A\ninvalid";
     let mut reader = Cursor::new(corrupt_png.to_vec());
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&temp_dir, "sample"),
         "OPS/cover.png",
@@ -265,9 +280,10 @@ fn required_cover_conversion_failure_is_final_and_writes_the_original_bytes() {
     )
     .expect("cover conversion failure should be a normal outcome");
 
-    let RequiredCoverDisposition::Completed = disposition else {
-        panic!("conversion failure should complete rather than retry");
-    };
+    assert!(
+        has_written_cover,
+        "a cover written after a failed conversion should be a written cover"
+    );
     assert_eq!(result.tally.covers(), 1);
     assert_eq!(result.tally.conversion_skipped(), 1);
     assert!(matches!(
@@ -290,7 +306,7 @@ fn required_gif_cover_routes_without_conversion() {
     );
     let mut reader = Cursor::new(b"GIF89a".to_vec());
 
-    let (disposition, result) = attempt_required_cover(
+    let (has_written_cover, result) = attempt_required_cover(
         &pipeline,
         &OutputPlacement::new(&output_dir, "sample"),
         "OPS/cover.gif",
@@ -299,9 +315,10 @@ fn required_gif_cover_routes_without_conversion() {
     )
     .expect("routed required GIF should be emitted");
 
-    let RequiredCoverDisposition::Completed = disposition else {
-        panic!("a routed cover should complete");
-    };
+    assert!(
+        has_written_cover,
+        "a cover routed to the GIF destination should be a written cover"
+    );
     assert_eq!(result.tally.emitted(), 1);
     assert_eq!(result.tally.gifs_routed(), 1);
     assert_eq!(result.tally.converted(), 0);
@@ -1049,7 +1066,8 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
     ));
 }
 
-/// Proves an unavailable cover payload is a retry that carries its acquisition warning.
+/// Proves an unavailable cover payload leaves no written cover and carries its
+/// acquisition warning.
 ///
 /// Nothing is read or written: the adapter could not open the payload, so the
 /// pipeline records why and leaves the next candidate to EPUB cover extraction.
@@ -1057,18 +1075,21 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
 fn unavailable_required_cover_retries_with_its_acquisition_warning() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-unavailable");
     let pipeline = pipeline_accepting(ImageFormat::all_set());
-    let mut outcome = None;
+    let mut has_written_cover = None;
 
     let result = pipeline
         .write_required_cover(&OutputPlacement::new(&temp_dir, "sample"), |cover_scope| {
-            outcome = Some(cover_scope.unreadable("OPS/cover.jpg", "entry is missing"));
+            cover_scope.unreadable("OPS/cover.jpg", "entry is missing");
+            has_written_cover = Some(cover_scope.has_written_cover());
             Ok(())
         })
         .expect("an unavailable required cover should not fail the cover scope");
 
-    let Some(RequiredCoverDisposition::Retry) = outcome else {
-        panic!("an unavailable required cover should leave the cover decision open");
-    };
+    assert_eq!(
+        has_written_cover,
+        Some(false),
+        "an unavailable required cover should leave the cover search open"
+    );
     assert_eq!(
         result.warnings,
         vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {

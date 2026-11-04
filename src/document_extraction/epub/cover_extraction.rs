@@ -1,21 +1,21 @@
-//! EPUB cover extraction: candidate ordering, identity exclusion, retry, and fallback.
+//! EPUB cover extraction: candidate ordering, identity exclusion, hand-over, and fallback.
 //!
 //! One concrete function, [`extract_required_cover`], over the real EPUB resource
 //! archive catalog and payload reader and the real Image write pipeline. It decides
-//! which cover candidate to attempt and when to stop; the pipeline's required-cover
-//! scope folds every fact the sequence produces. Fallback runs the sibling
-//! normal-image traversal, so cover extraction never calls its parent.
+//! which cover candidate to attempt and when to stop, by asking the pipeline's
+//! required-cover scope whether it has written a cover; the scope folds every fact
+//! the sequence produces. Fallback runs the sibling normal-image traversal, so cover
+//! extraction never calls its parent.
 //!
 //! ADR-0021 records why this is no longer generic over the Archive resource identity
-//! behind an injected attempt seam, as ADR-0005 had it.
+//! behind an injected attempt seam, as ADR-0005 had it. ADR-0023 records why a
+//! usable cover means a written cover.
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use crate::document_extraction::EpubCoverPolicy;
-use crate::image_write_pipeline::{
-    ImageWriteOutcome, ImageWritePipeline, RequiredCoverDisposition,
-};
+use crate::image_write_pipeline::{ImageWriteOutcome, ImageWritePipeline};
 use crate::output_placement::OutputPlacement;
 
 use super::normal_images;
@@ -29,8 +29,9 @@ const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 /// The declared metadata cover precedes the first deterministic JPEG-family
 /// filename candidate. Archive resource identities are recorded before attempts,
 /// suppress aliases, and exclude every attempted payload from normal fallback.
-/// Only retry dispositions advance; every completed Image write decision is terminal.
-/// Fallback runs only when `cover_policy` asks for normal images after a cover.
+/// The search stops as soon as the cover scope reports a written cover; a candidate
+/// that writes nothing hands over to the next. When the candidates run out without a
+/// written cover, fallback runs only when `cover_policy` asks for normal images.
 ///
 /// # Errors
 ///
@@ -60,13 +61,13 @@ pub(super) fn extract_required_cover<'session>(
             let acquisition = payloads.acquire(candidate, |payload| {
                 cover_scope.attempt(candidate.manifest_path(), candidate.mime(), payload)
             })?;
-            let disposition = match acquisition {
-                ResourceAcquisition::Acquired(disposition) => disposition,
-                ResourceAcquisition::Unavailable(error) => {
-                    cover_scope.unreadable(candidate.manifest_path(), error)
-                }
-            };
-            if disposition == RequiredCoverDisposition::Completed {
+            if let ResourceAcquisition::Unavailable(error) = acquisition {
+                cover_scope.unreadable(candidate.manifest_path(), error);
+            }
+            // A usable cover means a written cover (ADR-0023): a filtered, an
+            // unreadable and a missing candidate all write nothing, so each hands over
+            // to the next candidate the same way, and only a written cover stops here.
+            if cover_scope.has_written_cover() {
                 return Ok(());
             }
         }

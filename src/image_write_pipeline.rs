@@ -247,19 +247,6 @@ impl<'policy> ImagePreparation<'policy> {
     }
 }
 
-/// Completion disposition for one required-cover candidate.
-///
-/// Fact-free: the facts an attempt produced are folded by the required-cover scope,
-/// so a disposition and its facts cannot disagree. It is named a disposition rather
-/// than an outcome because in this crate an outcome is a terminal, fact-carrying result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RequiredCoverDisposition {
-    /// Resource acquisition failed, so EPUB cover extraction may try another candidate.
-    Retry,
-    /// Image write policy reached a final emitting or non-emitting cover outcome.
-    Completed,
-}
-
 /// Immutable Image write pipeline configured for one Extraction run.
 ///
 /// It holds nothing but its policy, and stays a type of its own anyway, for the
@@ -335,11 +322,12 @@ impl ImageWritePipeline {
     /// finishes it, so finishing names the cover singularly after the placement's
     /// base name: a cover attempt never has a second image to number against.
     ///
-    /// Read failures return `Retry`, so EPUB cover extraction may try its next
-    /// candidate. Filtering and successful emission return `Completed`; a conversion
-    /// fallback is a successful emission, of the original bytes as a
-    /// conversion-skipped cover (ADR-0023). Both come back beside the attempt's own
-    /// facts, which [`RequiredCoverVisitor::attempt`] folds into its scope.
+    /// Returns only the attempt's facts: whether it wrote a cover is read off their
+    /// Emitted image tally, never off a second channel beside them (ADR-0023). A read
+    /// failure and a cover filtered out by the allowed formats write nothing, so EPUB
+    /// cover extraction hands over to its next candidate. A conversion fallback is a
+    /// successful emission, of the original bytes as a conversion-skipped cover.
+    /// [`RequiredCoverVisitor::attempt`] folds the facts into its scope.
     ///
     /// # Errors
     ///
@@ -351,19 +339,17 @@ impl ImageWritePipeline {
         manifest_path: &str,
         mime: &str,
         reader: &mut dyn Read,
-    ) -> ImageWriteOutcome<(RequiredCoverDisposition, ImageWriteResult)> {
+    ) -> ImageWriteOutcome {
         let source = ArchiveImageSource::required_cover(manifest_path, mime);
         let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         let mut result = ImageWriteResult::default();
         result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
-            ArchiveImageDiscoveryOutcome::Completed => {
-                return Ok((RequiredCoverDisposition::Completed, result));
-            }
-            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
-                return Ok((RequiredCoverDisposition::Retry, result));
-            }
+            // Neither writes a cover, and the tally says so: the warnings discovery
+            // recorded are the attempt's only facts.
+            ArchiveImageDiscoveryOutcome::Completed
+            | ArchiveImageDiscoveryOutcome::AcquisitionFailed => return Ok(result),
         };
 
         let prepared = prepare_image_for_write(image, &self.policy);
@@ -386,7 +372,7 @@ impl ImageWritePipeline {
                 error,
             });
         }
-        Ok((RequiredCoverDisposition::Completed, result))
+        Ok(result)
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
@@ -416,9 +402,10 @@ impl ImageWritePipeline {
 /// Scoped authority for one required EPUB cover attempt sequence.
 ///
 /// It folds the facts of every attempt, unreadable cover and fallback into one
-/// Image write outcome in the order they happen. Nothing stops an attempt after
-/// fallback or after a completed disposition: ADR-0021 rejected typestate here,
-/// because EPUB cover extraction's loop is the only caller and its tests pin the order.
+/// Image write outcome in the order they happen, and answers from those same facts
+/// whether the sequence has written a cover. Nothing stops an attempt after fallback
+/// or after a written cover: ADR-0021 rejected typestate here, because EPUB cover
+/// extraction's loop is the only caller and its tests pin the order.
 pub(crate) struct RequiredCoverVisitor<'pipeline, 'placement> {
     pipeline: &'pipeline ImageWritePipeline,
     placement: &'placement OutputPlacement,
@@ -428,8 +415,9 @@ pub(crate) struct RequiredCoverVisitor<'pipeline, 'placement> {
 impl RequiredCoverVisitor<'_, '_> {
     /// Discovers and writes one required cover from its raw source facts and payload.
     ///
-    /// Returns the attempt's fact-free disposition; its facts stay in this scope.
-    /// See [`ImageWritePipeline::write_required_cover`] for how the sequence ends.
+    /// The attempt's facts are folded into this scope; whether it wrote a cover is
+    /// answered afterwards by [`Self::has_written_cover`]. See
+    /// [`ImageWritePipeline::write_required_cover`] for how the sequence ends.
     ///
     /// # Errors
     ///
@@ -441,7 +429,7 @@ impl RequiredCoverVisitor<'_, '_> {
         manifest_path: &str,
         mime: &str,
         reader: &mut dyn Read,
-    ) -> Result<RequiredCoverDisposition> {
+    ) -> Result<()> {
         let outcome =
             self.pipeline
                 .attempt_required_cover(self.placement, manifest_path, mime, reader);
@@ -450,21 +438,26 @@ impl RequiredCoverVisitor<'_, '_> {
 
     /// Records a required cover whose payload the EPUB adapter could not acquire.
     ///
-    /// Always `Retry`: an unavailable candidate settles nothing about the cover, so
-    /// EPUB cover extraction may try its next candidate. The disposition is still
-    /// returned so the caller treats an unreadable cover and an attempt alike.
-    pub(crate) fn unreadable(
-        &mut self,
-        manifest_path: &str,
-        error: impl fmt::Display,
-    ) -> RequiredCoverDisposition {
+    /// An unavailable candidate writes nothing, so it leaves [`Self::has_written_cover`]
+    /// as it was and EPUB cover extraction moves on exactly as after an attempt that
+    /// wrote nothing.
+    pub(crate) fn unreadable(&mut self, manifest_path: &str, error: impl fmt::Display) {
         self.facts
             .warnings
             .push(ImageWriteWarning::archive_image_acquisition_failed(
                 manifest_path,
                 error,
             ));
-        RequiredCoverDisposition::Retry
+    }
+
+    /// Reports whether any step of this scope has written a cover.
+    ///
+    /// Answered from the scope's own folded Emitted image tally (covers recorded > 0),
+    /// so it can never disagree with the facts the scope returns. Every written cover
+    /// counts, whether converted, conversion-skipped or routed to the GIF destination;
+    /// a cover candidate that wrote nothing does not (ADR-0023).
+    pub(crate) fn has_written_cover(&self) -> bool {
+        self.facts.tally.covers() > 0
     }
 
     /// Runs normal-image fallback as a traversal against a fresh normal-image visitor.
@@ -481,27 +474,24 @@ impl RequiredCoverVisitor<'_, '_> {
         &mut self,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> Result<()> {
-        let outcome = self
-            .pipeline
-            .write_from(self.placement, traverse)
-            .map(|result| ((), result));
+        let outcome = self.pipeline.write_from(self.placement, traverse);
         self.fold(outcome)
     }
 
-    /// Appends one step's facts to this scope and hands back the step's value or error.
+    /// Appends one step's facts to this scope and hands back the step's error, if any.
     ///
     /// The single fold every step of the sequence goes through: a successful step's
     /// facts and a failed step's partial facts are both appended in the order they
-    /// happen, so the caller only ever sees the bare value or error.
+    /// happen, so the caller only ever sees success or the bare error.
     ///
     /// # Errors
     ///
     /// Returns the failed step's error once its partial facts are in this scope.
-    fn fold<T>(&mut self, outcome: ImageWriteOutcome<(T, ImageWriteResult)>) -> Result<T> {
+    fn fold(&mut self, outcome: ImageWriteOutcome) -> Result<()> {
         match outcome {
-            Ok((value, result)) => {
+            Ok(result) => {
                 self.facts.append(result);
-                Ok(value)
+                Ok(())
             }
             Err(failure) => {
                 self.facts.append(failure.partial);
