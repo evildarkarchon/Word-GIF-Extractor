@@ -364,11 +364,11 @@ fn a_filtered_declared_cover_hands_over_to_the_filename_candidate() {
 }
 
 #[test]
-fn an_unreadable_declared_cover_retries_the_filename_candidate() {
+fn an_unreadable_declared_cover_hands_over_to_the_filename_candidate() {
     let unreadable_cover = jpeg("uniquely corrupt declared cover");
     let filename_cover = jpeg("filename-cover");
     let fixture = CoverFixture::new(
-        "unreadable-declared-retries",
+        "unreadable-declared-hands-over",
         &[
             ("OEBPS/images/art.jpg", &unreadable_cover),
             ("OEBPS/images/cover.jpg", &filename_cover),
