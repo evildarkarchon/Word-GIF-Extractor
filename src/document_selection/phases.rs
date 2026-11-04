@@ -1,18 +1,25 @@
-//! Progress lifecycle and diagnostics for Document selection.
+//! Document selection's phases, their decisions, and every observation they emit.
 //!
 //! Document selection reports into the Extraction run observation stream
-//! directly. This module owns the phase lifecycle — which phases are active,
-//! their counters, and the guarantee that an active phase emits one initial
-//! running observation and exactly one finished observation. The EPUB filtering
-//! and deduplication phases also own their check loop, so each EPUB is recorded
-//! exactly once by construction.
+//! directly, and this module is the only place that reports. Each phase is one
+//! method that does its whole job. Discovery runs a caller-supplied walk,
+//! because it has no known total. EPUB filtering makes the filter match, and
+//! EPUB deduplication makes the dedupe-key decision. Each EPUB phase acquires or
+//! reuses declarations itself. A phase owns its activation rule and its
+//! counters, and an active phase emits one initial running observation and
+//! exactly one finished observation. Each EPUB phase records every EPUB exactly
+//! once, and emits that EPUB's diagnostics ahead of the running observation
+//! that records it. One loop body per phase, written that way, is what holds
+//! that order (ADR-0024).
 //!
 //! It defines no observation types; the Extraction run observation module owns
 //! every type a fact is carried in. It does name each fact it emits, one method
-//! per fact rather than one method taking any observation, so that neither a
-//! non-diagnostic nor a mismatched EPUB declaration purpose can reach the stream
-//! from here (ADR-0009, superseding ADR-0004's deliberate ignorance of which
-//! diagnostic was being emitted).
+//! per fact rather than one method taking any observation, so that no caller
+//! can put a non-diagnostic, or any fact this module does not name, on the
+//! stream (ADR-0009, superseding ADR-0004's deliberate ignorance of which
+//! diagnostic was being emitted). Each EPUB phase writes its declaration
+//! purpose as a literal at its single emission site. The tests that pin each
+//! phase's purpose keep that literal right, not the type system (ADR-0024).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -39,8 +46,7 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// Emits one absent requested input, outside any phase and never silenced.
     ///
     /// Requested-input classification runs before the discovery phase opens, so
-    /// this fact has no phase to be gated by; `DocumentSelectionLifecycle` holds
-    /// no active flag, which is what keeps it that way.
+    /// this fact belongs to no phase and is emitted whenever it occurs.
     pub(super) fn missing_input(&mut self, path: PathBuf) {
         self.observer
             .on_observation(ExtractionRunObservation::MissingInput { path });
@@ -49,8 +55,8 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// Emits one requested input skipped for ineligibility, outside any phase.
     ///
     /// Eligibility is decided after discovery has closed and before filtering
-    /// opens, so like the two facts around it this one has no phase to be gated
-    /// by. It is the only diagnostic in this module that reports a decision
+    /// opens, so like the two facts around it this one belongs to no phase. It is
+    /// the only diagnostic in this module that reports a decision
     /// rather than a failure to observe; see ADR-0011.
     pub(super) fn skipped_non_epub_input(&mut self, path: PathBuf) {
         self.observer
