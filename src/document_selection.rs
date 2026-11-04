@@ -2,7 +2,7 @@
 
 mod discovery;
 mod document_identity;
-mod progress;
+mod phases;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use crate::extraction_run_observation::ExtractionRunObserver;
 use crate::output_placement::OutputPlacement;
 
 use self::document_identity::DocumentIdentity;
-use self::progress::{DocumentDiscoveryProgress, DocumentSelectionLifecycle};
+use self::phases::{DocumentDiscoveryProgress, DocumentSelectionLifecycle};
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
