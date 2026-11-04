@@ -16,10 +16,12 @@
 
 use std::path::PathBuf;
 
+use crate::epub_declarations::EpubDeclarationSource;
 use crate::extraction_run_observation::{
     DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
 
+use super::document_identity::{DocumentIdentity, EpubFilterTerms};
 use super::{EpubCandidate, EpubFilter};
 
 /// Emits one observation only while its phase is active.
@@ -46,13 +48,6 @@ fn emit_when(
     if active {
         observer.on_observation(observation);
     }
-}
-
-/// Semantic result of checking one EPUB against an EPUB filter.
-pub(super) enum EpubFilterCheck {
-    /// The EPUB matched and continues through selection as this candidate.
-    Matched(EpubCandidate),
-    Rejected,
 }
 
 /// Semantic result of checking one EPUB during declaration deduplication.
@@ -145,24 +140,33 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         result
     }
 
-    /// Checks every EPUB against an EPUB filter and returns the matching candidates.
+    /// Filters EPUB candidates by title and creator declarations and returns the matches.
     ///
-    /// The phase is active exactly when there is at least one EPUB: an empty phase emits
-    /// nothing. An active phase emits one initial running observation, one running
-    /// observation after each check, and one finished observation. Diagnostics reported
-    /// by `check` precede the running observation that records its outcome, and carry
-    /// the filtering purpose without `check` naming it. Panic unwinding intentionally
-    /// skips the final observation.
+    /// The phase owns its whole activation rule: it is active exactly when `filter`
+    /// requests something and there is at least one EPUB. An empty filter returns
+    /// `epubs` unchanged, and an empty filter or an empty EPUB list emits nothing.
+    ///
+    /// Every EPUB's declarations are acquired from `declarations`, and the EPUB is kept
+    /// only when its Document identity matches the filter terms. A kept EPUB retains
+    /// the declarations it was matched with, for deduplication to reuse (ADR-0002).
+    /// `filter` is taken raw rather than as terms, because the running observation
+    /// reports the user's spelling, not the case-folded terms.
+    ///
+    /// An active phase emits one initial running observation, one running observation
+    /// after each EPUB, and one finished observation. An EPUB's unreadable-declarations
+    /// diagnostic precedes the running observation that records it. Panic unwinding
+    /// intentionally skips the final observation.
     pub(super) fn filtering(
         &mut self,
         filter: &EpubFilter,
         epubs: Vec<EpubCandidate>,
-        mut check: impl FnMut(EpubCandidate, &mut EpubDeclarationDiagnostics<'_>) -> EpubFilterCheck,
+        declarations: &dyn EpubDeclarationSource,
     ) -> Vec<EpubCandidate> {
-        let total = epubs.len();
-        if total == 0 {
-            return Vec::new();
+        if filter.is_empty() || epubs.is_empty() {
+            return epubs;
         }
+        let total = epubs.len();
+        let terms = EpubFilterTerms::new(filter);
         let running = |checked, matching| ExtractionRunObservation::FilteringEpubs {
             title: filter.title.clone(),
             author: filter.author.clone(),
@@ -173,17 +177,28 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
 
         self.observer.on_observation(running(0, 0));
         let mut matching_epubs = Vec::new();
-        for (index, epub) in epubs.into_iter().enumerate() {
-            // A fresh reborrow per check lets the running observation after it use the observer again.
-            let outcome = check(
-                epub,
-                &mut EpubDeclarationDiagnostics::new(
-                    &mut *self.observer,
-                    EpubDeclarationPurpose::Filtering,
-                ),
-            );
-            if let EpubFilterCheck::Matched(epub) = outcome {
-                matching_epubs.push(epub);
+        for (index, EpubCandidate { path, .. }) in epubs.into_iter().enumerate() {
+            match declarations.acquire(&path) {
+                Ok(declarations)
+                    if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
+                        .matches(&terms) =>
+                {
+                    matching_epubs.push(EpubCandidate {
+                        path,
+                        epub_declarations: Some(declarations),
+                    });
+                }
+                Ok(_) => {} // File doesn't match filter, skip.
+                Err(error) => {
+                    // Filtering cannot accept an EPUB whose requested declarations are unreadable.
+                    self.observer.on_observation(
+                        ExtractionRunObservation::UnreadableEpubDeclarations {
+                            path,
+                            purpose: EpubDeclarationPurpose::Filtering,
+                            detail: error.to_string(),
+                        },
+                    );
+                }
             }
             self.observer
                 .on_observation(running(index + 1, matching_epubs.len()));
