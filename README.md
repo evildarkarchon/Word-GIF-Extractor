@@ -52,19 +52,23 @@ word-image-extractor book.epub -f png,jpg
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
 | `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
-| `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when it has no cover |
+| `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when no cover is written, including when `--formats` filters it out |
 
 ## EPUB Covers
 
 `--cover-only` extracts one cover image per EPUB. It applies to EPUB files alone: `.docx` inputs are not eligible for a cover run and are skipped before extraction begins. A `.docx` you name on the command line is reported as skipped; one found while searching a directory is dropped without a message, the same way an EPUB that fails a title or author filter is.
 
-`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring `.docx` files back into a cover run.
+A cover is looked for in two places, in this order: the cover the EPUB declares, then a JPEG file named `cover` (such as `cover.jpg`). The first one written is the cover, and the search stops there. A candidate that writes nothing, because its format is filtered out by `--formats` or because it cannot be read, is passed over with a warning and the next one is tried.
+
+`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring `.docx` files back into a cover run. A usable cover is a cover file that was written, so a cover filtered out by `--formats` counts as no usable cover, and the fallback writes the EPUB's images that pass the filter. The fallback leaves out every cover already tried, so a passed-over cover is not written again as a normal image. Without `--cover-fallback`, an EPUB with no usable cover writes nothing, and its warnings say why.
 
 ## Conversion
 
 Use `--convert jpg`, `--convert png`, or `--convert webp` to encode extracted images in a target format. JPEG and lossy WebP default to quality 85; `--quality <1-100>` requests a specific quality, and `--lossless` requests lossless WebP.
 
 When an image already matches the conversion target, its original bytes are preserved unless an encoding setting was explicit. JPEG and WebP are re-encoded when `--quality` is supplied, WebP is re-encoded when `--lossless` is supplied, and matching PNG files are always preserved.
+
+An image that cannot be converted, because its format is not supported for conversion (such as SVG) or its data cannot be decoded, is kept in its original format, with a warning naming the image. The same applies to an EPUB cover with `--cover-only`: a cover that cannot be converted is kept in its original format, still counts as the cover, and is counted among the summary's skipped conversions.
 
 ## Output Naming
 

@@ -49,7 +49,7 @@ The document-local failure attached to a failed Document extraction outcome. It 
 _Avoid_: Image write failure, raw anyhow error
 
 **EPUB cover policy**:
-The per-run choice to extract a required EPUB cover instead of normal document images, and whether an EPUB without a usable cover falls back to normal images. Its absence is what asks for normal images, so a run seeking no covers carries no cover policy at all and cover behaviour reaches only the document kind that has covers. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
+The per-run choice to extract a required EPUB cover instead of normal document images, and whether an EPUB without a usable cover falls back to normal images. A usable cover is a cover file that was written; a cover candidate whose Image format was filtered out, whose payload could not be read, or that is missing is not one. Its absence is what asks for normal images, so a run seeking no covers carries no cover policy at all and cover behaviour reaches only the document kind that has covers. It excludes Image formats, conversion, GIF routing, and Image file emission choices, which belong to Image write policy.
 _Avoid_: Document extraction policy, cover flags, extraction booleans
 
 **Document selection**:
@@ -93,7 +93,7 @@ The project policy for turning parsed user options into one ready-to-run extract
 _Avoid_: Argument normalization, options builder
 
 **Image write pipeline**:
-The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, the Emitted image tally, and special GIF routing.
+The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, the Emitted image tally, and special GIF routing. A conversion that cannot produce the requested bytes falls back the same way whatever the Image write purpose: the original bytes are emitted under their original Image format, as a conversion-skipped image.
 _Avoid_: Save helper, output utility
 
 **Image file emission**:
@@ -105,7 +105,7 @@ The valid per-run choices that govern how the Image write pipeline accepts and e
 _Avoid_: Extraction config, writer options
 
 **Image write purpose**:
-The role an archive image source is created with in the Image write pipeline: a normal image or a required EPUB cover. Every source in one set shares it, and it distinguishes cover-specific outcomes from per-run Image write policy.
+The role an archive image source is created with in the Image write pipeline: a normal image or a required EPUB cover. Every source in one set shares it. Apart from deciding which side of the Emitted image tally an image is entered under, it changes behaviour only in Archive image discovery — what an unidentified Image format means, and whether a filtered one warns — and never conversion or Image file emission.
 _Avoid_: Write mode, archive image purpose, extraction kind
 
 **Emitted image role**:
@@ -117,7 +117,7 @@ The record of emitted images in which every image is entered exactly once, under
 _Avoid_: Image write counts, emitted-image totals, output purpose, counters
 
 **EPUB cover extraction**:
-The EPUB-only responsibility for identifying and ordering cover candidates and turning them into one required-cover outcome, including acquisition retry, avoiding repeated attempts at the same Archive resource identity, cover-specific Image format and Conversion policy, and optional fallback to normal images. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
+The EPUB-only responsibility for identifying and ordering cover candidates, handing over from each one that writes no cover to the next, avoiding repeated attempts at the same Archive resource identity, and, when no candidate writes a usable cover, optionally falling back to normal images. A usable cover is a cover file that was written, so the first one written ends the search, and an EPUB falls back exactly when none was. It excludes EPUB declaration acquisition, archive resource reading mechanics, and Image file emission.
 _Avoid_: Cover pipeline, cover selection, cover helper
 
 **Cover candidate**:
@@ -145,5 +145,5 @@ The project-normalized identity of image bytes used to decide whether an image i
 _Avoid_: Raw extension, MIME type, detected kind
 
 **Conversion policy**:
-The valid target encoding requested for extracted images, including only the settings meaningful to that target and whether matching source bytes should be preserved. It excludes GIF routing and batch-versus-cover fallback behavior.
+The valid target encoding requested for extracted images, including only the settings meaningful to that target and whether matching source bytes should be preserved. An image it cannot convert, a required EPUB cover included, is emitted in its original bytes, so its fallback does not depend on the Image write purpose. It excludes GIF routing.
 _Avoid_: Conversion flags, conversion options
