@@ -542,7 +542,7 @@ fn multiple_sources_keep_discovery_warnings_before_conversion_warnings() {
                 format: ImageFormat::Png,
             },
             ImageWriteWarning::ConversionSkipped {
-                base_name: "sample".to_string(),
+                source_name: "media/first.svg".to_string(),
                 format: ImageFormat::Svg,
             },
         ]
@@ -682,7 +682,7 @@ fn normal_conversion_skip_writes_original_and_preserves_warning_order() {
                 format: ImageFormat::Svg,
             },
             ImageWriteWarning::ConversionSkipped {
-                base_name: "sample".to_string(),
+                source_name: "media/image.svg".to_string(),
                 format: ImageFormat::Svg,
             },
         ]
@@ -712,8 +712,8 @@ fn normal_conversion_failure_writes_original_and_counts_skip() {
     assert_eq!(result.tally.conversion_skipped(), 1);
     assert!(matches!(
         &result.warnings[..],
-        [ImageWriteWarning::ConversionFailed { base_name, detail }]
-            if base_name == "sample" && detail == "Failed to decode image"
+        [ImageWriteWarning::ConversionFailed { source_name, detail }]
+            if source_name == "image.png" && detail == "Failed to decode image"
     ));
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), original);
 }
@@ -892,9 +892,14 @@ fn decodable_png() -> Vec<u8> {
     encoded.into_inner()
 }
 
+/// The diagnostic name every [`accepted`] image carries, so a fallback test can
+/// check that preparation hands it back for the warning.
+const ACCEPTED_SOURCE_NAME: &str = "media/accepted.bin";
+
 /// Builds the accepted image preparation receives from Archive image discovery.
 fn accepted(data: &[u8], format: ImageFormat) -> AcceptedImage {
     AcceptedImage {
+        source_name: ACCEPTED_SOURCE_NAME.to_string(),
         data: data.to_vec(),
         format,
     }
@@ -973,10 +978,11 @@ fn preparation_falls_back_to_original_bytes_for_an_unsupported_source() {
     assert!(matches!(
         prepared,
         ImagePreparation::ConversionFellBack {
+            ref source_name,
             ref data,
             format: ImageFormat::Svg,
             reason: ConversionFallbackReason::Unsupported,
-        } if data == b"<svg/>"
+        } if source_name == ACCEPTED_SOURCE_NAME && data == b"<svg/>"
     ));
 }
 
@@ -989,10 +995,11 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
     assert!(matches!(
         prepared,
         ImagePreparation::ConversionFellBack {
+            ref source_name,
             ref data,
             format: ImageFormat::Png,
             reason: ConversionFallbackReason::Failed(ref detail),
-        } if data == MINIMAL_PNG && !detail.is_empty()
+        } if source_name == ACCEPTED_SOURCE_NAME && data == MINIMAL_PNG && !detail.is_empty()
     ));
 }
 

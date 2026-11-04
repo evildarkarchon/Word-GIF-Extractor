@@ -155,7 +155,7 @@ fn failed_extraction_retains_document_extraction_facts() {
 }
 
 #[test]
-fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phase_order() {
+fn docx_warning_bodies_keep_source_format_detail_multiplicity_and_phase_order() {
     let temp_dir = temp_test_dir("document-extraction", "docx-warning-bodies");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
@@ -195,10 +195,55 @@ fn docx_warning_bodies_keep_source_format_base_name_detail_multiplicity_and_phas
         warning_messages(&facts),
         vec![
             "Magic detection failed for word/media/extension.png; falling back to .png extension",
-            "Skipping conversion for sample (png format not supported for conversion)",
-            "Conversion failed for image in sample: Failed to decode image",
-            "Conversion failed for image in sample: Failed to decode image",
-            "Skipping conversion for sample (svg format not supported for conversion)",
+            "Skipping conversion for word/media/extension.png (png format not supported for conversion)",
+            "Conversion failed for word/media/corrupt-one.png: Failed to decode image",
+            "Conversion failed for word/media/corrupt-two.png: Failed to decode image",
+            "Skipping conversion for word/media/vector.svg (svg format not supported for conversion)",
+        ]
+    );
+}
+
+/// Verifies that two EPUB normal images that both fail conversion give two warnings
+/// that tell the images apart, because each names its source image rather than the
+/// document both share.
+#[test]
+fn epub_normal_image_conversion_warnings_name_each_source_image() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-conversion-warning-sources");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("output");
+    let corrupt_png: &[u8] = b"\x89PNG\r\n\x1A\nnot an image at all";
+    write_epub_fixture(
+        &input_path,
+        &[
+            ("first", "images/first.png", "image/png", None),
+            ("second", "images/second.png", "image/png", None),
+        ],
+        &[
+            ("OEBPS/images/first.png", corrupt_png),
+            ("OEBPS/images/second.png", corrupt_png),
+        ],
+    );
+    let extraction = DocumentExtraction::new(
+        None,
+        ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Png]),
+            Some(conversion_policy(ConversionTarget::Jpg)),
+            None,
+        )),
+    );
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
+        panic!("EPUB extraction with failing conversions should complete");
+    };
+
+    assert_eq!(facts.get_tally().conversion_skipped(), 2);
+    assert_eq!(
+        warning_messages(&facts),
+        vec![
+            "Conversion failed for OEBPS/images/first.png: Failed to decode image",
+            "Conversion failed for OEBPS/images/second.png: Failed to decode image",
         ]
     );
 }

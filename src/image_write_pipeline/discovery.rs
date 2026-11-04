@@ -246,7 +246,11 @@ pub(super) fn discover_image(
     }
 
     DiscoveredImage {
-        outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage { data, format }),
+        outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage {
+            source_name: source.diagnostic_name().to_string(),
+            data,
+            format,
+        }),
         warnings,
     }
 }

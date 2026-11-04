@@ -207,24 +207,33 @@ fn declared_mime_is_normalized_before_it_is_looked_up() {
     assert_eq!(format_from_mime("text/plain"), None);
 }
 
-/// Returns the discovery outcome that accepts `data` as `format`, carrying `warnings`.
+/// Returns the discovery outcome that accepts `data` as `format` from the source
+/// named `source_name`, carrying `warnings`.
 ///
 /// Every accepted-source assertion below compares against one of these, so the
-/// payload is asserted as a value rather than read back out of a match arm.
+/// payload is asserted as a value rather than read back out of a match arm. The
+/// source name is spelled out by each test, which pins that discovery hands the
+/// source's diagnostic name on to image preparation.
 fn accepted_with(
+    source_name: &str,
     data: Vec<u8>,
     format: ImageFormat,
     warnings: Vec<ImageWriteWarning>,
 ) -> DiscoveredImage {
     DiscoveredImage {
-        outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage { data, format }),
+        outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage {
+            source_name: source_name.to_string(),
+            data,
+            format,
+        }),
         warnings,
     }
 }
 
-/// Returns the discovery outcome that accepts `data` as `format`, with no warning.
-fn accepted(data: Vec<u8>, format: ImageFormat) -> DiscoveredImage {
-    accepted_with(data, format, Vec::new())
+/// Returns the discovery outcome that accepts `data` as `format` from the source
+/// named `source_name`, with no warning.
+fn accepted(source_name: &str, data: Vec<u8>, format: ImageFormat) -> DiscoveredImage {
+    accepted_with(source_name, data, format, Vec::new())
 }
 
 /// Returns the discovery outcome that completes without emission and without a warning.
@@ -244,7 +253,14 @@ fn magic_evidence_outranks_a_conflicting_extension_and_mime() {
 
     // The empty warning list is half the point: the fallback warning belongs to
     // extension evidence alone, and a normal source's `.jpg` name never got to speak.
-    assert_eq!(discovered, accepted(MINIMAL_PNG.to_vec(), ImageFormat::Png));
+    assert_eq!(
+        discovered,
+        accepted(
+            "word/media/image.jpg",
+            MINIMAL_PNG.to_vec(),
+            ImageFormat::Png
+        )
+    );
 }
 
 #[test]
@@ -261,6 +277,7 @@ fn path_extension_outranks_mime_and_emits_the_fallback_warning() {
     assert_eq!(
         discovered,
         accepted_with(
+            "word/media/image.png",
             payload,
             ImageFormat::Png,
             vec![ImageWriteWarning::ExtensionFallback {
@@ -281,7 +298,10 @@ fn declared_mime_identifies_only_after_magic_and_extension_evidence_fail() {
 
     // `.bin` is not an image extension, so the extension rung is skipped rather
     // than failed — and MIME evidence emits no fallback warning of its own.
-    assert_eq!(discovered, accepted(payload, ImageFormat::Png));
+    assert_eq!(
+        discovered,
+        accepted("media/image.bin", payload, ImageFormat::Png)
+    );
 }
 
 #[test]
@@ -325,7 +345,10 @@ fn accepted_source_retains_its_evidence_prefix_and_appends_the_remainder() {
 
     let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
 
-    assert_eq!(discovered, accepted(original.clone(), ImageFormat::Png));
+    assert_eq!(
+        discovered,
+        accepted("word/media/image.bin", original.clone(), ImageFormat::Png)
+    );
     assert_eq!(reader.position(), original.len() as u64);
 }
 
@@ -342,7 +365,10 @@ fn bom_prefixed_svg_ending_inside_the_window_is_accepted() {
 
     let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Svg]));
 
-    assert_eq!(discovered, accepted(svg, ImageFormat::Svg));
+    assert_eq!(
+        discovered,
+        accepted("word/media/vector.bin", svg, ImageFormat::Svg)
+    );
     // The payload ends exactly at the read boundary, so acceptance must not have
     // gone looking for a tail that is not there.
     assert_eq!(reader.position(), 1027);
@@ -376,6 +402,7 @@ fn required_cover_with_unidentified_evidence_continues_as_jpeg() {
     assert_eq!(
         discovered,
         accepted_with(
+            "OPS/cover.png",
             original.clone(),
             ImageFormat::Jpg,
             vec![ImageWriteWarning::CoverDefaultToJpeg {

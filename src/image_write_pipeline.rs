@@ -73,15 +73,19 @@ pub(crate) enum ImageWriteWarning {
     UnsupportedCoverFormat {
         format: ImageFormat,
     },
+    /// A normal image's conversion was unsupported. `source_name` is the source's
+    /// diagnostic name, so two skipped images in one document warn apart.
     ConversionSkipped {
-        base_name: String,
+        source_name: String,
         format: ImageFormat,
     },
     CoverConversionSkipped {
         format: ImageFormat,
     },
+    /// A normal image's conversion failed. `source_name` is the source's
+    /// diagnostic name, as for [`Self::ConversionSkipped`].
     ConversionFailed {
-        base_name: String,
+        source_name: String,
         detail: String,
     },
     CoverConversionFailed {
@@ -169,8 +173,14 @@ impl std::error::Error for ImageWriteFailure {
 /// Result of an Image write operation that retains partial facts on failure.
 pub(crate) type ImageWriteOutcome<T = ImageWriteResult> = std::result::Result<T, ImageWriteFailure>;
 
+/// One image Archive image discovery accepted, as image preparation receives it.
+///
+/// `source_name` is the source's diagnostic name, the same name acquisition and
+/// extension-fallback warnings use. It travels with the bytes so a conversion
+/// warning can name the image it is about; it never decides an output path.
 #[derive(Debug, PartialEq)]
 struct AcceptedImage {
+    source_name: String,
     data: Vec<u8>,
     format: ImageFormat,
 }
@@ -214,8 +224,10 @@ enum ImagePreparation<'policy> {
     /// The image is ready to emit in the role preparation decided.
     Prepared(PreparedImage<'policy>),
     /// The Conversion policy could not produce requested bytes; the original
-    /// bytes and the format to emit them under are returned unchanged.
+    /// bytes and the format to emit them under are returned unchanged, with the
+    /// source's diagnostic name for the warning the visitor records.
     ConversionFellBack {
+        source_name: String,
         data: Vec<u8>,
         format: ImageFormat,
         reason: ConversionFallbackReason,
@@ -508,9 +520,10 @@ impl RequiredCoverVisitor<'_, '_> {
 ///
 /// It holds one Image file emission for its whole traversal and stages every
 /// prepared image with it; naming and placement are emission's, not the visitor's.
+/// The visitor keeps no Output placement of its own: only Image file emission holds
+/// it (ADR-0022), and warning facts name source images rather than the placement.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
-    placement: &'placement OutputPlacement,
     facts: NormalImageFacts,
     emission: ImageFileEmission<'policy, 'placement>,
 }
@@ -520,7 +533,6 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     fn new(policy: &'policy ImageWritePolicy, placement: &'placement OutputPlacement) -> Self {
         Self {
             policy,
-            placement,
             facts: NormalImageFacts::default(),
             emission: ImageFileEmission::new(placement),
         }
@@ -545,18 +557,24 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
             ImagePreparation::Prepared(prepared) => prepared,
             // A normal image is still emitted when conversion falls back: its
             // original bytes go out as a conversion-skipped image with a warning.
+            // The warning names the source image, not the Output placement, so two
+            // fallbacks in one document stay distinguishable.
             ImagePreparation::ConversionFellBack {
+                source_name,
                 data,
                 format,
                 reason,
             } => {
-                let base_name = self.placement.base_name().to_string();
                 self.facts.conversion_warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => {
-                        ImageWriteWarning::ConversionSkipped { base_name, format }
-                    }
+                    ConversionFallbackReason::Unsupported => ImageWriteWarning::ConversionSkipped {
+                        source_name,
+                        format,
+                    },
                     ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::ConversionFailed { base_name, detail }
+                        ImageWriteWarning::ConversionFailed {
+                            source_name,
+                            detail,
+                        }
                     }
                 });
                 PreparedImage {
@@ -690,12 +708,14 @@ fn prepare_image_for_write(
             }
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
                 ImagePreparation::ConversionFellBack {
+                    source_name: image.source_name,
                     data: image.data,
                     format: original_format,
                     reason: ConversionFallbackReason::Unsupported,
                 }
             }
             Err(error) => ImagePreparation::ConversionFellBack {
+                source_name: image.source_name,
                 data: image.data,
                 format: image.format,
                 reason: ConversionFallbackReason::Failed(error.to_string()),
