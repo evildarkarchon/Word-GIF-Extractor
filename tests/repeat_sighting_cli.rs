@@ -10,7 +10,7 @@ mod support;
 
 use std::fs;
 
-use support::{run_captured, temp_test_dir, write_png_docx};
+use support::{run_captured, sorted_file_names, temp_test_dir, write_png_docx};
 
 /// Verifies a DOCX named directly and through its directory writes its image once.
 ///
@@ -34,19 +34,8 @@ fn writes_each_image_once_when_a_docx_is_named_and_reached_through_its_directory
     ]);
 
     result.expect("intake should accept a directory and a file inside it");
-    let mut written: Vec<_> = fs::read_dir(&output_dir)
-        .expect("output directory should exist after extraction")
-        .map(|entry| {
-            entry
-                .expect("output entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    written.sort();
     assert_eq!(
-        written,
+        sorted_file_names(&output_dir),
         ["report.png"],
         "each image should be written once, with no collision-suffixed copy"
     );

@@ -221,7 +221,7 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
 /// Rewritten from the old rule, under which the attempt completed without writing
 /// and with a cover-only warning variant (ADR-0023).
 #[test]
-fn required_cover_conversion_skip_is_final_and_writes_the_original_bytes() {
+fn required_cover_conversion_skip_is_a_written_cover_in_its_original_bytes() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-skip");
     let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
@@ -261,7 +261,7 @@ fn required_cover_conversion_skip_is_final_and_writes_the_original_bytes() {
 /// Rewritten from the old rule, under which the attempt completed without writing
 /// and with a cover-only warning variant (ADR-0023).
 #[test]
-fn required_cover_conversion_failure_is_final_and_writes_the_original_bytes() {
+fn required_cover_conversion_failure_is_a_written_cover_in_its_original_bytes() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-failure");
     let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
@@ -1072,7 +1072,7 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
 /// Nothing is read or written: the adapter could not open the payload, so the
 /// pipeline records why and leaves the next candidate to EPUB cover extraction.
 #[test]
-fn unavailable_required_cover_retries_with_its_acquisition_warning() {
+fn unavailable_required_cover_writes_no_cover_and_keeps_its_acquisition_warning() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-unavailable");
     let pipeline = pipeline_accepting(ImageFormat::all_set());
     let mut has_written_cover = None;

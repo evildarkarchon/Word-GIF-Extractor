@@ -43,6 +43,10 @@ fn normal_images_and_covers(facts: &DocumentExtractionFacts) -> (usize, usize) {
     (tally.normal_images(), tally.covers())
 }
 
+/// A payload whose magic bytes identify it as a PNG but which cannot be decoded, so
+/// it passes Archive image discovery and then fails conversion.
+const CORRUPT_PNG: &[u8] = b"\x89PNG\r\n\x1A\nnot an image at all";
+
 /// Obtains one extraction handoff through the production Document selection operation.
 fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument {
     let mut observer = SilentExtractionRunObserver;
@@ -160,13 +164,12 @@ fn docx_warning_bodies_keep_source_format_detail_multiplicity_and_phase_order() 
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.docx");
     let output_dir = temp_dir.join("output");
-    let corrupt_png = b"\x89PNG\r\n\x1A\nnot an image at all";
     write_docx(
         &input_path,
         &[
             ("word/media/extension.png", b"extension-only payload"),
-            ("word/media/corrupt-one.png", corrupt_png),
-            ("word/media/corrupt-two.png", corrupt_png),
+            ("word/media/corrupt-one.png", CORRUPT_PNG),
+            ("word/media/corrupt-two.png", CORRUPT_PNG),
             (
                 "word/media/vector.svg",
                 b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
@@ -212,7 +215,6 @@ fn epub_normal_image_conversion_warnings_name_each_source_image() {
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("sample.epub");
     let output_dir = temp_dir.join("output");
-    let corrupt_png: &[u8] = b"\x89PNG\r\n\x1A\nnot an image at all";
     write_epub_fixture(
         &input_path,
         &[
@@ -220,8 +222,8 @@ fn epub_normal_image_conversion_warnings_name_each_source_image() {
             ("second", "images/second.png", "image/png", None),
         ],
         &[
-            ("OEBPS/images/first.png", corrupt_png),
-            ("OEBPS/images/second.png", corrupt_png),
+            ("OEBPS/images/first.png", CORRUPT_PNG),
+            ("OEBPS/images/second.png", CORRUPT_PNG),
         ],
     );
     let extraction = DocumentExtraction::new(
@@ -558,11 +560,10 @@ fn epub_undecodable_cover_is_written_in_its_original_bytes_and_its_warning_names
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
     let input_path = temp_dir.join("failed.epub");
     let output_dir = temp_dir.join("output");
-    let corrupt_png: &[u8] = b"\x89PNG\r\n\x1A\nnot an image at all";
     write_epub_fixture(
         &input_path,
         &[("cover", "images/art.png", "image/png", Some("cover-image"))],
-        &[("OEBPS/images/art.png", corrupt_png)],
+        &[("OEBPS/images/art.png", CORRUPT_PNG)],
     );
     let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
@@ -587,7 +588,7 @@ fn epub_undecodable_cover_is_written_in_its_original_bytes_and_its_warning_names
     assert_eq!(file_names_in(&output_dir), ["Test.png"]);
     assert_eq!(
         fs::read(output_dir.join("Test.png")).expect("written cover should be readable"),
-        corrupt_png
+        CORRUPT_PNG
     );
 }
 

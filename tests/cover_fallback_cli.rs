@@ -5,10 +5,7 @@ mod support;
 use std::fs;
 use std::process::ExitCode;
 
-use support::{run_captured, temp_test_dir, test_jpeg, write_epub};
-
-/// A PNG whose magic bytes identify it, so `--formats jpg` filters it out as a cover.
-const PNG_COVER: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+use support::{MINIMAL_PNG, run_captured, sorted_file_names, temp_test_dir, test_jpeg, write_epub};
 
 /// Verifies that a cover filtered out by `--formats` is no usable cover, so a
 /// cover-only run with fallback writes the EPUB's JPEG normal images instead.
@@ -36,7 +33,9 @@ fn filtered_only_cover_falls_back_to_jpeg_normal_images() {
             ("second", "images/second.jpg", "image/jpeg", None),
         ],
         &[
-            ("OEBPS/images/art.png", PNG_COVER),
+            // The PNG's magic bytes identify it, so `--formats jpg` filters it out
+            // as a cover.
+            ("OEBPS/images/art.png", MINIMAL_PNG),
             ("OEBPS/images/first.jpg", &first_page),
             ("OEBPS/images/second.jpg", &second_page),
         ],
@@ -55,18 +54,10 @@ fn filtered_only_cover_falls_back_to_jpeg_normal_images() {
     let exit_code = result.expect("intake should accept a cover-only run with fallback");
     assert_eq!(exit_code, ExitCode::SUCCESS);
 
-    let mut written = fs::read_dir(&output_dir)
-        .expect("fallback should have created the output directory")
-        .map(|entry| {
-            entry
-                .expect("output entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect::<Vec<_>>();
-    written.sort();
-    assert_eq!(written, ["Fallback_1.jpg", "Fallback_2.jpg"]);
+    assert_eq!(
+        sorted_file_names(&output_dir),
+        ["Fallback_1.jpg", "Fallback_2.jpg"]
+    );
     assert_eq!(
         fs::read(output_dir.join("Fallback_1.jpg")).expect("first page should be readable"),
         first_page

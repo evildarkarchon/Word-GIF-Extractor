@@ -153,9 +153,13 @@ pub(super) struct DiscoveredImage {
 pub(super) enum ArchiveImageDiscoveryOutcome {
     /// The complete payload was acquired and accepted by Image write policy.
     Accepted(AcceptedImage),
-    /// Evidence produced a final non-emitting decision.
+    /// Evidence decided the source is not emitted: an unidentified normal image or
+    /// a format outside the requested set. Nothing is written for it, so a required
+    /// cover ending here hands over to the next cover candidate (ADR-0023).
     Completed,
-    /// Reading the source failed, permitting required-cover candidate retry.
+    /// Reading the source failed, recorded as an acquisition warning fact. Kept
+    /// apart from `Completed` because Archive image discovery reports the two
+    /// differently, though either one writes no cover and so hands over.
     AcquisitionFailed,
 }
 
