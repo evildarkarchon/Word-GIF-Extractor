@@ -24,32 +24,6 @@ use crate::extraction_run_observation::{
 use super::document_identity::{DocumentIdentity, EpubFilterTerms};
 use super::{EpubCandidate, EpubFilter};
 
-/// Emits one observation only while its phase is active.
-///
-/// The silence gate for Document discovery's four phase-scoped emissions, so an
-/// inactive discovery phase cannot be made to speak by one site forgetting to
-/// check. The EPUB filtering and deduplication phases need no gate: the
-/// lifecycle runs their check loop itself and returns before emitting anything
-/// when there is no EPUB to check, which is exactly when they are inactive.
-///
-/// The lifecycle diagnostics are not phase-scoped at all — they are emitted
-/// outside any phase, and `DocumentSelectionLifecycle` holds no active flag to
-/// pass here.
-///
-/// The observation is built before the flag is tested, so a silent phase still
-/// pays for constructing what it discards. That is bounded to two lifecycle
-/// snapshots: discovery is inactive exactly when no input was requested, so no
-/// per-item emission is reachable while silent.
-fn emit_when(
-    observer: &mut dyn ExtractionRunObserver,
-    active: bool,
-    observation: ExtractionRunObservation,
-) {
-    if active {
-        observer.on_observation(observation);
-    }
-}
-
 /// Semantic result of checking one EPUB during declaration deduplication.
 pub(super) enum EpubDeduplicationCheck {
     /// The EPUB is the first with its key and continues through selection as this candidate.
@@ -101,29 +75,27 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
 
     /// Runs the discovery body with structurally managed lifecycle observations.
     ///
-    /// An inactive phase still runs its body but emits nothing. A normally
-    /// returning active body always emits one initial and one final observation;
-    /// panic unwinding intentionally emits no synthetic final observation.
+    /// Every call opens the phase: the caller decides whether discovery runs at
+    /// all, and returns before calling this when no input was requested. A
+    /// normally returning body always emits one initial and one final
+    /// observation; panic unwinding intentionally emits no synthetic final
+    /// observation. The body takes a progress reporter rather than items because
+    /// discovery has no known total (ADR-0012).
     pub(super) fn discovering<R>(
         &mut self,
-        active: bool,
         scope: DocumentDiscoveryScope,
         body: impl FnOnce(&mut DocumentDiscoveryProgress<'_>) -> R,
     ) -> R {
-        emit_when(
-            self.observer,
-            active,
-            ExtractionRunObservation::DiscoveringDocuments {
+        self.observer
+            .on_observation(ExtractionRunObservation::DiscoveringDocuments {
                 scope,
                 discovered: 0,
-            },
-        );
+            });
 
         // Keep the reporter reborrow scoped so the final observation can use the observer again.
         let (result, discovered) = {
             let mut progress = DocumentDiscoveryProgress {
                 observer: &mut *self.observer,
-                active,
                 scope,
                 discovered: 0,
             };
@@ -131,11 +103,11 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
             (result, progress.discovered)
         };
 
-        emit_when(
-            self.observer,
-            active,
-            ExtractionRunObservation::DocumentDiscoveryFinished { scope, discovered },
-        );
+        self.observer
+            .on_observation(ExtractionRunObservation::DocumentDiscoveryFinished {
+                scope,
+                discovered,
+            });
 
         result
     }
@@ -306,7 +278,6 @@ impl<'observer> EpubDeclarationDiagnostics<'observer> {
 /// Phase-specific reporter for document discovery observations.
 pub(super) struct DocumentDiscoveryProgress<'observer> {
     observer: &'observer mut dyn ExtractionRunObserver,
-    active: bool,
     scope: DocumentDiscoveryScope,
     discovered: usize,
 }
@@ -314,23 +285,17 @@ pub(super) struct DocumentDiscoveryProgress<'observer> {
 impl DocumentDiscoveryProgress<'_> {
     /// Emits one inspection failure at its encounter position inside active discovery.
     pub(super) fn discovery_failed(&mut self, path: PathBuf, detail: String) {
-        emit_when(
-            self.observer,
-            self.active,
-            ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
-        );
+        self.observer
+            .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed { path, detail });
     }
 
     /// Records one discovered document and emits the resulting running observation.
     pub(super) fn document_discovered(&mut self) {
         self.discovered += 1;
-        emit_when(
-            self.observer,
-            self.active,
-            ExtractionRunObservation::DiscoveringDocuments {
+        self.observer
+            .on_observation(ExtractionRunObservation::DiscoveringDocuments {
                 scope: self.scope,
                 discovered: self.discovered,
-            },
-        );
+            });
     }
 }

@@ -65,12 +65,22 @@ impl RequestedInput {
 ///
 /// Every observation of the world is made through `surface`; this function makes
 /// no assumption that the world is a filesystem.
+///
+/// When no input is requested it returns no candidates and emits nothing: the
+/// discovery phase is never opened, so an empty request does not report an
+/// empty discovery (ADR-0024).
 pub(super) fn discover_documents(
     inputs: &[PathBuf],
     recursive: bool,
     surface: &dyn DocumentSearchSurface,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) -> Vec<DocumentCandidate> {
+    // The only case in which discovery stays silent. The command line cannot
+    // reach it, because Extraction run intake defaults to the current directory.
+    if inputs.is_empty() {
+        return Vec::new();
+    }
+
     let mut requested_inputs = Vec::new();
     for input_path in inputs {
         match RequestedInput::classify(input_path, surface) {
@@ -95,7 +105,7 @@ pub(super) fn discover_documents(
         DocumentDiscoveryScope::RequestedInputs
     };
 
-    lifecycle.discovering(!inputs.is_empty(), scope, |progress| {
+    lifecycle.discovering(scope, |progress| {
         let mut candidates = Vec::new();
         // Origin is recorded at the point the path was found, which is the only
         // place that still knows: an input the user named and the same file reached
