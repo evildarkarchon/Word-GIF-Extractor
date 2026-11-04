@@ -1,5 +1,11 @@
 # Select a path once, and split Document selection by document kind once
 
+> **Out-of-scope item taken up by ADR-0024 (2026-11-03).** The out-of-scope paragraph
+> below sets aside folding each EPUB phase's per-candidate check closure into the phase
+> that runs it. ADR-0024 records that change, which deletes the check enums and the
+> diagnostics handle. It does not change the single split, the one join, or the
+> repeat-sighting collapse recorded here.
+
 Document discovery yields one candidate per sighting, so a file the user named directly and also reached through a requested directory, or named twice, arrives at Document selection as two candidates that are equal as paths. Selection only ever removed duplicate EPUBs, through Document identity, so a DOCX sighted twice was selected twice and extracted twice. Image file emission never overwrites, so the second pass wrote a full second copy of the document's images under collision suffixes — `book_1.png` beside `book.png`, or `book_1_1.png` through `book_N_1.png` beside a numbered set — with no warning. Selection now treats a path as one candidate. Immediately after discovery, before any eligibility stage, a later sighting whose path equals an earlier one is dropped. The earlier sighting keeps its position, and it counts as requested if any of its sightings was requested, so ADR-0011's diagnostic for a named DOCX in an EPUB-only run still fires when the directory above it was listed first.
 
 "Equal" means equal component by component, as Rust's `Path` equality compares them and as discovery spelled them. Two stronger rules were considered and rejected. Document identity's path key was rejected because it is a rule about books, not files: for an EPUB whose declarations are unusable it is the case-folded file name, and applied to DOCX it would collapse `a/report.docx` and `b/report.docx`, which are different documents. Canonicalisation was rejected because selection cannot do it without a new operation on the Document search surface, ADR-0008's seam, with real-link conformance tests behind it, and because it would make "the same document" depend on how links resolve. The cost is known and accepted: `./dir/x.docx` and `dir/x.docx` remain two candidates.

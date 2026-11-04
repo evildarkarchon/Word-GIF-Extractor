@@ -11,8 +11,11 @@ Rust CLI (`word-image-extractor`) that extracts images from `.docx` and `.epub` 
 ```bash
 cargo build --release   # binary at target/release/word-image-extractor.exe
 cargo test              # in-crate unit tests + tests/ CLI integration tests
+cargo clippy --all-targets -- -D warnings   # lint gate; must pass, like cargo test
 cargo run -- "path/to/document.docx"
 ```
+
+A change is done only when both `cargo test` and `cargo clippy --all-targets -- -D warnings` pass. Fix clippy findings rather than silencing them; an `#[allow(clippy::…)]` needs a comment saying why.
 
 ## Architecture
 

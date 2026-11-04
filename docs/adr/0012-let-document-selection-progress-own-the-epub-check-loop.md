@@ -1,5 +1,17 @@
 # Let Document selection progress own the EPUB check loop
 
+> **Superseded in part by ADR-0024 (2026-11-03).** ADR-0024 was recorded ahead of
+> the change it governs, so until that change lands the code still has the shape
+> described here. The split of each EPUB phase into a loop and a per-EPUB check closure
+> is superseded, along with the `EpubDeclarationDiagnostics` handle the first note below
+> describes. Each EPUB phase becomes one lifecycle method that makes its own decision.
+> The check enums, the handle and the closures are deleted, and the module is renamed
+> from `progress` to `phases`. Discovery's `emit_when` silence gate, kept by the first
+> note below, is replaced by an early return when no input was requested. The rest still
+> stands: phase totals derived from the EPUBs given, an empty phase emitting nothing, each
+> EPUB recorded exactly once, the deleted completeness assertions, and discovery keeping
+> its body-closure shape.
+
 > **Reconciled with ADR-0008, ADR-0009 and ADR-0011.** This decision was made on a branch
 > alongside those three and is numbered after them because they reached `main` first. The
 > loop ownership recorded here stands, and it supersedes ADR-0009's retention of the
