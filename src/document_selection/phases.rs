@@ -5,18 +5,18 @@
 //! method that does its whole job. Discovery runs a caller-supplied walk,
 //! because it has no known total. EPUB filtering makes the filter match, and
 //! EPUB deduplication makes the dedupe-key decision. Each EPUB phase acquires or
-//! reuses declarations itself. A phase owns its activation rule and its
-//! counters, and an active phase emits one initial running observation and
-//! exactly one finished observation. Each EPUB phase records every EPUB exactly
+//! reuses declarations itself. Each EPUB phase owns its activation rule, while
+//! discovery is kept silent by its caller returning before it when no input was
+//! requested. A phase owns its counters, and every phase that opens emits one
+//! initial running observation and exactly one finished observation. Each EPUB phase records every EPUB exactly
 //! once, and emits that EPUB's diagnostics ahead of the running observation
 //! that records it. One loop body per phase, written that way, is what holds
 //! that order (ADR-0024).
 //!
 //! It defines no observation types; the Extraction run observation module owns
 //! every type a fact is carried in. It does name each fact it emits, one method
-//! per fact rather than one method taking any observation, so that no caller
-//! can put a non-diagnostic, or any fact this module does not name, on the
-//! stream (ADR-0009, superseding ADR-0004's deliberate ignorance of which
+//! per fact rather than one method taking any observation, so that a
+//! non-diagnostic cannot reach the stream from here (ADR-0009, superseding ADR-0004's deliberate ignorance of which
 //! diagnostic was being emitted). Each EPUB phase writes its declaration
 //! purpose as a literal at its single emission site. The tests that pin each
 //! phase's purpose keep that literal right, not the type system (ADR-0024).
@@ -80,7 +80,7 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// normally returning body always emits one initial and one final
     /// observation; panic unwinding intentionally emits no synthetic final
     /// observation. The body takes a progress reporter rather than items because
-    /// discovery has no known total (ADR-0012).
+    /// discovery has no known total (ADR-0012, kept by ADR-0024).
     pub(super) fn discovering<R>(
         &mut self,
         scope: DocumentDiscoveryScope,
@@ -286,7 +286,7 @@ pub(super) struct DocumentDiscoveryProgress<'observer> {
 }
 
 impl DocumentDiscoveryProgress<'_> {
-    /// Emits one inspection failure at its encounter position inside active discovery.
+    /// Emits one inspection failure at its encounter position inside the discovery phase.
     pub(super) fn discovery_failed(&mut self, path: PathBuf, detail: String) {
         self.observer
             .on_observation(ExtractionRunObservation::DocumentDiscoveryFailed { path, detail });
