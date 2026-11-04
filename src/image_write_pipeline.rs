@@ -73,22 +73,17 @@ pub(crate) enum ImageWriteWarning {
     UnsupportedCoverFormat {
         format: ImageFormat,
     },
-    /// A normal image's conversion was unsupported. `source_name` is the source's
-    /// diagnostic name, so two skipped images in one document warn apart.
+    /// An image's conversion was unsupported, whatever its Image write purpose.
+    /// `source_name` is the source's diagnostic name, so two skipped images in one
+    /// document warn apart.
     ConversionSkipped {
         source_name: String,
         format: ImageFormat,
     },
-    CoverConversionSkipped {
-        format: ImageFormat,
-    },
-    /// A normal image's conversion failed. `source_name` is the source's
-    /// diagnostic name, as for [`Self::ConversionSkipped`].
+    /// An image's conversion failed, whatever its Image write purpose.
+    /// `source_name` is the source's diagnostic name, as for [`Self::ConversionSkipped`].
     ConversionFailed {
         source_name: String,
-        detail: String,
-    },
-    CoverConversionFailed {
         detail: String,
     },
 }
@@ -215,32 +210,41 @@ struct PreparedImage<'policy> {
 
 /// Purpose-free result of applying Image write policy to one accepted image.
 ///
-/// Preparation reports a conversion fallback instead of resolving it, because
-/// what a fallback means depends on the Image write purpose: a normal image is
-/// still emitted in its original bytes, while a required cover is not emitted at
-/// all. Each visitor already knows its purpose, so each resolves the fallback
-/// itself and preparation never has to return a case its caller cannot reach.
-enum ImagePreparation<'policy> {
-    /// The image is ready to emit in the role preparation decided.
-    Prepared(PreparedImage<'policy>),
-    /// The Conversion policy could not produce requested bytes; the original
-    /// bytes and the format to emit them under are returned unchanged, with the
-    /// source's diagnostic name for the warning the visitor records.
-    ConversionFellBack {
-        source_name: String,
-        data: Vec<u8>,
-        format: ImageFormat,
-        reason: ConversionFallbackReason,
-    },
+/// There is always an image to emit: a conversion that cannot produce the
+/// requested bytes is resolved here, once, for every Image write purpose, by
+/// emitting the original bytes under their original Image format in the
+/// conversion-skipped role (ADR-0023). The warning that explains the fallback
+/// travels beside the image, and each visitor stages it into its own warning
+/// order; no visitor has a fallback case left to resolve.
+struct ImagePreparation<'policy> {
+    /// The image ready to emit, in the role preparation decided.
+    image: PreparedImage<'policy>,
+    /// The conversion-skipped or conversion-failed warning naming the source
+    /// image, present exactly when conversion fell back to the original bytes.
+    conversion_warning: Option<ImageWriteWarning>,
 }
 
-/// Why the Conversion policy fell back to an image's original bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConversionFallbackReason {
-    /// The source format cannot be decoded for conversion.
-    Unsupported,
-    /// Conversion was attempted and failed, with the error's detail.
-    Failed(String),
+impl<'policy> ImagePreparation<'policy> {
+    /// Wraps an image that preparation produced without a conversion fallback.
+    fn ready(image: PreparedImage<'policy>) -> Self {
+        Self {
+            image,
+            conversion_warning: None,
+        }
+    }
+
+    /// Resolves a conversion fallback: the original `data` is emitted under
+    /// `format` as a conversion-skipped image, beside `warning`.
+    fn fell_back(data: Vec<u8>, format: ImageFormat, warning: ImageWriteWarning) -> Self {
+        Self {
+            image: PreparedImage {
+                data,
+                format,
+                role: EmittedImageRole::ConversionSkipped,
+            },
+            conversion_warning: Some(warning),
+        }
+    }
 }
 
 /// Completion disposition for one required-cover candidate.
@@ -332,9 +336,10 @@ impl ImageWritePipeline {
     /// base name: a cover attempt never has a second image to number against.
     ///
     /// Read failures return `Retry`, so EPUB cover extraction may try its next
-    /// candidate. Filtering, conversion fallback and successful emission return
-    /// `Completed`. Both come back beside the attempt's own facts, which
-    /// [`RequiredCoverVisitor::attempt`] folds into its scope.
+    /// candidate. Filtering and successful emission return `Completed`; a conversion
+    /// fallback is a successful emission, of the original bytes as a
+    /// conversion-skipped cover (ADR-0023). Both come back beside the attempt's own
+    /// facts, which [`RequiredCoverVisitor::attempt`] folds into its scope.
     ///
     /// # Errors
     ///
@@ -361,29 +366,19 @@ impl ImageWritePipeline {
             }
         };
 
-        let prepared = match prepare_image_for_write(image, &self.policy) {
-            ImagePreparation::Prepared(prepared) => prepared,
-            // A required cover is never emitted in bytes the Conversion policy could
-            // not produce; the attempt completes with the cover-specific warning.
-            ImagePreparation::ConversionFellBack { format, reason, .. } => {
-                result.warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => {
-                        ImageWriteWarning::CoverConversionSkipped { format }
-                    }
-                    ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::CoverConversionFailed { detail }
-                    }
-                });
-                return Ok((RequiredCoverDisposition::Completed, result));
-            }
-        };
+        let prepared = prepare_image_for_write(image, &self.policy);
+        // A cover attempt has one source, so its conversion warning simply follows
+        // the discovery warnings already recorded; the cover is still emitted in
+        // its original bytes as a conversion-skipped cover (ADR-0023).
+        result.warnings.extend(prepared.conversion_warning);
         let mut emission = ImageFileEmission::new(placement);
         // This path is bound to the required-cover purpose, so it records covers
-        // whatever role the image took: a routed GIF cover is a routed cover.
+        // whatever role the image took: a routed GIF cover is a routed cover, and a
+        // conversion-skipped cover is a conversion-skipped cover.
         let tally = &mut result.tally;
         let mut record_cover = |role| tally.record_cover(tally_role(role));
         let emitted = emission
-            .stage(prepared, &mut record_cover)
+            .stage(prepared.image, &mut record_cover)
             .and_then(|()| emission.finish(record_cover));
         if let Err(error) = emitted {
             return Err(ImageWriteFailure {
@@ -553,44 +548,21 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
-        let prepared = match prepare_image_for_write(image, self.policy) {
-            ImagePreparation::Prepared(prepared) => prepared,
-            // A normal image is still emitted when conversion falls back: its
-            // original bytes go out as a conversion-skipped image with a warning.
-            // The warning names the source image, not the Output placement, so two
-            // fallbacks in one document stay distinguishable.
-            ImagePreparation::ConversionFellBack {
-                source_name,
-                data,
-                format,
-                reason,
-            } => {
-                self.facts.conversion_warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => ImageWriteWarning::ConversionSkipped {
-                        source_name,
-                        format,
-                    },
-                    ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::ConversionFailed {
-                            source_name,
-                            detail,
-                        }
-                    }
-                });
-                PreparedImage {
-                    data,
-                    format,
-                    role: EmittedImageRole::ConversionSkipped,
-                }
-            }
-        };
+        let prepared = prepare_image_for_write(image, self.policy);
+        // A conversion fallback's warning goes to the conversion phase, so every
+        // discovery warning in the traversal still precedes it. It names the
+        // source image, not the Output placement, so two fallbacks in one document
+        // stay distinguishable.
+        self.facts
+            .conversion_warnings
+            .extend(prepared.conversion_warning);
 
         // This visitor is bound to the normal-images purpose, so it records
         // normal images; the role-mapping function supplies only the role. The
         // binding holds because only this pipeline can build a required-cover
         // source, and it never hands one to a visitor.
         self.emission
-            .stage(prepared, normal_image_recorder(&mut self.facts.tally))
+            .stage(prepared.image, normal_image_recorder(&mut self.facts.tally))
     }
 
     /// Records a source that the document adapter could not open.
@@ -667,9 +639,11 @@ impl NormalImageFacts {
 
 /// Applies Image write policy's GIF routing and conversion to one accepted image.
 ///
-/// Purpose-free: a conversion that cannot produce requested bytes is reported as
-/// [`ImagePreparation::ConversionFellBack`] for the calling visitor to resolve,
-/// and no warning fact is produced here.
+/// Purpose-free: a conversion that cannot produce requested bytes falls back to
+/// the original bytes under the original Image format, in the conversion-skipped
+/// role, with one warning naming the source image. The same happens for a normal
+/// image and a required cover alike (ADR-0023), so a caller never resolves a
+/// fallback itself; it stages the image and the warning it is handed.
 fn prepare_image_for_write(
     image: AcceptedImage,
     policy: &ImageWritePolicy,
@@ -684,7 +658,7 @@ fn prepare_image_for_write(
 
     if let Some(conversion) = &policy.conversion {
         if let Some(destination) = routed_destination {
-            return ImagePreparation::Prepared(PreparedImage {
+            return ImagePreparation::ready(PreparedImage {
                 data: image.data,
                 format: image.format,
                 role: EmittedImageRole::RoutedGif(destination),
@@ -693,36 +667,40 @@ fn prepare_image_for_write(
 
         match conversion.convert(&image.data, image.format) {
             Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                ImagePreparation::Prepared(PreparedImage {
+                ImagePreparation::ready(PreparedImage {
                     data: converted_bytes,
                     format,
                     role: EmittedImageRole::Converted,
                 })
             }
             Ok(ConversionOutcome::PreservedMatchingSource) => {
-                ImagePreparation::Prepared(PreparedImage {
+                ImagePreparation::ready(PreparedImage {
                     data: image.data,
                     format: image.format,
                     role: EmittedImageRole::Preserved,
                 })
             }
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                ImagePreparation::ConversionFellBack {
-                    source_name: image.source_name,
-                    data: image.data,
-                    format: original_format,
-                    reason: ConversionFallbackReason::Unsupported,
-                }
+                ImagePreparation::fell_back(
+                    image.data,
+                    original_format,
+                    ImageWriteWarning::ConversionSkipped {
+                        source_name: image.source_name,
+                        format: original_format,
+                    },
+                )
             }
-            Err(error) => ImagePreparation::ConversionFellBack {
-                source_name: image.source_name,
-                data: image.data,
-                format: image.format,
-                reason: ConversionFallbackReason::Failed(error.to_string()),
-            },
+            Err(error) => ImagePreparation::fell_back(
+                image.data,
+                image.format,
+                ImageWriteWarning::ConversionFailed {
+                    source_name: image.source_name,
+                    detail: error.to_string(),
+                },
+            ),
         }
     } else {
-        ImagePreparation::Prepared(PreparedImage {
+        ImagePreparation::ready(PreparedImage {
             data: image.data,
             format: image.format,
             role: match routed_destination {

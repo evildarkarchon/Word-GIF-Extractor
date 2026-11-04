@@ -201,8 +201,13 @@ fn required_cover_acquisition_failure_permits_another_candidate() {
     assert_eq!(result.tally.emitted(), 0);
 }
 
+/// Proves an unsupported cover conversion still writes the cover, in its original
+/// format, as a conversion-skipped cover that completes the attempt.
+///
+/// Rewritten from the old rule, under which the attempt completed without writing
+/// and with a cover-only warning variant (ADR-0023).
 #[test]
-fn required_cover_conversion_skip_is_final_and_writes_nothing() {
+fn required_cover_conversion_skip_is_final_and_writes_the_original_bytes() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-skip");
     let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Svg]),
@@ -223,25 +228,33 @@ fn required_cover_conversion_skip_is_final_and_writes_nothing() {
     let RequiredCoverDisposition::Completed = disposition else {
         panic!("conversion skip should complete rather than retry");
     };
-    assert_eq!(result.tally.emitted(), 0);
-    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert_eq!(result.tally.covers(), 1);
+    assert_eq!(result.tally.conversion_skipped(), 1);
     assert_eq!(
         result.warnings,
-        vec![ImageWriteWarning::CoverConversionSkipped {
+        vec![ImageWriteWarning::ConversionSkipped {
+            source_name: "OPS/cover.svg".to_string(),
             format: ImageFormat::Svg,
         }]
     );
+    assert_eq!(fs::read(temp_dir.join("sample.svg")).unwrap(), b"<svg/>");
 }
 
+/// Proves a failed cover conversion still writes the cover in its original bytes,
+/// as a conversion-skipped cover whose warning names the cover's source image.
+///
+/// Rewritten from the old rule, under which the attempt completed without writing
+/// and with a cover-only warning variant (ADR-0023).
 #[test]
-fn required_cover_conversion_failure_is_final_and_writes_nothing() {
+fn required_cover_conversion_failure_is_final_and_writes_the_original_bytes() {
     let temp_dir = temp_test_dir("pipeline", "required-cover-conversion-failure");
     let pipeline = pipeline_converting(
         HashSet::from([ImageFormat::Png]),
         ConversionTarget::Jpg,
         None,
     );
-    let mut reader = Cursor::new(b"\x89PNG\r\n\x1A\ninvalid".to_vec());
+    let corrupt_png = b"\x89PNG\r\n\x1A\ninvalid";
+    let mut reader = Cursor::new(corrupt_png.to_vec());
 
     let (disposition, result) = attempt_required_cover(
         &pipeline,
@@ -255,13 +268,14 @@ fn required_cover_conversion_failure_is_final_and_writes_nothing() {
     let RequiredCoverDisposition::Completed = disposition else {
         panic!("conversion failure should complete rather than retry");
     };
-    assert_eq!(result.tally.emitted(), 0);
-    assert_eq!(result.tally.conversion_skipped(), 0);
+    assert_eq!(result.tally.covers(), 1);
+    assert_eq!(result.tally.conversion_skipped(), 1);
     assert!(matches!(
         &result.warnings[..],
-        [ImageWriteWarning::CoverConversionFailed { detail }]
-            if detail == "Failed to decode image"
+        [ImageWriteWarning::ConversionFailed { source_name, detail }]
+            if source_name == "OPS/cover.png" && detail == "Failed to decode image"
     ));
+    assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), corrupt_png);
 }
 
 #[test]
@@ -840,7 +854,8 @@ fn constructed_results_carry_their_facts_through_the_fold() {
     let earlier_warning = ImageWriteWarning::UnsupportedCoverFormat {
         format: ImageFormat::Emf,
     };
-    let later_warning = ImageWriteWarning::CoverConversionFailed {
+    let later_warning = ImageWriteWarning::ConversionFailed {
+        source_name: "OPS/cover.png".to_string(),
         detail: "encoder rejected the payload".to_string(),
     };
     // One converted cover first, then three normal images in the three counted
@@ -913,11 +928,14 @@ fn preparation_routes_a_gif_to_its_destination_before_conversion() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::Prepared(PreparedImage {
-            ref data,
-            format: ImageFormat::Gif,
-            role: EmittedImageRole::RoutedGif(destination),
-        }) if data == b"GIF89a" && destination == Path::new("gifs")
+        ImagePreparation {
+            image: PreparedImage {
+                ref data,
+                format: ImageFormat::Gif,
+                role: EmittedImageRole::RoutedGif(destination),
+            },
+            conversion_warning: None,
+        } if data == b"GIF89a" && destination == Path::new("gifs")
     ));
 }
 
@@ -929,11 +947,14 @@ fn preparation_converts_a_decodable_source_to_the_target() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::Prepared(PreparedImage {
-            ref data,
-            format: ImageFormat::Jpg,
-            role: EmittedImageRole::Converted,
-        }) if data.starts_with(b"\xFF\xD8\xFF")
+        ImagePreparation {
+            image: PreparedImage {
+                ref data,
+                format: ImageFormat::Jpg,
+                role: EmittedImageRole::Converted,
+            },
+            conversion_warning: None,
+        } if data.starts_with(b"\xFF\xD8\xFF")
     ));
 }
 
@@ -945,11 +966,14 @@ fn preparation_preserves_a_source_already_in_the_target_format() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::Prepared(PreparedImage {
-            ref data,
-            format: ImageFormat::Png,
-            role: EmittedImageRole::Preserved,
-        }) if data == MINIMAL_PNG
+        ImagePreparation {
+            image: PreparedImage {
+                ref data,
+                format: ImageFormat::Png,
+                role: EmittedImageRole::Preserved,
+            },
+            conversion_warning: None,
+        } if data == MINIMAL_PNG
     ));
 }
 
@@ -961,14 +985,21 @@ fn preparation_without_a_conversion_policy_preserves_the_image() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::Prepared(PreparedImage {
-            format: ImageFormat::Png,
-            role: EmittedImageRole::Preserved,
-            ..
-        })
+        ImagePreparation {
+            image: PreparedImage {
+                format: ImageFormat::Png,
+                role: EmittedImageRole::Preserved,
+                ..
+            },
+            conversion_warning: None,
+        }
     ));
 }
 
+/// Proves preparation resolves an unsupported conversion itself: the original
+/// bytes come back as a conversion-skipped image with one warning naming the source.
+///
+/// Rewritten from the separate fallback case a visitor had to resolve (ADR-0023).
 #[test]
 fn preparation_falls_back_to_original_bytes_for_an_unsupported_source() {
     let policy = preparation_policy(Some(ConversionTarget::Png), None);
@@ -977,15 +1008,25 @@ fn preparation_falls_back_to_original_bytes_for_an_unsupported_source() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::ConversionFellBack {
-            ref source_name,
-            ref data,
-            format: ImageFormat::Svg,
-            reason: ConversionFallbackReason::Unsupported,
+        ImagePreparation {
+            image: PreparedImage {
+                ref data,
+                format: ImageFormat::Svg,
+                role: EmittedImageRole::ConversionSkipped,
+            },
+            conversion_warning: Some(ImageWriteWarning::ConversionSkipped {
+                ref source_name,
+                format: ImageFormat::Svg,
+            }),
         } if source_name == ACCEPTED_SOURCE_NAME && data == b"<svg/>"
     ));
 }
 
+/// Proves preparation resolves a failed conversion itself: the original bytes come
+/// back as a conversion-skipped image with one warning naming the source and the
+/// error's detail.
+///
+/// Rewritten from the separate fallback case a visitor had to resolve (ADR-0023).
 #[test]
 fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
     let policy = preparation_policy(Some(ConversionTarget::Jpg), None);
@@ -994,11 +1035,16 @@ fn preparation_falls_back_with_the_error_detail_when_conversion_fails() {
 
     assert!(matches!(
         prepared,
-        ImagePreparation::ConversionFellBack {
-            ref source_name,
-            ref data,
-            format: ImageFormat::Png,
-            reason: ConversionFallbackReason::Failed(ref detail),
+        ImagePreparation {
+            image: PreparedImage {
+                ref data,
+                format: ImageFormat::Png,
+                role: EmittedImageRole::ConversionSkipped,
+            },
+            conversion_warning: Some(ImageWriteWarning::ConversionFailed {
+                ref source_name,
+                ref detail,
+            }),
         } if source_name == ACCEPTED_SOURCE_NAME && data == MINIMAL_PNG && !detail.is_empty()
     ));
 }
