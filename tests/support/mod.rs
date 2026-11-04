@@ -261,6 +261,60 @@ pub fn write_extension_fallback_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.png", b"not actually a png")]);
 }
 
+/// The EPUB container declaration pointing at the package document [`write_epub`] writes.
+const EPUB_CONTAINER_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+
+/// Writes an EPUB titled `title` from manifest declarations and archive payloads.
+///
+/// Each manifest tuple is `(id, href, media type, properties)`, with `href` relative to
+/// `OEBPS/`; each payload is `(archive path, bytes)`, so a declaration can be given no
+/// payload or a payload whose bytes disagree with its media type. The package declares
+/// no navigation document and an empty spine, the sparser shape the crate-private
+/// builders also write. Output files are named after `title`.
+pub fn write_epub(
+    path: &Path,
+    title: &str,
+    manifest_resources: &[(&str, &str, &str, Option<&str>)],
+    archive_resources: &[(&str, &[u8])],
+) {
+    let manifest_items = manifest_resources
+        .iter()
+        .map(|(id, href, mime, properties)| {
+            let properties = properties
+                .map(|value| format!(" properties=\"{value}\""))
+                .unwrap_or_default();
+            format!("    <item id=\"{id}\" href=\"{href}\" media-type=\"{mime}\"{properties}/>")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let package = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>{title}</dc:title>
+  </metadata>
+  <manifest>
+{manifest_items}
+  </manifest>
+  <spine></spine>
+</package>"#
+    );
+    // The `mimetype` and container entries come first, the order the format requires.
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("mimetype", b"application/epub+zip"),
+        ("META-INF/container.xml", EPUB_CONTAINER_XML),
+        ("OEBPS/content.opf", package.as_bytes()),
+    ];
+    entries.extend_from_slice(archive_resources);
+    write_zip_archive(path, &entries);
+}
+
 /// Encodes a small valid JPEG whose bytes can be compared after extraction.
 pub fn test_jpeg() -> Vec<u8> {
     let mut image = RgbImage::new(8, 8);

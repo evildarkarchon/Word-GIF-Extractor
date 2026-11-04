@@ -307,6 +307,192 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
     assert_eq!(normal_images_and_covers(&filtered_facts), (0, 0));
 }
 
+/// Verifies that a declared cover filtered out by the allowed formats writes nothing
+/// and so hands over to the filename cover, which is written as the EPUB's one cover.
+///
+/// The filtered cover's warning is kept and comes before the filename cover's facts,
+/// because a usable cover means a written cover (ADR-0023).
+#[test]
+fn epub_filtered_declared_cover_hands_over_to_the_filename_cover() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-filtered-cover-hands-over");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("output");
+    let filename_cover: &[u8] = b"\xFF\xD8\xFFfilename cover";
+    write_epub_fixture(
+        &input_path,
+        &[
+            ("cover", "images/art.png", "image/png", Some("cover-image")),
+            ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+        ],
+        &[
+            ("OEBPS/images/art.png", b"\x89PNG\r\n\x1A\n"),
+            ("OEBPS/images/cover.jpg", filename_cover),
+        ],
+    );
+    let extraction = DocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverOnly),
+        pipeline_accepting([ImageFormat::Jpg]),
+    );
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
+        panic!("a filtered declared cover should hand over and complete");
+    };
+
+    assert_eq!(
+        warning_messages(&facts),
+        vec!["Cover image format 'png' not in allowed formats, skipping."]
+    );
+    assert_eq!(normal_images_and_covers(&facts), (0, 1));
+    assert_eq!(file_names_in(&output_dir), ["Test.jpg"]);
+    assert_eq!(
+        fs::read(output_dir.join("Test.jpg")).expect("written cover should be readable"),
+        filename_cover
+    );
+}
+
+/// Writes an EPUB whose two cover candidates are both filtered out under a JPEG-only
+/// run, beside one JPEG normal image.
+///
+/// Both candidates are magic-less payloads at `.jpg` paths declared `image/png`. A
+/// required cover never takes evidence from its path, so each is a PNG cover and is
+/// filtered; as a normal image the `.jpg` extension would identify it and it would be
+/// written. That difference is what makes the fallback's identity exclusion visible.
+fn write_epub_with_two_filtered_covers(input_path: &Path) {
+    write_epub_fixture(
+        input_path,
+        &[
+            ("cover", "images/art.jpg", "image/png", Some("cover-image")),
+            ("filename-cover", "images/cover.jpg", "image/png", None),
+            ("page", "images/page.jpg", "image/jpeg", None),
+        ],
+        &[
+            ("OEBPS/images/art.jpg", b"declared cover without magic"),
+            ("OEBPS/images/cover.jpg", b"filename cover without magic"),
+            ("OEBPS/images/page.jpg", b"\xFF\xD8\xFFpage"),
+        ],
+    );
+}
+
+/// The warning each filtered PNG cover candidate leaves behind.
+const FILTERED_PNG_COVER_WARNING: &str =
+    "Cover image format 'png' not in allowed formats, skipping.";
+
+/// Verifies that when every cover candidate writes nothing, `CoverThenNormalImages`
+/// falls back to normal images, excluding every attempted cover payload.
+///
+/// Both covers are filtered, so neither was a usable cover (ADR-0023). Writing either
+/// again as a normal image would add a file and an extension-fallback warning.
+#[test]
+fn epub_cover_fallback_runs_when_no_candidate_writes_a_cover() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-no-written-cover-falls-back");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("output");
+    write_epub_with_two_filtered_covers(&input_path);
+    let extraction = DocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverThenNormalImages),
+        pipeline_accepting([ImageFormat::Jpg]),
+    );
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
+        panic!("filtered cover candidates should fall back and complete");
+    };
+
+    assert_eq!(
+        warning_messages(&facts),
+        vec![FILTERED_PNG_COVER_WARNING, FILTERED_PNG_COVER_WARNING]
+    );
+    assert_eq!(normal_images_and_covers(&facts), (1, 0));
+    assert_eq!(file_names_in(&output_dir), ["Test.jpg"]);
+    assert_eq!(
+        fs::read(output_dir.join("Test.jpg")).expect("written page should be readable"),
+        b"\xFF\xD8\xFFpage"
+    );
+}
+
+/// Verifies that when every cover candidate writes nothing under `CoverOnly`, nothing
+/// is written and each passed-over candidate's warning explains why.
+#[test]
+fn epub_cover_only_writes_nothing_when_no_candidate_writes_a_cover() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-no-written-cover-cover-only");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("output");
+    // Created up front so an empty listing is evidence nothing was written.
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    write_epub_with_two_filtered_covers(&input_path);
+    let extraction = DocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverOnly),
+        pipeline_accepting([ImageFormat::Jpg]),
+    );
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
+        panic!("filtered cover candidates should complete without output");
+    };
+
+    assert_eq!(
+        warning_messages(&facts),
+        vec![FILTERED_PNG_COVER_WARNING, FILTERED_PNG_COVER_WARNING]
+    );
+    assert_eq!(normal_images_and_covers(&facts), (0, 0));
+    assert!(file_names_in(&output_dir).is_empty());
+}
+
+/// Verifies that a declared GIF cover routed to the GIF destination is a written
+/// cover, so it ends the search before the filename candidate and fallback.
+///
+/// Routing writes nothing into the output directory; counting only files there would
+/// have handed over to `cover.jpg` and produced a second cover.
+#[test]
+fn epub_routed_gif_cover_ends_the_search_before_the_filename_candidate_and_fallback() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-routed-gif-cover-is-written");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("sample.epub");
+    let output_dir = temp_dir.join("output");
+    let gif_dir = temp_dir.join("gifs");
+    // Created up front so an empty listing is evidence nothing was written there.
+    fs::create_dir_all(&output_dir).expect("output directory should be creatable");
+    write_epub_fixture(
+        &input_path,
+        &[
+            ("cover", "images/art.gif", "image/gif", Some("cover-image")),
+            ("filename-cover", "images/cover.jpg", "image/jpeg", None),
+            ("page", "images/page.jpg", "image/jpeg", None),
+        ],
+        &[
+            ("OEBPS/images/art.gif", b"GIF89a"),
+            ("OEBPS/images/cover.jpg", b"\xFF\xD8\xFFfilename cover"),
+            ("OEBPS/images/page.jpg", b"\xFF\xD8\xFFpage"),
+        ],
+    );
+    let extraction = DocumentExtraction::new(
+        Some(EpubCoverPolicy::CoverThenNormalImages),
+        ImageWritePipeline::new(ImageWritePolicy::new(
+            HashSet::from([ImageFormat::Gif, ImageFormat::Jpg]),
+            None,
+            Some(gif_dir.clone()),
+        )),
+    );
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
+        panic!("a routed GIF cover should complete");
+    };
+
+    assert!(warning_messages(&facts).is_empty());
+    assert_eq!(normal_images_and_covers(&facts), (0, 1));
+    assert_eq!(facts.get_tally().gifs_routed(), 1);
+    assert_eq!(file_names_in(&gif_dir), ["Test.gif"]);
+    assert!(
+        file_names_in(&output_dir).is_empty(),
+        "neither the filename cover nor the fallback page should be written"
+    );
+}
+
 /// Verifies that a cover whose conversion is unsupported is written in its original
 /// format and bytes, counted as one conversion-skipped cover, with the same
 /// conversion-skipped warning a normal image gets, naming the cover's source image.
