@@ -228,6 +228,10 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
     // A filtered cover, an unsupported cover conversion and a failed cover conversion
     // are three Image write policy decisions that reach this module as one disposition.
     // The module must treat each as final, whatever fact the attempt carried back.
+    // The two conversion cases now write the cover in its original bytes as a
+    // conversion-skipped cover (ADR-0023); a written cover ends the search all the
+    // same. The filtered case still writes nothing; its hand-over to the filename
+    // candidate is #104's change, not this one's.
     let cases = [
         (
             "filtered",
@@ -238,6 +242,7 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
             ImageWriteWarning::UnsupportedCoverFormat {
                 format: ImageFormat::Png,
             },
+            None,
         ),
         (
             "conversion-skipped",
@@ -249,9 +254,11 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
                 ConversionTarget::Png,
                 None,
             ),
-            ImageWriteWarning::CoverConversionSkipped {
+            ImageWriteWarning::ConversionSkipped {
+                source_name: "OEBPS/images/art.svg".to_string(),
                 format: ImageFormat::Svg,
             },
+            Some("Book.svg"),
         ),
         (
             "conversion-failed",
@@ -263,12 +270,16 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
                 ConversionTarget::Jpg,
                 None,
             ),
-            ImageWriteWarning::CoverConversionFailed {
+            ImageWriteWarning::ConversionFailed {
+                source_name: "OEBPS/images/art.png".to_string(),
                 detail: "Failed to decode image".to_string(),
             },
+            Some("Book.png"),
         ),
     ];
-    for (case, metadata_cover_path, cover_mime, cover_payload, pipeline, warning) in cases {
+    for (case, metadata_cover_path, cover_mime, cover_payload, pipeline, warning, written_cover) in
+        cases
+    {
         let filename_cover = jpeg("filename-cover");
         let page = jpeg("page");
         let fixture = CoverFixture::new(
@@ -296,11 +307,21 @@ fn a_completed_cover_is_terminal_before_the_filename_candidate_and_fallback() {
             .expect("a completed cover attempt should end the decision normally");
 
         // Both the filename candidate and the fallback page are readable JPEGs the
-        // pipeline accepts, so reaching either would have written a file.
-        assert!(fixture.written_files().is_empty(), "{case}");
+        // pipeline accepts, so reaching either would have written a file of its own
+        // beside the declared cover, if that was written at all.
+        let expected_files: Vec<String> = written_cover.into_iter().map(String::from).collect();
+        assert_eq!(fixture.written_files(), expected_files, "{case}");
+        if let Some(name) = written_cover {
+            assert_eq!(
+                fs::read(fixture.output_dir.join(name)).unwrap(),
+                cover_payload,
+                "{case}"
+            );
+        }
+        let written = usize::from(written_cover.is_some());
         assert_eq!(result.warnings, vec![warning], "{case}");
-        assert_eq!(result.tally.emitted(), 0, "{case}");
-        assert_eq!(result.tally.conversion_skipped(), 0, "{case}");
+        assert_eq!(result.tally.covers(), written, "{case}");
+        assert_eq!(result.tally.conversion_skipped(), written, "{case}");
         assert_eq!(result.tally.normal_images(), 0, "{case}");
     }
 }

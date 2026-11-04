@@ -213,17 +213,10 @@ impl DocumentExtractionWarning {
                 "Skipping conversion for {source_name} ({} format not supported for conversion)",
                 format.extension()
             ),
-            ImageWriteWarning::CoverConversionSkipped { format } => format!(
-                "Cover image format '{}' not supported for conversion, skipping cover.",
-                format.extension()
-            ),
             ImageWriteWarning::ConversionFailed {
                 source_name,
                 detail,
             } => format!("Conversion failed for {source_name}: {detail}"),
-            ImageWriteWarning::CoverConversionFailed { detail } => {
-                format!("Cover conversion failed: {detail}")
-            }
         };
         Self { message }
     }

@@ -8,8 +8,8 @@ use crate::epub_declarations::EpubFileDeclarations;
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::{ImageWritePipeline, ImageWritePolicy};
 use crate::test_support::{
-    SilentExtractionRunObserver, pipeline_accepting, temp_test_dir, write_docx, write_epub_fixture,
-    write_epub_image, write_epub_with_resources,
+    SilentExtractionRunObserver, file_names_in, pipeline_accepting, temp_test_dir, write_docx,
+    write_epub_fixture, write_epub_image, write_epub_with_resources,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -307,30 +307,30 @@ fn epub_cover_warning_bodies_keep_declared_mime_and_filtered_format() {
     assert_eq!(normal_images_and_covers(&filtered_facts), (0, 0));
 }
 
+/// Verifies that a cover whose conversion is unsupported is written in its original
+/// format and bytes, counted as one conversion-skipped cover, with the same
+/// conversion-skipped warning a normal image gets, naming the cover's source image.
+///
+/// Rewritten from the old rule, under which an unsupported cover conversion wrote
+/// nothing and warned "…skipping cover." (ADR-0023).
 #[test]
-fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
-    let temp_dir = temp_test_dir(
-        "document-extraction",
-        "epub-cover-conversion-warning-bodies",
-    );
+fn epub_unconvertible_cover_is_written_in_its_original_format_as_a_conversion_skipped_cover() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-unconvertible-cover");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
-
-    let unsupported_path = temp_dir.join("unsupported.epub");
-    let unsupported_output = temp_dir.join("unsupported-output");
+    let input_path = temp_dir.join("unsupported.epub");
+    let output_dir = temp_dir.join("output");
+    let svg: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
     write_epub_fixture(
-        &unsupported_path,
+        &input_path,
         &[(
             "cover",
             "images/art.svg",
             "image/svg+xml",
             Some("cover-image"),
         )],
-        &[(
-            "OEBPS/images/art.svg",
-            b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
-        )],
+        &[("OEBPS/images/art.svg", svg)],
     );
-    let unsupported_extraction = DocumentExtraction::new(
+    let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Svg]),
@@ -338,29 +338,47 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
             None,
         )),
     );
-    let unsupported = select_one_document(&unsupported_path, &unsupported_output);
-    let DocumentExtractionOutcome::Completed(unsupported_facts) =
-        unsupported_extraction.extract(unsupported)
-    else {
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
         panic!("unsupported required-cover conversion should complete");
     };
-    assert_eq!(
-        warning_messages(&unsupported_facts),
-        vec!["Cover image format 'svg' not supported for conversion, skipping cover."]
-    );
-    assert_eq!(normal_images_and_covers(&unsupported_facts), (0, 0));
 
-    let failed_path = temp_dir.join("failed.epub");
-    let failed_output = temp_dir.join("failed-output");
-    write_epub_fixture(
-        &failed_path,
-        &[("cover", "images/art.png", "image/png", Some("cover-image"))],
-        &[(
-            "OEBPS/images/art.png",
-            b"\x89PNG\r\n\x1A\nnot an image at all",
-        )],
+    assert_eq!(
+        warning_messages(&facts),
+        vec![
+            "Skipping conversion for OEBPS/images/art.svg (svg format not supported for conversion)"
+        ]
     );
-    let failed_extraction = DocumentExtraction::new(
+    assert_eq!(normal_images_and_covers(&facts), (0, 1));
+    assert_eq!(facts.get_tally().conversion_skipped(), 1);
+    assert_eq!(facts.get_tally().converted(), 0);
+    assert_eq!(file_names_in(&output_dir), ["Test.svg"]);
+    assert_eq!(
+        fs::read(output_dir.join("Test.svg")).expect("written cover should be readable"),
+        svg
+    );
+}
+
+/// Verifies that a cover whose payload cannot be decoded is written in its original
+/// bytes, counted as one conversion-skipped cover, and warned about with the same
+/// conversion-failed warning a normal image gets, naming the cover's source image.
+///
+/// Rewritten from the old rule, under which a failed cover conversion wrote nothing
+/// and warned "Cover conversion failed: …" (ADR-0023).
+#[test]
+fn epub_undecodable_cover_is_written_in_its_original_bytes_and_its_warning_names_the_source() {
+    let temp_dir = temp_test_dir("document-extraction", "epub-undecodable-cover");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let input_path = temp_dir.join("failed.epub");
+    let output_dir = temp_dir.join("output");
+    let corrupt_png: &[u8] = b"\x89PNG\r\n\x1A\nnot an image at all";
+    write_epub_fixture(
+        &input_path,
+        &[("cover", "images/art.png", "image/png", Some("cover-image"))],
+        &[("OEBPS/images/art.png", corrupt_png)],
+    );
+    let extraction = DocumentExtraction::new(
         Some(EpubCoverPolicy::CoverOnly),
         ImageWritePipeline::new(ImageWritePolicy::new(
             HashSet::from([ImageFormat::Png]),
@@ -368,16 +386,23 @@ fn epub_cover_conversion_warning_bodies_keep_format_and_lower_error_detail() {
             None,
         )),
     );
-    let failed = select_one_document(&failed_path, &failed_output);
-    let DocumentExtractionOutcome::Completed(failed_facts) = failed_extraction.extract(failed)
-    else {
+    let document = select_one_document(&input_path, &output_dir);
+
+    let DocumentExtractionOutcome::Completed(facts) = extraction.extract(document) else {
         panic!("failed required-cover conversion should be non-fatal");
     };
+
     assert_eq!(
-        warning_messages(&failed_facts),
-        vec!["Cover conversion failed: Failed to decode image"]
+        warning_messages(&facts),
+        vec!["Conversion failed for OEBPS/images/art.png: Failed to decode image"]
     );
-    assert_eq!(normal_images_and_covers(&failed_facts), (0, 0));
+    assert_eq!(normal_images_and_covers(&facts), (0, 1));
+    assert_eq!(facts.get_tally().conversion_skipped(), 1);
+    assert_eq!(file_names_in(&output_dir), ["Test.png"]);
+    assert_eq!(
+        fs::read(output_dir.join("Test.png")).expect("written cover should be readable"),
+        corrupt_png
+    );
 }
 
 #[test]
