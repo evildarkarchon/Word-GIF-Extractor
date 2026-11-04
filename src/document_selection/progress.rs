@@ -14,22 +14,16 @@
 //! from here (ADR-0009, superseding ADR-0004's deliberate ignorance of which
 //! diagnostic was being emitted).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::epub_declarations::EpubDeclarationSource;
+use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::{
     DocumentDiscoveryScope, EpubDeclarationPurpose, ExtractionRunObservation, ExtractionRunObserver,
 };
 
-use super::document_identity::{DocumentIdentity, EpubFilterTerms};
+use super::document_identity::{DedupeKey, DocumentIdentity, EpubFilterTerms};
 use super::{EpubCandidate, EpubFilter};
-
-/// Semantic result of checking one EPUB during declaration deduplication.
-pub(super) enum EpubDeduplicationCheck {
-    /// The EPUB is the first with its key and continues through selection as this candidate.
-    Unique(EpubCandidate),
-    Duplicate,
-}
 
 /// Sole internal authority for emitting Document selection observations.
 pub(super) struct DocumentSelectionLifecycle<'observer> {
@@ -185,26 +179,33 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         matching_epubs
     }
 
-    /// Checks every EPUB for a duplicate key and returns the unique candidates.
+    /// Deduplicates EPUB candidates by their creator and title declarations and returns
+    /// the unique ones.
     ///
-    /// The phase is active exactly when there is at least one EPUB: an empty phase emits
-    /// nothing. An active phase emits one initial running observation, one running
-    /// observation after each check, and one finished observation. Diagnostics reported
-    /// by `check` precede the running observation that records its outcome, and carry
-    /// the deduplication purpose without `check` naming it. Panic unwinding
+    /// Keeps the first occurrence of each unique (author, title) combination.
+    /// EPUBs without a non-blank creator or title declaration are deduplicated by filename.
+    ///
+    /// The phase is active exactly when there is at least one EPUB: an empty EPUB list
+    /// emits nothing. Declarations retained by filtering are reused, and only an EPUB
+    /// without them is acquired from `declarations` (ADR-0002); an EPUB whose
+    /// declarations cannot be read is kept or dropped by its filename key.
+    ///
+    /// An active phase emits one initial running observation, one running observation
+    /// after each EPUB, and one finished observation. An EPUB's unreadable-declarations
+    /// diagnostic precedes the running observation that records it. Panic unwinding
     /// intentionally skips the final observation.
     pub(super) fn deduplicating(
         &mut self,
         epubs: Vec<EpubCandidate>,
-        mut check: impl FnMut(
-            EpubCandidate,
-            &mut EpubDeclarationDiagnostics<'_>,
-        ) -> EpubDeduplicationCheck,
+        declarations: &dyn EpubDeclarationSource,
     ) -> Vec<EpubCandidate> {
-        let total = epubs.len();
-        if total == 0 {
-            return Vec::new();
+        if epubs.is_empty() {
+            return epubs;
         }
+        let total = epubs.len();
+        // Track the Document identity keys already seen. Keys are case-insensitive,
+        // and declared keys never equal filename keys.
+        let mut seen: HashSet<DedupeKey> = HashSet::new();
         let running = |checked, duplicates_found, unique_remaining| {
             ExtractionRunObservation::DeduplicatingEpubs {
                 checked,
@@ -217,17 +218,44 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         self.observer.on_observation(running(0, 0, 0));
         let mut unique_epubs = Vec::new();
         let mut duplicates_found = 0;
-        for (index, epub) in epubs.into_iter().enumerate() {
-            // A fresh reborrow per check lets the running observation after it use the observer again.
-            match check(
-                epub,
-                &mut EpubDeclarationDiagnostics::new(
-                    &mut *self.observer,
-                    EpubDeclarationPurpose::Deduplication,
-                ),
-            ) {
-                EpubDeduplicationCheck::Unique(epub) => unique_epubs.push(epub),
-                EpubDeduplicationCheck::Duplicate => duplicates_found += 1,
+        for (
+            index,
+            EpubCandidate {
+                path,
+                epub_declarations,
+            },
+        ) in epubs.into_iter().enumerate()
+        {
+            // ADR-0002: declarations retained by filtering are authoritative for the
+            // run, so deduplication asks the source only when it has none. From here
+            // on, `None` means selection could not read the declarations.
+            let epub_declarations =
+                match EpubDeclarations::retained_or_acquire(epub_declarations, &path, declarations)
+                {
+                    Ok(declarations) => Some(declarations),
+                    Err(error) => {
+                        self.observer.on_observation(
+                            ExtractionRunObservation::UnreadableEpubDeclarations {
+                                path: path.clone(),
+                                purpose: EpubDeclarationPurpose::Deduplication,
+                                detail: error.to_string(),
+                            },
+                        );
+                        None
+                    }
+                };
+
+            let key = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
+                .dedupe_key();
+
+            // Only add if we haven't seen this combination before.
+            if seen.insert(key) {
+                unique_epubs.push(EpubCandidate {
+                    path,
+                    epub_declarations,
+                });
+            } else {
+                duplicates_found += 1;
             }
             self.observer
                 .on_observation(running(index + 1, duplicates_found, unique_epubs.len()));
@@ -241,37 +269,6 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
             });
 
         unique_epubs
-    }
-}
-
-/// Diagnostic-only reporter handed to each per-EPUB check.
-///
-/// Holding it grants no way to emit or advance progress, so a check cannot record
-/// its own outcome or disturb the phase's observation order (ADR-0012). Its one
-/// fact carries the purpose of the phase that created it, so a filtering check
-/// cannot report a deduplication purpose or the reverse (ADR-0009).
-pub(super) struct EpubDeclarationDiagnostics<'observer> {
-    observer: &'observer mut dyn ExtractionRunObserver,
-    purpose: EpubDeclarationPurpose,
-}
-
-impl<'observer> EpubDeclarationDiagnostics<'observer> {
-    /// Wraps one observer reborrow and its phase's purpose for a single check.
-    fn new(
-        observer: &'observer mut dyn ExtractionRunObserver,
-        purpose: EpubDeclarationPurpose,
-    ) -> Self {
-        Self { observer, purpose }
-    }
-
-    /// Emits one unreadable-declarations fact at its position within the phase's progress.
-    pub(super) fn declarations_unreadable(&mut self, path: PathBuf, detail: String) {
-        self.observer
-            .on_observation(ExtractionRunObservation::UnreadableEpubDeclarations {
-                path,
-                purpose: self.purpose,
-                detail,
-            });
     }
 }
 
