@@ -48,9 +48,9 @@ impl EmittedImageTally {
 
     /// Records one emitted required cover under `role`.
     ///
-    /// Any role is accepted. The pipeline never emits a conversion-skipped cover,
-    /// because a cover conversion fallback completes without emitting, but the
-    /// tally records what it is given rather than policing that rule.
+    /// Any role is accepted, a conversion-skipped one included: a cover whose
+    /// conversion falls back is emitted in its original bytes and counted as a
+    /// conversion-skipped cover (ADR-0023).
     pub(crate) fn record_cover(&mut self, role: TallyRole) {
         self.covers += 1;
         self.record_role(role);

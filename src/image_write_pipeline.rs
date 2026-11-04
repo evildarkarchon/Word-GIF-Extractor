@@ -73,18 +73,17 @@ pub(crate) enum ImageWriteWarning {
     UnsupportedCoverFormat {
         format: ImageFormat,
     },
+    /// An image's conversion was unsupported, whatever its Image write purpose.
+    /// `source_name` is the source's diagnostic name, so two skipped images in one
+    /// document warn apart.
     ConversionSkipped {
-        base_name: String,
+        source_name: String,
         format: ImageFormat,
     },
-    CoverConversionSkipped {
-        format: ImageFormat,
-    },
+    /// An image's conversion failed, whatever its Image write purpose.
+    /// `source_name` is the source's diagnostic name, as for [`Self::ConversionSkipped`].
     ConversionFailed {
-        base_name: String,
-        detail: String,
-    },
-    CoverConversionFailed {
+        source_name: String,
         detail: String,
     },
 }
@@ -169,8 +168,14 @@ impl std::error::Error for ImageWriteFailure {
 /// Result of an Image write operation that retains partial facts on failure.
 pub(crate) type ImageWriteOutcome<T = ImageWriteResult> = std::result::Result<T, ImageWriteFailure>;
 
+/// One image Archive image discovery accepted, as image preparation receives it.
+///
+/// `source_name` is the source's diagnostic name, the same name acquisition and
+/// extension-fallback warnings use. It travels with the bytes so a conversion
+/// warning can name the image it is about; it never decides an output path.
 #[derive(Debug, PartialEq)]
 struct AcceptedImage {
+    source_name: String,
     data: Vec<u8>,
     format: ImageFormat,
 }
@@ -205,43 +210,41 @@ struct PreparedImage<'policy> {
 
 /// Purpose-free result of applying Image write policy to one accepted image.
 ///
-/// Preparation reports a conversion fallback instead of resolving it, because
-/// what a fallback means depends on the Image write purpose: a normal image is
-/// still emitted in its original bytes, while a required cover is not emitted at
-/// all. Each visitor already knows its purpose, so each resolves the fallback
-/// itself and preparation never has to return a case its caller cannot reach.
-enum ImagePreparation<'policy> {
-    /// The image is ready to emit in the role preparation decided.
-    Prepared(PreparedImage<'policy>),
-    /// The Conversion policy could not produce requested bytes; the original
-    /// bytes and the format to emit them under are returned unchanged.
-    ConversionFellBack {
-        data: Vec<u8>,
-        format: ImageFormat,
-        reason: ConversionFallbackReason,
-    },
+/// There is always an image to emit: a conversion that cannot produce the
+/// requested bytes is resolved here, once, for every Image write purpose, by
+/// emitting the original bytes under their original Image format in the
+/// conversion-skipped role (ADR-0023). The warning that explains the fallback
+/// travels beside the image, and each visitor stages it into its own warning
+/// order; no visitor has a fallback case left to resolve.
+struct ImagePreparation<'policy> {
+    /// The image ready to emit, in the role preparation decided.
+    image: PreparedImage<'policy>,
+    /// The conversion-skipped or conversion-failed warning naming the source
+    /// image, present exactly when conversion fell back to the original bytes.
+    conversion_warning: Option<ImageWriteWarning>,
 }
 
-/// Why the Conversion policy fell back to an image's original bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConversionFallbackReason {
-    /// The source format cannot be decoded for conversion.
-    Unsupported,
-    /// Conversion was attempted and failed, with the error's detail.
-    Failed(String),
-}
+impl<'policy> ImagePreparation<'policy> {
+    /// Wraps an image that preparation produced without a conversion fallback.
+    fn ready(image: PreparedImage<'policy>) -> Self {
+        Self {
+            image,
+            conversion_warning: None,
+        }
+    }
 
-/// Completion disposition for one required-cover candidate.
-///
-/// Fact-free: the facts an attempt produced are folded by the required-cover scope,
-/// so a disposition and its facts cannot disagree. It is named a disposition rather
-/// than an outcome because in this crate an outcome is a terminal, fact-carrying result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RequiredCoverDisposition {
-    /// Resource acquisition failed, so EPUB cover extraction may try another candidate.
-    Retry,
-    /// Image write policy reached a final emitting or non-emitting cover outcome.
-    Completed,
+    /// Resolves a conversion fallback: the original `data` is emitted under
+    /// `format` as a conversion-skipped image, beside `warning`.
+    fn fell_back(data: Vec<u8>, format: ImageFormat, warning: ImageWriteWarning) -> Self {
+        Self {
+            image: PreparedImage {
+                data,
+                format,
+                role: EmittedImageRole::ConversionSkipped,
+            },
+            conversion_warning: Some(warning),
+        }
+    }
 }
 
 /// Immutable Image write pipeline configured for one Extraction run.
@@ -319,10 +322,12 @@ impl ImageWritePipeline {
     /// finishes it, so finishing names the cover singularly after the placement's
     /// base name: a cover attempt never has a second image to number against.
     ///
-    /// Read failures return `Retry`, so EPUB cover extraction may try its next
-    /// candidate. Filtering, conversion fallback and successful emission return
-    /// `Completed`. Both come back beside the attempt's own facts, which
-    /// [`RequiredCoverVisitor::attempt`] folds into its scope.
+    /// Returns only the attempt's facts: whether it wrote a cover is read off their
+    /// Emitted image tally, never off a second channel beside them (ADR-0023). A read
+    /// failure and a cover filtered out by the allowed formats write nothing, so EPUB
+    /// cover extraction hands over to its next candidate. A conversion fallback is a
+    /// successful emission, of the original bytes as a conversion-skipped cover.
+    /// [`RequiredCoverVisitor::attempt`] folds the facts into its scope.
     ///
     /// # Errors
     ///
@@ -334,44 +339,32 @@ impl ImageWritePipeline {
         manifest_path: &str,
         mime: &str,
         reader: &mut dyn Read,
-    ) -> ImageWriteOutcome<(RequiredCoverDisposition, ImageWriteResult)> {
+    ) -> ImageWriteOutcome {
         let source = ArchiveImageSource::required_cover(manifest_path, mime);
         let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
         let mut result = ImageWriteResult::default();
         result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
-            ArchiveImageDiscoveryOutcome::Completed => {
-                return Ok((RequiredCoverDisposition::Completed, result));
-            }
-            ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
-                return Ok((RequiredCoverDisposition::Retry, result));
-            }
+            // Neither writes a cover, and the tally says so: the warnings discovery
+            // recorded are the attempt's only facts.
+            ArchiveImageDiscoveryOutcome::Completed
+            | ArchiveImageDiscoveryOutcome::AcquisitionFailed => return Ok(result),
         };
 
-        let prepared = match prepare_image_for_write(image, &self.policy) {
-            ImagePreparation::Prepared(prepared) => prepared,
-            // A required cover is never emitted in bytes the Conversion policy could
-            // not produce; the attempt completes with the cover-specific warning.
-            ImagePreparation::ConversionFellBack { format, reason, .. } => {
-                result.warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => {
-                        ImageWriteWarning::CoverConversionSkipped { format }
-                    }
-                    ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::CoverConversionFailed { detail }
-                    }
-                });
-                return Ok((RequiredCoverDisposition::Completed, result));
-            }
-        };
+        let prepared = prepare_image_for_write(image, &self.policy);
+        // A cover attempt has one source, so its conversion warning simply follows
+        // the discovery warnings already recorded; the cover is still emitted in
+        // its original bytes as a conversion-skipped cover (ADR-0023).
+        result.warnings.extend(prepared.conversion_warning);
         let mut emission = ImageFileEmission::new(placement);
         // This path is bound to the required-cover purpose, so it records covers
-        // whatever role the image took: a routed GIF cover is a routed cover.
+        // whatever role the image took: a routed GIF cover is a routed cover, and a
+        // conversion-skipped cover is a conversion-skipped cover.
         let tally = &mut result.tally;
         let mut record_cover = |role| tally.record_cover(tally_role(role));
         let emitted = emission
-            .stage(prepared, &mut record_cover)
+            .stage(prepared.image, &mut record_cover)
             .and_then(|()| emission.finish(record_cover));
         if let Err(error) = emitted {
             return Err(ImageWriteFailure {
@@ -379,7 +372,7 @@ impl ImageWritePipeline {
                 error,
             });
         }
-        Ok((RequiredCoverDisposition::Completed, result))
+        Ok(result)
     }
 
     /// Discovers, prepares, and writes sources supplied through one scoped traversal.
@@ -409,9 +402,10 @@ impl ImageWritePipeline {
 /// Scoped authority for one required EPUB cover attempt sequence.
 ///
 /// It folds the facts of every attempt, unreadable cover and fallback into one
-/// Image write outcome in the order they happen. Nothing stops an attempt after
-/// fallback or after a completed disposition: ADR-0021 rejected typestate here,
-/// because EPUB cover extraction's loop is the only caller and its tests pin the order.
+/// Image write outcome in the order they happen, and answers from those same facts
+/// whether the sequence has written a cover. Nothing stops an attempt after fallback
+/// or after a written cover: ADR-0021 rejected typestate here, because EPUB cover
+/// extraction's loop is the only caller and its tests pin the order.
 pub(crate) struct RequiredCoverVisitor<'pipeline, 'placement> {
     pipeline: &'pipeline ImageWritePipeline,
     placement: &'placement OutputPlacement,
@@ -421,8 +415,9 @@ pub(crate) struct RequiredCoverVisitor<'pipeline, 'placement> {
 impl RequiredCoverVisitor<'_, '_> {
     /// Discovers and writes one required cover from its raw source facts and payload.
     ///
-    /// Returns the attempt's fact-free disposition; its facts stay in this scope.
-    /// See [`ImageWritePipeline::write_required_cover`] for how the sequence ends.
+    /// The attempt's facts are folded into this scope; whether it wrote a cover is
+    /// answered afterwards by [`Self::has_written_cover`]. See
+    /// [`ImageWritePipeline::write_required_cover`] for how the sequence ends.
     ///
     /// # Errors
     ///
@@ -434,7 +429,7 @@ impl RequiredCoverVisitor<'_, '_> {
         manifest_path: &str,
         mime: &str,
         reader: &mut dyn Read,
-    ) -> Result<RequiredCoverDisposition> {
+    ) -> Result<()> {
         let outcome =
             self.pipeline
                 .attempt_required_cover(self.placement, manifest_path, mime, reader);
@@ -443,21 +438,26 @@ impl RequiredCoverVisitor<'_, '_> {
 
     /// Records a required cover whose payload the EPUB adapter could not acquire.
     ///
-    /// Always `Retry`: an unavailable candidate settles nothing about the cover, so
-    /// EPUB cover extraction may try its next candidate. The disposition is still
-    /// returned so the caller treats an unreadable cover and an attempt alike.
-    pub(crate) fn unreadable(
-        &mut self,
-        manifest_path: &str,
-        error: impl fmt::Display,
-    ) -> RequiredCoverDisposition {
+    /// An unavailable candidate writes nothing, so it leaves [`Self::has_written_cover`]
+    /// as it was and EPUB cover extraction moves on exactly as after an attempt that
+    /// wrote nothing.
+    pub(crate) fn unreadable(&mut self, manifest_path: &str, error: impl fmt::Display) {
         self.facts
             .warnings
             .push(ImageWriteWarning::archive_image_acquisition_failed(
                 manifest_path,
                 error,
             ));
-        RequiredCoverDisposition::Retry
+    }
+
+    /// Reports whether any step of this scope has written a cover.
+    ///
+    /// Answered from the scope's own folded Emitted image tally (covers recorded > 0),
+    /// so it can never disagree with the facts the scope returns. Every written cover
+    /// counts, whether converted, conversion-skipped or routed to the GIF destination;
+    /// a cover candidate that wrote nothing does not (ADR-0023).
+    pub(crate) fn has_written_cover(&self) -> bool {
+        self.facts.tally.covers() > 0
     }
 
     /// Runs normal-image fallback as a traversal against a fresh normal-image visitor.
@@ -474,27 +474,24 @@ impl RequiredCoverVisitor<'_, '_> {
         &mut self,
         traverse: impl FnOnce(&mut ArchiveImageVisitor<'_, '_>) -> Result<()>,
     ) -> Result<()> {
-        let outcome = self
-            .pipeline
-            .write_from(self.placement, traverse)
-            .map(|result| ((), result));
+        let outcome = self.pipeline.write_from(self.placement, traverse);
         self.fold(outcome)
     }
 
-    /// Appends one step's facts to this scope and hands back the step's value or error.
+    /// Appends one step's facts to this scope and hands back the step's error, if any.
     ///
     /// The single fold every step of the sequence goes through: a successful step's
     /// facts and a failed step's partial facts are both appended in the order they
-    /// happen, so the caller only ever sees the bare value or error.
+    /// happen, so the caller only ever sees success or the bare error.
     ///
     /// # Errors
     ///
     /// Returns the failed step's error once its partial facts are in this scope.
-    fn fold<T>(&mut self, outcome: ImageWriteOutcome<(T, ImageWriteResult)>) -> Result<T> {
+    fn fold(&mut self, outcome: ImageWriteOutcome) -> Result<()> {
         match outcome {
-            Ok((value, result)) => {
+            Ok(result) => {
                 self.facts.append(result);
-                Ok(value)
+                Ok(())
             }
             Err(failure) => {
                 self.facts.append(failure.partial);
@@ -508,9 +505,10 @@ impl RequiredCoverVisitor<'_, '_> {
 ///
 /// It holds one Image file emission for its whole traversal and stages every
 /// prepared image with it; naming and placement are emission's, not the visitor's.
+/// The visitor keeps no Output placement of its own: only Image file emission holds
+/// it (ADR-0022), and warning facts name source images rather than the placement.
 pub(crate) struct ArchiveImageVisitor<'policy, 'placement> {
     policy: &'policy ImageWritePolicy,
-    placement: &'placement OutputPlacement,
     facts: NormalImageFacts,
     emission: ImageFileEmission<'policy, 'placement>,
 }
@@ -520,7 +518,6 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
     fn new(policy: &'policy ImageWritePolicy, placement: &'placement OutputPlacement) -> Self {
         Self {
             policy,
-            placement,
             facts: NormalImageFacts::default(),
             emission: ImageFileEmission::new(placement),
         }
@@ -541,38 +538,21 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
             return Ok(());
         };
-        let prepared = match prepare_image_for_write(image, self.policy) {
-            ImagePreparation::Prepared(prepared) => prepared,
-            // A normal image is still emitted when conversion falls back: its
-            // original bytes go out as a conversion-skipped image with a warning.
-            ImagePreparation::ConversionFellBack {
-                data,
-                format,
-                reason,
-            } => {
-                let base_name = self.placement.base_name().to_string();
-                self.facts.conversion_warnings.push(match reason {
-                    ConversionFallbackReason::Unsupported => {
-                        ImageWriteWarning::ConversionSkipped { base_name, format }
-                    }
-                    ConversionFallbackReason::Failed(detail) => {
-                        ImageWriteWarning::ConversionFailed { base_name, detail }
-                    }
-                });
-                PreparedImage {
-                    data,
-                    format,
-                    role: EmittedImageRole::ConversionSkipped,
-                }
-            }
-        };
+        let prepared = prepare_image_for_write(image, self.policy);
+        // A conversion fallback's warning goes to the conversion phase, so every
+        // discovery warning in the traversal still precedes it. It names the
+        // source image, not the Output placement, so two fallbacks in one document
+        // stay distinguishable.
+        self.facts
+            .conversion_warnings
+            .extend(prepared.conversion_warning);
 
         // This visitor is bound to the normal-images purpose, so it records
         // normal images; the role-mapping function supplies only the role. The
         // binding holds because only this pipeline can build a required-cover
         // source, and it never hands one to a visitor.
         self.emission
-            .stage(prepared, normal_image_recorder(&mut self.facts.tally))
+            .stage(prepared.image, normal_image_recorder(&mut self.facts.tally))
     }
 
     /// Records a source that the document adapter could not open.
@@ -649,9 +629,11 @@ impl NormalImageFacts {
 
 /// Applies Image write policy's GIF routing and conversion to one accepted image.
 ///
-/// Purpose-free: a conversion that cannot produce requested bytes is reported as
-/// [`ImagePreparation::ConversionFellBack`] for the calling visitor to resolve,
-/// and no warning fact is produced here.
+/// Purpose-free: a conversion that cannot produce requested bytes falls back to
+/// the original bytes under the original Image format, in the conversion-skipped
+/// role, with one warning naming the source image. The same happens for a normal
+/// image and a required cover alike (ADR-0023), so a caller never resolves a
+/// fallback itself; it stages the image and the warning it is handed.
 fn prepare_image_for_write(
     image: AcceptedImage,
     policy: &ImageWritePolicy,
@@ -666,7 +648,7 @@ fn prepare_image_for_write(
 
     if let Some(conversion) = &policy.conversion {
         if let Some(destination) = routed_destination {
-            return ImagePreparation::Prepared(PreparedImage {
+            return ImagePreparation::ready(PreparedImage {
                 data: image.data,
                 format: image.format,
                 role: EmittedImageRole::RoutedGif(destination),
@@ -675,34 +657,40 @@ fn prepare_image_for_write(
 
         match conversion.convert(&image.data, image.format) {
             Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                ImagePreparation::Prepared(PreparedImage {
+                ImagePreparation::ready(PreparedImage {
                     data: converted_bytes,
                     format,
                     role: EmittedImageRole::Converted,
                 })
             }
             Ok(ConversionOutcome::PreservedMatchingSource) => {
-                ImagePreparation::Prepared(PreparedImage {
+                ImagePreparation::ready(PreparedImage {
                     data: image.data,
                     format: image.format,
                     role: EmittedImageRole::Preserved,
                 })
             }
             Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                ImagePreparation::ConversionFellBack {
-                    data: image.data,
-                    format: original_format,
-                    reason: ConversionFallbackReason::Unsupported,
-                }
+                ImagePreparation::fell_back(
+                    image.data,
+                    original_format,
+                    ImageWriteWarning::ConversionSkipped {
+                        source_name: image.source_name,
+                        format: original_format,
+                    },
+                )
             }
-            Err(error) => ImagePreparation::ConversionFellBack {
-                data: image.data,
-                format: image.format,
-                reason: ConversionFallbackReason::Failed(error.to_string()),
-            },
+            Err(error) => ImagePreparation::fell_back(
+                image.data,
+                image.format,
+                ImageWriteWarning::ConversionFailed {
+                    source_name: image.source_name,
+                    detail: error.to_string(),
+                },
+            ),
         }
     } else {
-        ImagePreparation::Prepared(PreparedImage {
+        ImagePreparation::ready(PreparedImage {
             data: image.data,
             format: image.format,
             role: match routed_destination {

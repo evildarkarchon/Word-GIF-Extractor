@@ -48,7 +48,7 @@ use word_image_extractor::{Args, Capture, TerminalOutput, run_cli};
 /// Byte-identical to the crate-private constant of the same name, deliberately, for
 /// the reason the DOCX fallback helper below is: a shared name that meant a subtly
 /// different fixture would be a trap.
-const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+pub const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 
 /// Drives the library entry point once, with a destination that captures everything.
 ///
@@ -261,6 +261,60 @@ pub fn write_extension_fallback_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.png", b"not actually a png")]);
 }
 
+/// The EPUB container declaration pointing at the package document [`write_epub`] writes.
+const EPUB_CONTAINER_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+
+/// Writes an EPUB titled `title` from manifest declarations and archive payloads.
+///
+/// Each manifest tuple is `(id, href, media type, properties)`, with `href` relative to
+/// `OEBPS/`; each payload is `(archive path, bytes)`, so a declaration can be given no
+/// payload or a payload whose bytes disagree with its media type. The package declares
+/// no navigation document and an empty spine, the sparser shape the crate-private
+/// builders also write. Output files are named after `title`.
+pub fn write_epub(
+    path: &Path,
+    title: &str,
+    manifest_resources: &[(&str, &str, &str, Option<&str>)],
+    archive_resources: &[(&str, &[u8])],
+) {
+    let manifest_items = manifest_resources
+        .iter()
+        .map(|(id, href, mime, properties)| {
+            let properties = properties
+                .map(|value| format!(" properties=\"{value}\""))
+                .unwrap_or_default();
+            format!("    <item id=\"{id}\" href=\"{href}\" media-type=\"{mime}\"{properties}/>")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let package = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="bookid" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="bookid">test-book</dc:identifier>
+    <dc:title>{title}</dc:title>
+  </metadata>
+  <manifest>
+{manifest_items}
+  </manifest>
+  <spine></spine>
+</package>"#
+    );
+    // The `mimetype` and container entries come first, the order the format requires.
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("mimetype", b"application/epub+zip"),
+        ("META-INF/container.xml", EPUB_CONTAINER_XML),
+        ("OEBPS/content.opf", package.as_bytes()),
+    ];
+    entries.extend_from_slice(archive_resources);
+    write_zip_archive(path, &entries);
+}
+
 /// Encodes a small valid JPEG whose bytes can be compared after extraction.
 pub fn test_jpeg() -> Vec<u8> {
     let mut image = RgbImage::new(8, 8);
@@ -273,6 +327,30 @@ pub fn test_jpeg() -> Vec<u8> {
         .encode_image(&DynamicImage::ImageRgb8(image))
         .expect("test JPEG should encode");
     bytes
+}
+
+/// Lists the names of every entry directly inside `directory`, sorted.
+///
+/// Sorting makes the comparison independent of the platform's directory order, so
+/// a test can assert the exact set of files a run wrote.
+///
+/// # Panics
+///
+/// Panics when the directory or one of its entries cannot be read, which in these
+/// tests means the run did not create the output it was expected to.
+pub fn sorted_file_names(directory: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(directory)
+        .expect("directory should exist and be readable")
+        .map(|entry| {
+            entry
+                .expect("directory entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
 }
 
 /// Reports whether `directory` holds at least one file with the given extension.
