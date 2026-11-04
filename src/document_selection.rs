@@ -12,9 +12,9 @@ use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::ExtractionRunObserver;
 use crate::output_placement::OutputPlacement;
 
-use self::document_identity::{DedupeKey, DocumentIdentity, EpubFilterTerms};
+use self::document_identity::{DedupeKey, DocumentIdentity};
 use self::progress::{
-    DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck, EpubFilterCheck,
+    DocumentDiscoveryProgress, DocumentSelectionLifecycle, EpubDeduplicationCheck,
 };
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
@@ -264,11 +264,7 @@ pub fn select_documents(
     } else {
         docx_files
     };
-    let filtered = if !options.epub_filter.is_empty() {
-        filter_epub_files(epubs, options.epub_filter, declarations, &mut lifecycle)
-    } else {
-        epubs
-    };
+    let filtered = lifecycle.filtering(options.epub_filter, epubs, declarations);
     let deduplicated = deduplicate_epubs_by_declarations(filtered, declarations, &mut lifecycle);
 
     // The one join that makes the Selected documents: EPUBs first, then other
@@ -388,40 +384,6 @@ fn skip_non_epub_candidates(
             lifecycle.skipped_non_epub_input(path);
         }
     }
-}
-
-/// Filters EPUB candidates by title and creator declarations.
-fn filter_epub_files(
-    epub_files: Vec<EpubCandidate>,
-    filter: &EpubFilter,
-    declarations: &dyn EpubDeclarationSource,
-    lifecycle: &mut DocumentSelectionLifecycle<'_>,
-) -> Vec<EpubCandidate> {
-    let terms = EpubFilterTerms::new(filter);
-
-    lifecycle.filtering(
-        filter,
-        epub_files,
-        |EpubCandidate { path, .. }, diagnostics| {
-            match declarations.acquire(&path) {
-                Ok(declarations)
-                    if DocumentIdentity::of_epub_declarations(Some(&declarations), &path)
-                        .matches(&terms) =>
-                {
-                    EpubFilterCheck::Matched(EpubCandidate {
-                        path,
-                        epub_declarations: Some(declarations),
-                    })
-                }
-                Ok(_) => EpubFilterCheck::Rejected, // File doesn't match filter, skip.
-                Err(error) => {
-                    // Filtering cannot accept an EPUB whose requested declarations are unreadable.
-                    diagnostics.declarations_unreadable(path, error.to_string());
-                    EpubFilterCheck::Rejected
-                }
-            }
-        },
-    )
 }
 
 /// Deduplicates EPUB files based on their creator and title declarations.
