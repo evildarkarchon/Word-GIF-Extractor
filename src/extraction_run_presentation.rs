@@ -22,6 +22,7 @@
 //! behaviour depends on, which would be a behaviour change rather than a move.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -742,10 +743,10 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     message
                 ));
             }
-            ExtractionRunObservation::DocumentWarning { warning, .. } => {
-                // The document path stays run context only; presentation adds the
-                // prefix and nothing else to the Document extraction-owned body.
-                self.print_error_suspended(&document_warning_line(&warning));
+            ExtractionRunObservation::DocumentWarning { path, warning } => {
+                // Presentation adds the prefix and the document path; the body stays
+                // owned by Document extraction and is never reworded here.
+                self.print_error_suspended(&document_warning_line(&path, &warning));
             }
             ExtractionRunObservation::DocumentFinished { .. } => {
                 if let Some(pb) = self.live_bar(DisplayPhase::Extraction) {
@@ -761,14 +762,30 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
 
 /// Builds the terminal line shown for one opaque Document extraction warning.
 ///
-/// Presentation is limited to the `Warning:` prefix; the stable body is read
-/// from the warning value and the originating document path is not added.
-fn document_warning_line(warning: &DocumentExtractionWarning) -> String {
-    format!("Warning: {}", warning.get_message())
+/// Presentation adds the `Warning:` prefix and the originating document's path;
+/// the body is read unchanged from the warning value. The path is needed because
+/// warning bodies name archive entries, and entry names such as
+/// `word/media/image1.png` repeat in nearly every document of a batch.
+fn document_warning_line(path: &Path, warning: &DocumentExtractionWarning) -> String {
+    format!("Warning: {}: {}", path.display(), warning.get_message())
 }
 
 /// Builds the final extraction summary shown in the terminal.
+///
+/// When any selected document failed, `, N document(s) failed` is appended to
+/// whichever template the outcome selects. Without it a run could end
+/// "Extracted 5 image(s) from 2 document(s)" after failing on thirty, with only
+/// the exit status saying otherwise (ADR-0014 left this wording for later).
 fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
+    let summary = output_summary_message(outcome);
+    match outcome.failed_documents() {
+        Some(failed) => format!("{summary}, {failed} document(s) failed"),
+        None => summary,
+    }
+}
+
+/// Builds the part of the final summary that describes what the run produced.
+fn output_summary_message(outcome: &ExtractionRunOutcome) -> String {
     match outcome {
         ExtractionRunOutcome::NoDocuments => "No documents found to process.".to_string(),
         ExtractionRunOutcome::NoOutput {

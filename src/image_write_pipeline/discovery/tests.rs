@@ -40,6 +40,17 @@ struct MagicFormatCase {
     payload: Vec<u8>,
 }
 
+/// Returns a BMP file header followed by a DIB header that declares `dib_size`.
+fn bmp_header(dib_size: u32) -> Vec<u8> {
+    let mut bmp = b"BM".to_vec();
+    // File size, two reserved words and the pixel-data offset; their values are
+    // not part of the signature check.
+    bmp.extend_from_slice(&[0; 12]);
+    bmp.extend_from_slice(&dib_size.to_le_bytes());
+    bmp.extend_from_slice(b"bitmap payload");
+    bmp
+}
+
 /// Returns one representative magic-byte payload per supported signature.
 fn magic_format_cases() -> Vec<MagicFormatCase> {
     let mut emf = vec![0x01, 0x00, 0x00, 0x00];
@@ -65,7 +76,7 @@ fn magic_format_cases() -> Vec<MagicFormatCase> {
         MagicFormatCase {
             name: "bmp",
             format: ImageFormat::Bmp,
-            payload: b"BM bitmap payload".to_vec(),
+            payload: bmp_header(40),
         },
         MagicFormatCase {
             name: "tiff-little-endian",
@@ -180,6 +191,91 @@ fn svg_marker_matches_only_when_a_documented_delimiter_follows() {
     }
 
     assert!(is_svg(b"<?xml version=\"1.0\"?><SVG xmlns=\"...\">"));
+}
+
+/// The opening of Calibre's EPUB title page: XHTML that wraps the cover in inline SVG.
+const CALIBRE_TITLE_PAGE: &[u8] = br#"<?xml version='1.0' encoding='utf-8'?>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+    <head>
+        <title>Cover</title>
+    </head>
+    <body>
+        <div>
+            <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100%" height="100%" viewBox="0 0 600 800" preserveAspectRatio="none">
+                <image width="600" height="800" xlink:href="cover.jpeg"/>
+            </svg>
+        </div>
+    </body>
+</html>"#;
+
+/// Verifies a document with an inline `<svg>` below another root is not SVG evidence.
+#[test]
+fn inline_svg_inside_another_root_is_not_svg_evidence() {
+    assert!(!is_svg(CALIBRE_TITLE_PAGE));
+    assert_eq!(format_from_magic(CALIBRE_TITLE_PAGE), None);
+    assert!(!is_svg(b"<html><svg/></html>"));
+    assert!(!is_svg(b"text before <svg>"));
+}
+
+/// Verifies the prolog constructs a real SVG file may open with are skipped.
+#[test]
+fn svg_root_is_found_after_the_xml_prolog() {
+    for svg in [
+        b"  \r\n\t<svg>".as_slice(),
+        b"<?xml version=\"1.0\" standalone=\"no\"?>\n<svg xmlns=\"...\">",
+        b"<?xml version=\"1.0\"?><?xml-stylesheet href=\"a.css\"?><svg/>",
+        b"<!-- Generator: Adobe Illustrator --> <svg>",
+        b"<!-- a > inside a comment --><svg>",
+        b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">\n<svg>",
+        b"<!doctype svg [ <!ENTITY ns \"http://www.w3.org/2000/svg\"> ]><svg>",
+        b"<?xml version=\"1.0\"?>\n<!-- c -->\n<!DOCTYPE svg>\n<!-- d -->\n<svg width=\"1\">",
+    ] {
+        assert!(
+            is_svg(svg),
+            "{:?} should be recognized as SVG evidence",
+            String::from_utf8_lossy(svg)
+        );
+    }
+}
+
+/// Verifies an unterminated prolog construct is not evidence of what follows it.
+#[test]
+fn unterminated_prolog_is_not_svg_evidence() {
+    assert!(!is_svg(b"<?xml version=\"1.0\" <svg>"));
+    assert!(!is_svg(b"<!-- never closed <svg>"));
+    assert!(!is_svg(b"<!DOCTYPE svg [ <svg>"));
+}
+
+/// Verifies a bare `BM` prefix is not BMP evidence without a known DIB header size.
+#[test]
+fn bmp_requires_a_known_dib_header_size() {
+    for size in [12, 16, 40, 52, 56, 64, 108, 124] {
+        assert_eq!(
+            format_from_magic(&bmp_header(size)),
+            Some(ImageFormat::Bmp),
+            "DIB header size {size}"
+        );
+    }
+    assert_eq!(format_from_magic(b"BM bitmap payload"), None);
+    assert_eq!(format_from_magic(&bmp_header(41)), None);
+    // Shorter than the file header plus the DIB size field.
+    assert_eq!(format_from_magic(&bmp_header(40)[..17]), None);
+}
+
+/// Verifies an XHTML page wrapping its image in inline SVG is not written as an image.
+///
+/// EPUB normal-image extraction offers every manifest resource to discovery, and
+/// magic bytes outrank the declared MIME, so before the root-element requirement a
+/// Calibre title page was accepted as an `.svg` image containing HTML.
+#[test]
+fn xhtml_page_with_inline_svg_completes_silently() {
+    let source =
+        ArchiveImageSource::named("OEBPS/titlepage.xhtml").with_mime("application/xhtml+xml");
+    let mut reader = Cursor::new(CALIBRE_TITLE_PAGE.to_vec());
+
+    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
+
+    assert_eq!(discovered, completed_silently());
 }
 
 #[test]

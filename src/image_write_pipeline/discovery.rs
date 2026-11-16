@@ -15,6 +15,11 @@ const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1A\n";
 const JPG_MAGIC: &[u8] = b"\xFF\xD8\xFF";
 const GIF_MAGIC: &[u8] = b"GIF8";
 const BMP_MAGIC: &[u8] = b"BM";
+// The DIB header follows the 14-byte BMP file header and begins with its own size.
+const BMP_DIB_HEADER_SIZE_OFFSET: usize = 14;
+// Core (12), OS/2 2.x short and full (16, 64), and Windows info headers v1–v5
+// (40, 52, 56, 108, 124).
+const BMP_DIB_HEADER_SIZES: [u32; 8] = [12, 16, 40, 52, 56, 64, 108, 124];
 const TIFF_LE_MAGIC: &[u8] = b"II\x2A\x00";
 const TIFF_BE_MAGIC: &[u8] = b"MM\x00\x2A";
 const RIFF_MAGIC: &[u8] = b"RIFF";
@@ -310,7 +315,7 @@ fn format_from_magic(data: &[u8]) -> Option<ImageFormat> {
     if data.starts_with(GIF_MAGIC) {
         return Some(ImageFormat::Gif);
     }
-    if data.starts_with(BMP_MAGIC) {
+    if is_bmp(data) {
         return Some(ImageFormat::Bmp);
     }
     if data.starts_with(TIFF_LE_MAGIC) || data.starts_with(TIFF_BE_MAGIC) {
@@ -369,17 +374,94 @@ fn is_emf(data: &[u8]) -> bool {
             .is_some_and(|signature| signature == EMF_SIGNATURE)
 }
 
+/// Recognizes a BMP file header: the `BM` signature and a known DIB header size.
+///
+/// Two ASCII letters alone are not evidence: any text resource that begins with
+/// "BM" would pass. The DIB header that follows the 14-byte file header opens with
+/// its own size, and real bitmaps use only a handful of sizes (core, OS/2 and the
+/// Windows `BITMAPINFOHEADER` family). A bitmap with an unusual header still
+/// reaches its format through extension or declared-MIME evidence.
+fn is_bmp(data: &[u8]) -> bool {
+    data.starts_with(BMP_MAGIC)
+        && data
+            .get(BMP_DIB_HEADER_SIZE_OFFSET..BMP_DIB_HEADER_SIZE_OFFSET + 4)
+            .map(|size| u32::from_le_bytes([size[0], size[1], size[2], size[3]]))
+            .is_some_and(|size| BMP_DIB_HEADER_SIZES.contains(&size))
+}
+
+/// Recognizes an SVG document whose root element is `<svg`.
+///
+/// Searches the 1,024 bytes after an optional UTF-8 BOM, skipping leading
+/// whitespace, the XML declaration and other processing instructions, comments,
+/// and a doctype, then requires `<svg` followed by a delimiter. Requiring the root
+/// rather than any occurrence matters for EPUBs: an XHTML page that wraps an image
+/// in inline SVG (Calibre's title page, for one) has `<svg` near its start, and
+/// because magic bytes outrank the declared MIME, it would otherwise be written out
+/// as an SVG image. Matching is ASCII case-insensitive, as it was before the root
+/// requirement, and a namespace-prefixed root such as `<svg:svg>` is not
+/// recognized by bytes; it still reaches SVG through extension or declared MIME.
 fn is_svg(data: &[u8]) -> bool {
     let data = data.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(data);
-    let search_window = &data[..data.len().min(SVG_SEARCH_LIMIT)];
+    let window = &data[..data.len().min(SVG_SEARCH_LIMIT)];
+    let Some(root) = skip_xml_prolog(window) else {
+        return false;
+    };
 
-    (0..search_window.len()).any(|start| {
-        starts_with_ignore_ascii_case(&search_window[start..], b"<svg")
-            && matches!(
-                search_window.get(start + 4),
-                None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')
-            )
-    })
+    starts_with_ignore_ascii_case(root, b"<svg")
+        && matches!(
+            root.get(4),
+            None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')
+        )
+}
+
+/// Returns the bytes from the first element-like markup after an XML prolog.
+///
+/// Skips whitespace, `<? … ?>` processing instructions (the XML declaration among
+/// them), `<!-- … -->` comments and one or more `<!DOCTYPE …>` declarations,
+/// including a bracketed internal subset. Returns `None` when a construct is left
+/// unterminated inside `data`, because what follows it cannot be known.
+fn skip_xml_prolog(mut data: &[u8]) -> Option<&[u8]> {
+    loop {
+        data = data.trim_ascii_start();
+        if data.starts_with(b"<?") {
+            data = after(data, 2, b"?>")?;
+        } else if data.starts_with(b"<!--") {
+            data = after(data, 4, b"-->")?;
+        } else if starts_with_ignore_ascii_case(data, b"<!DOCTYPE") {
+            data = after_doctype(data)?;
+        } else {
+            return Some(data);
+        }
+    }
+}
+
+/// Returns the bytes after the first `terminator` found at or beyond `start`.
+fn after<'a>(data: &'a [u8], start: usize, terminator: &[u8]) -> Option<&'a [u8]> {
+    let body = data.get(start..)?;
+    body.windows(terminator.len())
+        .position(|candidate| candidate == terminator)
+        .map(|index| &body[index + terminator.len()..])
+}
+
+/// Returns the bytes after a doctype declaration's closing `>`.
+///
+/// A `>` inside a quoted public or system identifier, or inside the bracketed
+/// internal subset, does not close the declaration.
+fn after_doctype(data: &[u8]) -> Option<&[u8]> {
+    let mut quote = None;
+    let mut subset_depth = 0usize;
+    for (index, &byte) in data.iter().enumerate() {
+        match (quote, byte) {
+            (Some(open), _) if byte == open => quote = None,
+            (Some(_), _) => {}
+            (None, b'"' | b'\'') => quote = Some(byte),
+            (None, b'[') => subset_depth += 1,
+            (None, b']') => subset_depth = subset_depth.saturating_sub(1),
+            (None, b'>') if subset_depth == 0 => return Some(&data[index + 1..]),
+            (None, _) => {}
+        }
+    }
+    None
 }
 
 fn starts_with_ignore_ascii_case(data: &[u8], prefix: &[u8]) -> bool {

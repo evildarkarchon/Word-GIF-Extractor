@@ -69,7 +69,10 @@ fn filtered_only_cover_falls_back_to_jpeg_normal_images() {
 
     assert_eq!(
         capture.stderr(),
-        "Warning: Cover image format 'png' not in allowed formats, skipping.\n"
+        format!(
+            "Warning: {}: Cover image format 'png' not in allowed formats, skipping.\n",
+            document_path.display()
+        )
     );
     let progress = capture.progress_text();
     assert!(

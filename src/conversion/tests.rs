@@ -326,6 +326,88 @@ fn test_format_matrix() {
     }
 }
 
+/// Encodes a 4x4 PNG of the given colour type, with a gradient so no channel is flat.
+fn create_png_of_color(color: image::ColorType) -> Vec<u8> {
+    let rgba = RgbaImage::from_fn(4, 4, |x, y| {
+        Rgba([(x * 60) as u8, (y * 60) as u8, 128, 64 + (x * 40) as u8])
+    });
+    let source = DynamicImage::ImageRgba8(rgba);
+    let shaped = match color {
+        image::ColorType::L8 => DynamicImage::ImageLuma8(source.to_luma8()),
+        image::ColorType::La8 => DynamicImage::ImageLumaA8(source.to_luma_alpha8()),
+        image::ColorType::L16 => DynamicImage::ImageLuma16(source.to_luma16()),
+        image::ColorType::Rgb16 => DynamicImage::ImageRgb16(source.to_rgb16()),
+        image::ColorType::Rgba16 => DynamicImage::ImageRgba16(source.to_rgba16()),
+        other => panic!("no fixture for colour type {other:?}"),
+    };
+    let mut buf = Cursor::new(Vec::new());
+    shaped.write_to(&mut buf, EncodedImageFormat::Png).unwrap();
+    let bytes = buf.into_inner();
+    assert_eq!(
+        image::load_from_memory(&bytes).unwrap().color(),
+        color,
+        "the fixture should decode as the colour type it names"
+    );
+    bytes
+}
+
+/// Verifies grayscale, gray-alpha and 16-bit sources convert to every target.
+///
+/// Lossy WebP once rejected all of these with `Unimplemented`, because the `webp`
+/// crate encodes only 8-bit RGB and RGBA; the other targets go through the
+/// `image` crate, which converts colour types itself.
+#[test]
+fn non_rgb8_sources_convert_to_every_target() {
+    let colors = [
+        image::ColorType::L8,
+        image::ColorType::La8,
+        image::ColorType::L16,
+        image::ColorType::Rgb16,
+        image::ColorType::Rgba16,
+    ];
+    let targets = [
+        ("jpg", CodecTarget::Jpg, false),
+        ("png", CodecTarget::Png, false),
+        ("lossy webp", CodecTarget::Webp, false),
+        ("lossless webp", CodecTarget::Webp, true),
+    ];
+
+    for color in colors {
+        let source = create_png_of_color(color);
+        for (name, target, lossless) in targets {
+            let bytes = convert_image(&source, target, 85, lossless)
+                .unwrap_or_else(|error| panic!("{color:?} -> {name}: {error:#}"))
+                .unwrap_or_else(|| panic!("{color:?} -> {name}: unexpected None"));
+            let decoded = image::load_from_memory(&bytes)
+                .unwrap_or_else(|error| panic!("{color:?} -> {name}: undecodable: {error}"));
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (4, 4),
+                "{color:?} -> {name}"
+            );
+        }
+    }
+}
+
+/// Verifies lossy WebP keeps an alpha channel when the source has one, and adds
+/// none when it does not.
+#[test]
+fn lossy_webp_alpha_follows_the_source() {
+    for (color, expect_alpha) in [
+        (image::ColorType::La8, true),
+        (image::ColorType::Rgba16, true),
+        (image::ColorType::L8, false),
+        (image::ColorType::Rgb16, false),
+    ] {
+        let source = create_png_of_color(color);
+        let bytes = convert_image(&source, CodecTarget::Webp, 85, false)
+            .expect("lossy WebP conversion should succeed")
+            .expect("PNG is a supported source");
+        let decoded = image::load_from_memory(&bytes).expect("output should decode");
+        assert_eq!(decoded.color().has_alpha(), expect_alpha, "{color:?}");
+    }
+}
+
 #[test]
 fn test_convert_returns_bytes() {
     let png_data = create_test_rgba_png();

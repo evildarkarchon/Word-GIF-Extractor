@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codebase audit — word-image-extractor</title>
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --ink: #1d1f23;
+    --muted: #5d636e;
+    --rule: #dedbd3;
+    --code-bg: #f0eee8;
+    --accent: #2b5fb3;
+    --high: #b3261e;
+    --high-bg: #fbeceb;
+    --med: #9a5b00;
+    --med-bg: #fbf1dc;
+    --low: #3d5a80;
+    --low-bg: #e9eff6;
+    --ok: #1f6f43;
+    --ok-bg: #e4f3ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15171a;
+      --surface: #1d2024;
+      --ink: #e7e8ea;
+      --muted: #a0a6b1;
+      --rule: #33373e;
+      --code-bg: #262a30;
+      --accent: #8ab4f8;
+      --high: #ff8a80;
+      --high-bg: #3a1f1d;
+      --med: #f2c063;
+      --med-bg: #38301c;
+      --low: #a9c4e6;
+      --low-bg: #1f2a38;
+      --ok: #7fd3a2;
+      --ok-bg: #1b3024;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 940px; margin: 0 auto; padding: 0 20px 80px; }
+  header.top { padding: 44px 0 20px; border-bottom: 1px solid var(--rule); }
+  h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 1.4rem; margin: 52px 0 12px; padding-top: 8px; letter-spacing: -0.01em; }
+  h3 { font-size: 1.05rem; margin: 0; line-height: 1.35; }
+  h4 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 16px 0 4px; }
+  p { margin: 8px 0; }
+  a { color: var(--accent); }
+  .lede { color: var(--muted); margin: 0; }
+  .lede code { font-size: 0.85em; }
+  code, pre { font-family: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; overflow-wrap: anywhere; }
+  pre {
+    background: var(--code-bg);
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    margin: 8px 0;
+  }
+  pre .note { color: var(--muted); font-style: italic; }
+  nav.toc {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--bg);
+    border-bottom: 1px solid var(--rule);
+    padding: 10px 0;
+    display: flex; flex-wrap: wrap; gap: 4px 18px;
+    font-size: 0.9rem;
+  }
+  nav.toc a { text-decoration: none; }
+  nav.toc a:hover { text-decoration: underline; }
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 24px 0 0;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+  .tile { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; }
+  .tile .n { font-size: 1.7rem; font-weight: 650; line-height: 1.1; }
+  .tile .l { color: var(--muted); font-size: 0.85rem; margin-top: 4px; }
+  .tile.high .n { color: var(--high); }
+  .tile.med .n { color: var(--med); }
+  .tile.low .n { color: var(--low); }
+  .tile.ok .n { color: var(--ok); }
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 5px solid var(--rule);
+    border-radius: 8px;
+    padding: 18px 20px;
+    margin: 16px 0;
+  }
+  .finding.high { border-left-color: var(--high); }
+  .finding.med { border-left-color: var(--med); }
+  .finding.low { border-left-color: var(--low); }
+  .finding header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .id { font-family: ui-monospace, Consolas, monospace; font-weight: 700; font-size: 0.95rem; }
+  .high .id { color: var(--high); }
+  .med .id { color: var(--med); }
+  .low .id { color: var(--low); }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 10px 0 4px; font-size: 0.8rem; align-items: center; }
+  .badge { border-radius: 999px; padding: 2px 10px; font-weight: 600; white-space: nowrap; }
+  .badge.high { background: var(--high-bg); color: var(--high); }
+  .badge.med { background: var(--med-bg); color: var(--med); }
+  .badge.low { background: var(--low-bg); color: var(--low); }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.plain { background: var(--code-bg); color: var(--muted); }
+  .adr {
+    border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 12px;
+    margin: 12px 0 0;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+  .adr strong { color: var(--ink); }
+  .badge.fixed { background: var(--ok); color: var(--surface); }
+  .badge.partial { background: var(--ok-bg); color: var(--ok); box-shadow: inset 0 0 0 1px var(--ok); }
+  .badge.fixed a, .badge.partial a { color: inherit; }
+  .impl {
+    border-left: 3px solid var(--ok);
+    padding: 2px 0 2px 12px;
+    margin: 12px 0 0;
+    font-size: 0.92rem;
+  }
+  .impl strong { color: var(--ok); }
+  .status {
+    background: var(--ok-bg);
+    border: 1px solid var(--rule);
+    border-left: 5px solid var(--ok);
+    border-radius: 8px;
+    padding: 12px 18px;
+    margin: 16px 0 0;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  .keep { color: var(--ok); font-weight: 600; white-space: nowrap; }
+  .revise { color: var(--med); font-weight: 600; white-space: nowrap; }
+  .retire { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 18px; }
+  .panel h3 { margin-bottom: 6px; }
+  footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.88rem; }
+  @media print {
+    nav.toc { position: static; }
+    .finding, .panel, .tile { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="top">
+  <h1>Codebase audit: word-image-extractor</h1>
+  <p class="lede">14 November 2026 · commit <code>e3ce9fb5f</code> on <code>main</code> · crate version 0.3.0 · independent of the earlier reviews in this folder</p>
+
+  <div class="verdict">
+    <p><strong>The internals are in good shape; the behaviour at the edges is not.</strong> The build is green, the lint gate is clean, and the core pipeline is carefully modelled. But driving the release binary with realistic documents turned up four high-severity defects that the 327 passing tests do not see: ordinary EPUB title pages are written out as <code>.svg</code> "images", deduplication silently drops distinct books, the run summary disappears whenever stderr is not a terminal, and putting <code>-f</code> before the input path redirects the run to the whole current directory.</p>
+    <p>The common cause is that every test fixture is a minimal synthetic archive. The code is tested thoroughly against the shapes its authors imagined and not at all against the shapes Calibre and Word actually produce.</p>
+  </div>
+
+  <div class="status">
+    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Sections">
+  <a href="#glance">At a glance</a>
+  <a href="#method">Method</a>
+  <a href="#high">High</a>
+  <a href="#medium">Medium</a>
+  <a href="#low">Low</a>
+  <a href="#adrs">Expired ADRs</a>
+  <a href="#solid">What is solid</a>
+  <a href="#order">Order of work</a>
+  <a href="#appendix">Fixtures</a>
+</nav>
+
+<section id="glance">
+  <h2>At a glance</h2>
+  <div class="tiles">
+    <div class="tile high"><div class="n">4</div><div class="l">High: wrong output or silent omission</div></div>
+    <div class="tile med"><div class="n">9</div><div class="l">Medium: functional gaps, hardening, maintenance</div></div>
+    <div class="tile low"><div class="n">12</div><div class="l">Low: polish and hygiene</div></div>
+    <div class="tile ok"><div class="n">327</div><div class="l">tests passing (312 unit, 15 integration)</div></div>
+  </div>
+  <div class="tiles">
+    <div class="tile"><div class="n">6,562</div><div class="l">lines of production source</div></div>
+    <div class="tile"><div class="n">≈12,300</div><div class="l">lines of tests and test support</div></div>
+    <div class="tile"><div class="n">146</div><div class="l">crates in the dependency tree</div></div>
+    <div class="tile"><div class="n">2.8 MB</div><div class="l">release binary</div></div>
+  </div>
+  <p>Baseline on this commit: <code>cargo build --release</code> succeeds, <code>cargo test</code> passes all 327 tests, <code>cargo clippy --all-targets -- -D warnings</code> is clean, and <code>cargo fmt --check</code> reports no differences.</p>
+  <p>Of the 25 findings, thirteen were reproduced by running the release binary, six rest on measurements from <code>cargo</code> and <code>rustc</code> or on direct observation of the repository, and six are read from the code without being executed. Each finding carries a badge saying which.</p>
+</section>
+
+<section id="method">
+  <h2>Method and limits</h2>
+  <ul>
+    <li><strong>Read in full:</strong> all production source under <code>src/</code> (every file except <code>tests.rs</code> modules and <code>test_support.rs</code>), <code>Cargo.toml</code>, <code>README.md</code>, <code>GLOSSARY.md</code>, <code>AGENTS.md</code>.</li>
+    <li><strong>Read in part:</strong> the 23 ADRs (opening section of each; ADR-0014 whole), the integration tests and both test-support modules (sampled, plus searches for specific coverage).</li>
+    <li><strong>Executed:</strong> the build, test, clippy and fmt gates; <code>cargo tree</code>, <code>cargo update --dry-run</code> and <code>cargo search</code> for dependency facts; and the release binary against eleven small fixture files built for this audit (described in the <a href="#appendix">appendix</a>).</li>
+    <li><strong>Not done:</strong> no run on a real terminal (the harness has none, so the on-terminal half of H3 is inferred from the progress library's documented behaviour); no Linux or macOS run; no security advisory scan, because neither <code>cargo-audit</code> nor <code>cargo-deny</code> is installed; no line-by-line review of the test code; peak memory in M6 was not measured.</li>
+    <li><strong>Earlier reviews:</strong> not used as input. ADRs 0017 to 0024 are treated as binding and any recommendation that touches one says so. ADRs 0001 to 0016 are treated as open and assessed in <a href="#adrs">their own section</a>.</li>
+  </ul>
+</section>
+
+<section id="high">
+  <h2>High severity</h2>
+
+  <article class="finding high" id="H1">
+    <header><span class="id">H1</span><h3>EPUB pages that contain inline SVG are extracted as <code>.svg</code> images</h3></header>
+    <div class="meta">
+      <span class="badge high">High</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge ok">Reproduced</span>
+      <code>src/image_write_pipeline/discovery.rs:372-383</code>
+    </div>
+    <p><code>is_svg</code> accepts any resource whose first 1,024 bytes contain <code>&lt;svg</code> anywhere. Magic bytes outrank the declared MIME type, and EPUB normal-image extraction sniffs every manifest resource, so an XHTML page that wraps an image in inline SVG is identified as an SVG image and written out. That is exactly the title page Calibre generates for every book it converts, so most Calibre-produced EPUBs yield one bogus <code>.svg</code> file containing HTML.</p>
+    <pre>$ word-image-extractor fixtures/calibre -o out/calibre
+$ ls out/calibre
+Some Author - Calibre Book_1.jpg
+Some Author - Calibre Book_2.png
+Some Author - Calibre Book_3.svg        <span class="note">← titlepage.xhtml</span>
+$ head -c 96 "out/calibre/Some Author - Calibre Book_3.svg"
+&lt;?xml version='1.0' encoding='utf-8'?&gt;
+&lt;html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en"&gt;</pre>
+    <p>The bogus file also takes an ordinal, is counted in the summary, and with <code>--convert</code> produces a "format not supported for conversion" warning. A fixture comment at <code>src/test_support.rs:977</code> states that an XHTML resource "is declared as <code>application/xhtml+xml</code>, so extraction never treats it as an image"; that holds only because the fixture's body is empty.</p>
+    <h4>Recommendation</h4>
+    <p>Require <code>&lt;svg</code> to be the document's root element: skip a BOM, whitespace, an XML declaration, comments and a doctype, then demand <code>&lt;svg</code>. That keeps byte-first discovery intact for genuine SVG files with weak labels. The neighbouring signatures deserve the same look: BMP is accepted on two bytes (<code>BM</code>, line 313), which any text resource beginning with those letters satisfies.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>is_svg</code> now skips a BOM, whitespace, processing instructions (the XML declaration among them), comments and doctypes, internal subset included, within the same 1,024-byte window, and then requires <code>&lt;svg</code> followed by a delimiter. A prolog construct left unterminated inside the window is not evidence. A namespace-prefixed root such as <code>&lt;svg:svg&gt;</code> is not recognized from bytes; it still reaches SVG through its extension or declared MIME. BMP now also needs a known DIB header size (12, 16, 40, 52, 56, 64, 108 or 124) at offset 14, not just the two letters. A Calibre-style title page is tested both on the recognizer and through discovery, and the fixture comment in <code>src/test_support.rs</code> now says it is the bytes, not the declared MIME type, that decide.</p>
+  </article>
+
+  <article class="finding high" id="H2">
+    <header><span class="id">H2</span><h3>EPUB deduplication silently drops books that are not duplicates</h3></header>
+    <div class="meta">
+      <span class="badge high">High</span><span class="badge ok">Reproduced</span>
+      <code>src/document_selection/phases.rs:203-278</code>
+      <code>src/document_selection/document_identity.rs:121-131</code>
+    </div>
+    <p>Every run deduplicates EPUBs by case-folded creator and title, with no flag to turn it off and no mention in the README. Three realistic inputs lose documents:</p>
+    <ul>
+      <li><strong>Periodicals and serials</strong> whose issues share one creator and title: only the first issue is processed.</li>
+      <li><strong>Creator-only metadata.</strong> An absent title becomes an empty string in the key, so every title-less book by one author collapses into one.</li>
+      <li><strong>Undeclared EPUBs with the same file name</strong> in different directories are treated as one book on the name alone.</li>
+    </ul>
+    <pre>$ ls fixtures/serial                  <span class="note"># three issues, each: creator "The Weekly", title "The Weekly"</span>
+weekly-2026-01.epub  weekly-2026-02.epub  weekly-2026-03.epub
+$ word-image-extractor fixtures/serial -o out/serial ; echo exit=$?
+exit=0
+$ ls out/serial
+The Weekly - The Weekly.png           <span class="note">← one image; two issues were never opened</span>
+
+$ word-image-extractor fixtures/creator_only -o out/creator   <span class="note"># first.epub, second.epub: creator "Jane Doe", no title</span>
+$ ls out/creator
+Jane Doe.png</pre>
+    <p>The only trace is "Removed 2 duplicate EPUB(s)" on the progress display, which names no file and, per H3, is invisible when stderr is redirected. The run exits 0.</p>
+    <h4>Recommendation</h4>
+    <ol>
+      <li>Report each dropped EPUB as a Document selection diagnostic naming both the dropped path and the one it duplicated, as <code>SkippedNonEpubInput</code> already does for its case.</li>
+      <li>Tighten the key. The package's <code>dc:identifier</code> is the field designed for this: issues of a periodical differ in it and true copies share it. Fall back to creator plus title only when both are declared, and never treat a path identity as a duplicate of a file in another directory.</li>
+      <li>Add an opt-out (<code>--keep-duplicates</code>) and document the behaviour in the README.</li>
+    </ol>
+    <p class="adr"><strong>ADR note:</strong> ADR-0019 (binding) governs the repeat-sighting collapse and the join order, not identity-based deduplication, so none of this contradicts it. The Document identity entry in <code>GLOSSARY.md</code> would need its duplicate-recognition sentence revised.</p>
+  </article>
+
+  <article class="finding high" id="H3">
+    <header><span class="id">H3</span><h3>The run summary vanishes whenever stderr is not a terminal</h3></header>
+    <div class="meta">
+      <span class="badge high">High</span><span class="badge ok">Reproduced</span>
+      <code>src/extraction_run_presentation.rs:534-539</code>
+      <code>:243-252</code>
+    </div>
+    <p>For every run that selects at least one document, the terminal summary is delivered by finishing the progress bar with the summary as its message. The progress library hides its stderr target when stderr is not a terminal, so under a pipe, a redirect, a scheduled task or CI the summary is never written anywhere. A successful run is completely silent:</p>
+    <pre>$ word-image-extractor fixtures/docx/thumb.docx -o out/E &gt; stdout.txt 2&gt; stderr.txt ; echo exit=$?
+exit=0
+stdout: 0 bytes    stderr: 0 bytes        <span class="note"># two files were written</span></pre>
+    <p>The same applies to "No images found", "No cover images found", "Found N matching EPUB(s)" and "Removed N duplicate EPUB(s)". There is also a stream inconsistency: "No documents found to process." goes to <strong>stdout</strong> (no display is live), while every other summary goes to <strong>stderr</strong> through the display. A script cannot capture the result line from one place.</p>
+    <p>The capture harness cannot see this, because <code>RecordingTerm</code> always behaves like a terminal.</p>
+    <h4>Recommendation</h4>
+    <p>Treat the summary as output, not as progress decoration: clear the live display, then print the summary line to stdout in every case. Give <code>TerminalOutput::captured</code> a non-terminal mode (a hidden draw target) and pin the summary with it.</p>
+    <p class="adr"><strong>ADR note:</strong> this revises the routing rule in ADR-0013 ("the terminal summary finishes the live display or, when none is live, is printed to standard output"). ADR-0013 is expired and open for re-evaluation; the transcript design it also records is unaffected.</p>
+  </article>
+
+  <article class="finding high" id="H4">
+    <header><span class="id">H4</span><h3><code>-f</code> placed before the input path swallows the path and retargets the run</h3></header>
+    <div class="meta">
+      <span class="badge high">High</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge ok">Reproduced</span>
+      <code>src/extraction_run_intake.rs:83-84</code>
+    </div>
+    <p><code>--formats</code> is declared with <code>num_args = 0..</code>, so it keeps consuming arguments after the comma-separated list. In the conventional flags-first order, the document path becomes a format token. It is then "ignored" as unrecognized, no input remains, and intake falls back to the current directory:</p>
+    <pre>$ cd fixtures/docx
+$ word-image-extractor -f png,jpg thumb.docx -o ../../out/A
+No input path specified, using current directory: …/fixtures/docx
+Warning: Unrecognized format 'thumb.docx' ignored
+$ ls ../../out/A
+colors_1.png  colors_2.png  colors_3.png  thumb_1.jpg  thumb_2.png   <span class="note">← every document in the directory</span></pre>
+    <p>The user asked for one file and the tool processed the whole working directory, exit 0. Without <code>-o</code> it would also have written beside every one of those documents.</p>
+    <h4>Recommendation</h4>
+    <p>Take exactly one value per occurrence: <code>num_args = 1</code> with the existing <code>value_delimiter = ','</code> (and <code>ArgAction::Append</code> if repeating the flag should accumulate). Add a parse test for <code>-f png,jpg file.docx</code>. Combined with M3, an unrecognized token would then be an error instead of a detour.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>--formats</code> takes one comma-separated value per occurrence (<code>num_args = 1</code> with <code>ArgAction::Append</code>), so repeating the flag accumulates and a bare <code>-f</code> is a parse error. Parse tests cover <code>-f png,jpg file.docx</code> in both spellings, repetition, and the missing value. M3 is untouched: an unrecognized token is still a warning, not an error.</p>
+  </article>
+</section>
+
+<section id="medium">
+  <h2>Medium severity</h2>
+
+  <article class="finding med" id="M1">
+    <header><span class="id">M1</span><h3>Lossy WebP conversion fails on every grayscale and 16-bit image</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge ok">Reproduced</span>
+      <code>src/conversion.rs:339-344</code>
+    </div>
+    <p><code>webp::Encoder::from_image</code> implements only 8-bit RGB and RGBA and returns <code>Err("Unimplemented")</code> for everything else. Grayscale scans and line art are common in books, so <code>--convert webp</code> leaves a large share of real images unconverted.</p>
+    <pre>$ word-image-extractor fixtures/docx/colors.docx -C webp -o out/webp
+Warning: Conversion failed for word/media/image1.png: WebP encoder creation failed: Unimplemented   <span class="note"># 8-bit gray</span>
+Warning: Conversion failed for word/media/image2.png: WebP encoder creation failed: Unimplemented   <span class="note"># 16-bit RGB</span>
+$ ls out/webp
+colors_1.png  colors_2.png  colors_3.webp</pre>
+    <p>The same file converts completely with <code>-C jpg</code> and with <code>-C webp --lossless</code>, which go through the <code>image</code> crate's encoders. No conversion test uses a non-RGB8 source.</p>
+    <h4>Recommendation</h4>
+    <p>Normalize before encoding: <code>to_rgba8()</code> when the colour type has alpha, otherwise <code>to_rgb8()</code>, then <code>Encoder::from_rgba</code> or <code>from_rgb</code>. Add grayscale, gray-alpha and 16-bit cases to <code>src/conversion/tests.rs</code> for all three targets.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>encode_webp_lossy</code> normalizes with <code>to_rgba8()</code> when the colour type has alpha and <code>to_rgb8()</code> otherwise, then encodes through <code>Encoder::from_rgba</code> or <code>from_rgb</code>. <code>src/conversion/tests.rs</code> converts L8, La8, L16, Rgb16 and Rgba16 sources to JPEG, PNG, lossy WebP and lossless WebP. It also checks that lossy WebP keeps an alpha channel exactly when the source has one. The matrix test fails against the old encoder.</p>
+  </article>
+
+  <article class="finding med" id="M2">
+    <header><span class="id">M2</span><h3>Cover detection misses common EPUBs, and a book with no candidate says nothing</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <code>src/epub_declarations.rs:25</code>
+      <code>src/document_extraction/epub/cover_extraction.rs:25,95</code>
+    </div>
+    <ul>
+      <li><strong>EPUB 3 with the EPUB 2 cover meta.</strong> The <code>epub</code> crate's <code>get_cover_id</code> reads only <code>properties="cover-image"</code> for version 3 packages and only <code>&lt;meta name="cover"&gt;</code> for version 2. A version 3 package that carries just the meta element, which is widespread, has no declared cover.</li>
+      <li><strong>The filename candidate is JPEG-only.</strong> <code>cover.png</code> and <code>cover.webp</code> are never considered.</li>
+      <li><strong>No candidate, no message.</strong> When neither candidate exists, the document writes nothing and warns nothing. The README says such an EPUB's "warnings say why".</li>
+    </ul>
+    <pre><span class="note"># EPUB 3 package: &lt;meta name="cover" content="front"/&gt;  +  &lt;item id="front" href="images/front.png" media-type="image/png"/&gt;</span>
+$ word-image-extractor fixtures/epub3 --cover-only -o out/epub3 ; echo exit=$?
+exit=0                                 <span class="note"># no file, no warning, no output directory</span></pre>
+    <h4>Recommendation</h4>
+    <p>Try both declarations whatever the package version; widen the filename candidate to any supported raster extension; emit one Document extraction warning when a cover run finds no candidate at all, so a batch shows which books had none.</p>
+    <p class="adr"><strong>ADR note:</strong> ADR-0021 and ADR-0023 (both binding) describe two candidates in a fixed order. This keeps their rules (first written cover wins, hand-over on a candidate that writes nothing, fallback exactly when none was written) and lengthens the candidate list, which should be recorded as an amendment rather than slipped in.</p>
+  </article>
+
+  <article class="finding med" id="M3">
+    <header><span class="id">M3</span><h3>A typo in <code>--formats</code> widens the run to every format</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <code>src/extraction_run_intake.rs:287-289</code>
+    </div>
+    <p>If no token is recognized, the allowed set silently becomes all ten formats. A filter flag that fails open does the opposite of what was asked, with exit 0.</p>
+    <pre>$ word-image-extractor fixtures/docx/thumb.docx -f pgn -o out/B
+Warning: Unrecognized format 'pgn' ignored
+$ ls out/B
+thumb_1.jpg  thumb_2.png</pre>
+    <h4>Recommendation</h4>
+    <p>Reject unknown tokens at parse time with a clap <code>value_parser</code> (exit 2, listing the valid names). If compatibility matters more, at least fail when <em>every</em> token was rejected. The comment at line 266 calls the current behaviour "existing compatibility behavior"; this is a deliberate change to it.</p>
+  </article>
+
+  <article class="finding med" id="M4">
+    <header><span class="id">M4</span><h3>A named input that is missing or unsupported still exits 0, the latter without a word</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <code>src/document_selection/discovery.rs:86-95,118</code>
+      <code>src/extraction_run_presentation.rs:61-64</code>
+    </div>
+    <pre>$ word-image-extractor nope.docx ; echo exit=$?
+Warning: Input path does not exist: nope.docx
+No documents found to process.
+exit=0
+$ word-image-extractor fixtures/docx/notes.txt ; echo exit=$?
+No documents found to process.           <span class="note"># no hint that the extension is the reason</span>
+exit=0</pre>
+    <p>A script that passes a wrong path gets success. A user who passes <code>report.doc</code> or <code>book.mobi</code> gets a message that reads as though the file were empty.</p>
+    <h4>Recommendation</h4>
+    <p>Distinguish what the user <em>named</em> from what a directory search <em>turned up</em>; <code>CandidateOrigin</code> already carries that. A named path that does not exist, or names an unsupported kind, should be reported as an error and make the exit status 1. An empty directory sweep stays 0.</p>
+    <p class="adr"><strong>ADR note:</strong> this revises ADR-0014 (expired). Its stated reason for exit 0 was that "presentation labels it a warning, and an exit status that disagreed with the label would be a second classification drifting from the first". That argues for changing both together, not for keeping either.</p>
+  </article>
+
+  <article class="finding med" id="M5">
+    <header><span class="id">M5</span><h3>The DOCX adapter sniffs every ZIP entry, so preview thumbnails become image 1</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <code>src/document_extraction/docx.rs:32</code>
+    </div>
+    <p>The adapter visits all entries, not the media folder. Word's optional <code>docProps/thumbnail.*</code> (the file-manager preview) is therefore extracted as a document image. ZIP order puts it first, so it renumbers the real images and turns a single-image document's <code>name.png</code> into <code>name_2.png</code>.</p>
+    <pre><span class="note"># thumb.docx holds docProps/thumbnail.jpeg and word/media/image1.png</span>
+$ word-image-extractor fixtures/docx/thumb.docx -o out/thumb ; ls out/thumb
+thumb_1.jpg      <span class="note">← the preview thumbnail</span>
+thumb_2.png      <span class="note">← the document's only image</span></pre>
+    <h4>Recommendation</h4>
+    <p>Limit the traversal to media parts (<code>word/media/</code>; matching <code>*/media/*</code> would also serve the other Office formats, see Opportunities), or at minimum exclude <code>docProps/</code>.</p>
+    <p class="adr"><strong>ADR note:</strong> ADR-0020 (binding) holds that "no name is grounds for a silent skip". It was written about unreadable sources and about names never reaching an output path, and this would be an eligibility rule rather than a guard, but it is close enough to that sentence that it should be decided explicitly.</p>
+  </article>
+
+  <article class="finding med" id="M6">
+    <header><span class="id">M6</span><h3>Accepted entries are buffered whole with no size limit</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Output reproduced</span><span class="badge plain">Memory: from code</span>
+      <code>src/image_write_pipeline/discovery.rs:241</code>
+    </div>
+    <p>Identification is bounded to 1,027 bytes, but an accepted entry is then read to the end into a <code>Vec</code> before anything is written, and conversion decodes a second copy. Nothing checks the entry's declared or actual size. A 522 KB document built for this audit inflated to a 512 MiB output file:</p>
+    <pre>$ ls -l fixtures/big/big.docx     →  521,999 bytes
+$ word-image-extractor fixtures/big/big.docx -o out/big ; ls -l out/big
+536,870,920  big.png</pre>
+    <p>For a local tool run on one's own library this is a robustness concern more than a security one, but a batch over downloaded books is exactly where a malformed archive turns up, and with <code>panic = "abort"</code> an allocation failure ends the whole run.</p>
+    <h4>Recommendation</h4>
+    <p>Set a per-entry ceiling (configurable, generous by default) and turn an oversize entry into a Document extraction warning. When no conversion is requested, stream the remainder of the reader into the reserved file instead of buffering; the naming lookahead only needs to hold back the first image.</p>
+  </article>
+
+  <article class="finding med" id="M7">
+    <header><span class="id">M7</span><h3>Warnings do not say which document they belong to</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge ok">Reproduced</span>
+      <code>src/extraction_run_presentation.rs:745-749,766-768</code>
+    </div>
+    <p>The <code>DocumentWarning</code> observation carries the document path, and presentation discards it. Entry names repeat across documents (<code>word/media/image1.png</code> is in nearly every DOCX), so a batch produces lines that cannot be traced:</p>
+    <pre>$ word-image-extractor colors.docx colors2.docx -C webp -o out/I
+Warning: Conversion failed for word/media/image1.png: WebP encoder creation failed: Unimplemented
+Warning: Conversion failed for word/media/image2.png: WebP encoder creation failed: Unimplemented
+Warning: Conversion failed for word/media/image1.png: WebP encoder creation failed: Unimplemented
+Warning: Conversion failed for word/media/image2.png: WebP encoder creation failed: Unimplemented</pre>
+    <h4>Recommendation</h4>
+    <p>Prefix the path presentation already receives: <code>Warning: colors2.docx: Conversion failed for …</code>. The warning body stays owned by Document extraction; only the prefix changes.</p>
+  <p class="impl"><strong>Implementation:</strong> Lines now read <code>Warning: &lt;path&gt;: &lt;body&gt;</code>. One difference from the recommendation: the prefix is the document path as the run observed it, not its file name. That matches the existing <code>Error processing &lt;path&gt;</code> line and keeps two documents that share a name in different folders apart. The two tests that pinned the old rule (no document path in a warning) now assert that the path sits between the prefix and the unchanged body.</p>
+  </article>
+
+  <article class="finding med" id="M8">
+    <header><span class="id">M8</span><h3>Dependencies: seven majors behind on <code>zip</code>, two copies of it, and unused codecs compiled in</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge partial">Steps 1–2 fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge ok">Measured</span>
+      <code>Cargo.toml:7,11</code>
+      <code>Cargo.lock</code>
+    </div>
+    <ul>
+      <li><code>zip</code> is locked at 2.4.2; crates.io currently lists 9.5.1.</li>
+      <li>The tree holds <strong>two</strong> zip versions: 2.4.2 (direct) and 3.0.0 (through <code>epub</code>). Each EPUB is opened and its central directory parsed once by each.</li>
+      <li><code>zip</code> is used with default features, which compile AES, bzip2, xz, zstd, zopfli, LZMA, deflate64 and <code>time</code>. DOCX and EPUB use stored and deflate only.</li>
+      <li><code>Cargo.lock</code> was last changed on 10 July; <code>cargo update --dry-run</code> lists several dozen pending compatible updates. No advisory scanner is installed, so known-vulnerability status is unchecked.</li>
+      <li>The <code>epub</code> crate brings <code>regex</code>, <code>xml-rs</code>, <code>thiserror</code> and the second <code>zip</code>, to supply four facts: title, creator, cover id and the manifest. Its limits are also the cause of M2.</li>
+    </ul>
+    <h4>Recommendation</h4>
+    <ol>
+      <li>Now: <code>zip = { version = "…", default-features = false, features = ["deflate"] }</code>, refresh the lockfile, and add <code>cargo audit</code> or <code>cargo deny</code> to the gate.</li>
+      <li>Then: plan the <code>zip</code> major upgrade; the surface used here is small (<code>ZipArchive::new</code>, <code>by_index</code>, <code>index_for_name</code>, <code>name_for_index</code>).</li>
+      <li>Consider replacing <code>epub</code> with a direct read of <code>META-INF/container.xml</code> and the OPF through a small XML parser. One archive handle, one zip version, deterministic manifest order without a re-sort, and cover rules the project controls.</li>
+    </ol>
+    <p class="adr"><strong>ADR note:</strong> item 3 reopens ADR-0001 (expired), which weighed keeping <code>EpubDoc</code> against forking the crate or buffering eagerly. Reading the package document directly was not among the options it considered.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>zip</code> is now 9.6.0 with <code>default-features = false, features = ["deflate"]</code>: the same major version and features that <code>epub</code> 2.1.6 asks for. The tree therefore holds one <code>zip</code>, and each EPUB's central directory is parsed by one implementation. Refreshing the lockfile moved <code>epub</code> from 2.1.5 to 2.1.6, which took its own copy to 9.x. Unique crates in the normal dependency tree fell from 136 to 98. The only API break was <code>name_for_index</code>, which now returns <code>Option&lt;ZipResult&lt;Cow&lt;str&gt;&gt;&gt;</code>; both callers treat a name that fails to decode like a missing one. <code>cargo deny check advisories</code> joined the gate in <code>AGENTS.md</code>. A lockfile refresh alone would have left <code>zip</code> 2.6.1 with four RustSec advisories (RUSTSEC-2026-0367, -0368, -0369 and -0429), all in <code>ZipArchive::extract</code> and <code>ZipStreamReader::extract</code>, which this crate never calls. After the upgrade, <code>cargo audit</code> and <code>cargo deny</code> report none. Step 3, replacing <code>epub</code> (ADR-0001), is still open.</p>
+  </article>
+
+  <article class="finding med" id="M9">
+    <header><span class="id">M9</span><h3>There is no CI, so the gate and the Unix code paths rely on memory</h3></header>
+    <div class="meta">
+      <span class="badge med">Medium</span><span class="badge ok">Observed</span>
+      <span class="badge plain">no <code>.github/</code> directory</span>
+    </div>
+    <p><code>AGENTS.md</code> defines "done" as tests plus clippy passing, and nothing enforces it on a pull request. The test support carries <code>#[cfg(unix)]</code> branches (<code>src/test_support.rs:739-793</code>, <code>tests/support/mod.rs:371-404</code>) that a Windows-only workflow never compiles, and L3 describes behaviour that differs by platform. <code>Cargo.toml</code> declares no <code>rust-version</code> although the source needs a recent compiler (edition 2024, let-chains).</p>
+    <h4>Recommendation</h4>
+    <p>One GitHub Actions workflow on <code>windows-latest</code> and <code>ubuntu-latest</code>: fmt check, clippy with <code>-D warnings</code>, test, and the advisory scan from M8. Declare <code>rust-version</code>.</p>
+  </article>
+</section>
+
+<section id="low">
+  <h2>Low severity and polish</h2>
+
+  <article class="finding low" id="L1">
+    <header><span class="id">L1</span><h3>Re-running a command duplicates every output file</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Reproduced</span><code>src/image_write_pipeline/emission.rs:187-209</code></div>
+    <p>Emission never overwrites, which is the right default, but there is no way to ask for anything else. Three runs of the same command leave <code>thumb_1.jpg</code>, <code>thumb_1_1.jpg</code>, <code>thumb_1_2.jpg</code> and the same for every other image. Offer <code>--skip-existing</code> (or skip when an existing file has identical bytes) and <code>--overwrite</code>.</p>
+  </article>
+
+  <article class="finding low" id="L2">
+    <header><span class="id">L2</span><h3>The summary never mentions failed documents</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a></span><span class="badge plain">From code</span><code>src/extraction_run_presentation.rs:771-836</code></div>
+    <p>The outcome carries <code>failed_documents</code> and only the exit status reads it. A run can end "Extracted 5 image(s) from 2 document(s)" after failing on thirty. ADR-0014 itself notes the wording was left for later; append ", N document(s) failed" to each template.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>, N document(s) failed</code> is appended once, after whichever template the outcome selects, including <em>No images found</em> and <em>No cover images found</em>. Tests cover a produced outcome, both no-output outcomes, and the combined conversion and GIF-routing template.</p>
+  </article>
+
+  <article class="finding low" id="L3">
+    <header><span class="id">L3</span><h3>Output names depend on the operating system's directory order</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge plain">From code</span><code>src/document_search_surface.rs:171-188</code></div>
+    <p><code>read_dir</code> and <code>WalkDir</code> are used unsorted. Emission claims names first come, first served, so which of two documents sharing an Output placement gets the unsuffixed names follows encounter order, and so does which EPUB survives deduplication. NTFS happens to list alphabetically; ext4 does not. Sort both (<code>WalkDir::sort_by_file_name</code>, and collect-then-sort for the flat listing). Names would move only where the OS order was not already sorted.</p>
+  </article>
+
+  <article class="finding low" id="L4">
+    <header><span class="id">L4</span><h3>Discovery stats every traversed entry before looking at its extension</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge plain">From code, unmeasured</span><code>src/document_selection/discovery.rs:144,200</code></div>
+    <p>Each entry gets a followed <code>fs::metadata</code> call even when its name already rules it out, on top of the file type the directory walk supplied for free. On a large tree that is one extra syscall per file, and it produces "Could not inspect" warnings for broken links to things that were never documents. Check the extension first and inspect only candidates; that also removes most of the stale-entry branches in the recursive arm.</p>
+  </article>
+
+  <article class="finding low" id="L5">
+    <header><span class="id">L5</span><h3>Filename sanitisation has no length limit and ignores Windows device names</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge plain">From code</span><code>src/document_selection/document_identity.rs:210-220</code></div>
+    <p>An EPUB's base name is "creator - title" with illegal characters replaced. A long subtitle can exceed the 255-character component limit, which fails the whole document with a create error. A title of <code>NUL</code>, <code>CON</code>, <code>AUX</code> or <code>COM1</code> yields a name Windows may treat as a device. Truncate to a safe length on a character boundary and prefix reserved stems.</p>
+  </article>
+
+  <article class="finding low" id="L6">
+    <header><span class="id">L6</span><h3>Some flag combinations are accepted and quietly do something else</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Reproduced</span><code>src/extraction_run_intake.rs:291-294</code></div>
+    <ul>
+      <li><code>-g -f png</code>: <code>--formats</code> is discarded without notice and the run extracts GIFs only (here: nothing). Declare the two as conflicting.</li>
+      <li><code>--author nobody ./docs</code>: every DOCX in the directory is still extracted, because the filters apply to EPUBs alone. ADR-0011's reasoning for <code>--cover-only</code> (a DOCX cannot satisfy the request, so it is not eligible) applies equally here. Either extend that rule or state the behaviour in the README and help text.</li>
+    </ul>
+  </article>
+
+  <article class="finding low" id="L7">
+    <header><span class="id">L7</span><h3>Converting an animated GIF keeps one frame and does not say so</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge plain">From code</span><code>src/conversion.rs:8,252</code></div>
+    <p>The module comment records it; the user is never told and the README is silent. For a tool that began as a GIF extractor this is worth a warning, or better, preserving animated GIFs under conversion the way routed GIFs already are.</p>
+  </article>
+
+  <article class="finding low" id="L8">
+    <header><span class="id">L8</span><h3>Visibility is spelled two ways</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Measured</span><span class="badge plain">46 <code>unreachable_pub</code> warnings</span></div>
+    <p>Every module is private, yet 29 top-level items are declared <code>pub</code> and 35 <code>pub(crate)</code>, with no rule separating them. ADR-0003's promise of exactly four exported items is currently upheld by module privacy alone. Add a <code>[lints.rust]</code> table with <code>unreachable_pub = "warn"</code> so the declaration states the reach.</p>
+  </article>
+
+  <article class="finding low" id="L9">
+    <header><span class="id">L9</span><h3>Repository and manifest hygiene</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Observed</span></div>
+    <ul>
+      <li><code>.gitignore</code> contains the same 21-line block three times.</li>
+      <li><code>Cargo.toml</code> has no <code>description</code>, <code>license</code>, <code>repository</code> or <code>rust-version</code>.</li>
+      <li>The only git tag is <code>v1.0</code> (April 2026) while the crate says <code>0.3.0</code>; there are no GitHub releases.</li>
+      <li><code>plans/</code> holds two completed plans; <code>docs/Architecture Reviews/</code> tracks a 560 KB saved web page with its resource folder; <code>.idea/</code> is partly tracked.</li>
+      <li>ADR numbering skips 0015 without a note.</li>
+    </ul>
+  </article>
+
+  <article class="finding low" id="L10">
+    <header><span class="id">L10</span><h3>Every fixture is synthetic, which is why the high findings escaped</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Observed</span><code>src/test_support.rs</code> <code>tests/support/mod.rs</code></div>
+    <p>The suite is large and fast, and it is built entirely from hand-made minimal archives: an EPUB page is <code>&lt;html&gt;&lt;body/&gt;&lt;/html&gt;</code>, an image is one RGB pixel. H1, M1, M2 and M5 each need only one realistic fixture to fail. Add a small corpus shaped like real producers' output (a Calibre EPUB 2, an EPUB 3 with a nav document and SVG cover page, a Word-saved DOCX with thumbnail and grayscale art) and one end-to-end test per corpus file that pins the exact output listing.</p>
+    <p>Separately, the two support modules (1,278 and 406 lines) duplicate builders by acknowledged design. If the corpus is added, a small dev-only fixtures crate in a workspace becomes the simpler home for both.</p>
+  </article>
+
+  <article class="finding low" id="L11">
+    <header><span class="id">L11</span><h3>Alpha flattening truncates instead of rounding</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge plain">From code</span><code>src/conversion.rs:285-304</code></div>
+    <p><code>composite_on_white</code> casts the blended float straight to <code>u8</code>, which rounds down, so flattened pixels come out up to one level dark, and it writes through <code>put_pixel</code> per pixel. Integer blending with rounding (<code>(c·a + 255·(255−a) + 127) / 255</code>) over the raw buffers is both exact and faster.</p>
+  </article>
+
+  <article class="finding low" id="L12">
+    <header><span class="id">L12</span><h3>Comments under <code>src/</code> cite expired ADRs 45 times and often describe code that no longer exists</h3></header>
+    <div class="meta"><span class="badge low">Low</span><span class="badge ok">Measured</span><span class="badge plain">28% of production lines are comments</span></div>
+    <p>The WHY comments are a real asset. Two patterns weaken them: citations of ADRs 0001 to 0016 as authority (ADR-0008 ten times, ADR-0002 eight) now that those are open, and comments narrating removed designs ("no longer keeps counters", "used to read them separately", "is gone"), which is history that the ADRs and commit log already hold. As each expired ADR is re-decided, rewrite its citations to the surviving decision and the present-tense reason. This is a rewrite pass, not a deletion pass.</p>
+  </article>
+</section>
+
+<section id="adrs">
+  <h2>Expired ADRs 0001–0016: re-evaluation</h2>
+  <p><code>AGENTS.md</code> marks these as up for re-evaluation. This is one reading of each against the code as it stands.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>ADR</th><th>Decision</th><th>Verdict</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td>0001</td><td>Reopen the EPUB for payload reads, keep <code>EpubDoc</code> for declarations</td><td class="revise">Revise</td><td>Costs a second archive parse, a second <code>zip</code> version and the cover gaps in M2. Reading the OPF directly was not considered. See M8.</td></tr>
+      <tr><td>0002</td><td>Retain declarations for the whole run</td><td class="keep">Keep</td><td>One snapshot per run is the right trade and the code holds it in one place.</td></tr>
+      <tr><td>0003</td><td>Four exported items, unit tests in-crate</td><td class="keep">Keep</td><td>Works as intended. L8 would make the declarations say it too.</td></tr>
+      <tr><td>0004</td><td>One observation vocabulary</td><td class="keep">Keep</td><td>The single stream is what makes presentation simple.</td></tr>
+      <tr><td>0005</td><td>Cover extraction generic over identity</td><td class="retire">Retire</td><td>Already superseded by ADR-0021; still cited twice in source.</td></tr>
+      <tr><td>0006</td><td>Outcomes built by construction</td><td class="keep">Keep</td><td>Carried forward and strengthened by ADR-0017.</td></tr>
+      <tr><td>0007</td><td>Emitted image role as a closed value</td><td class="keep">Keep</td><td>Four states instead of eight, enforced by the type.</td></tr>
+      <tr><td>0008</td><td>Search surface and declaration source as two seams</td><td class="revise">Keep, amend</td><td>The seams earn their place in tests. Amend "in the order the world reports" to a sorted order (L3) and drop the per-entry inspection (L4).</td></tr>
+      <tr><td>0009</td><td>Each selection diagnostic its own fact</td><td class="keep">Keep</td><td>H2 and M4 would add facts in exactly this style.</td></tr>
+      <tr><td>0010</td><td>No cover policy means no value</td><td class="keep">Keep</td><td>Sound, as amended by 0011.</td></tr>
+      <tr><td>0011</td><td><code>--cover-only</code> selects EPUBs only</td><td class="keep">Keep, extend?</td><td>The same argument covers <code>--title</code> and <code>--author</code> (L6).</td></tr>
+      <tr><td>0012</td><td>Selection progress owns the EPUB check loop</td><td class="retire">Retire</td><td>Largely superseded by ADR-0024; fold the surviving rules into 0024 and close it.</td></tr>
+      <tr><td>0013</td><td>One ordered capture transcript; summary routed by display state</td><td class="revise">Revise</td><td>Keep the transcript. Replace the summary routing rule (H3) and give the capture a non-terminal mode.</td></tr>
+      <tr><td>0014</td><td>Exit non-zero exactly when an error line was printed</td><td class="revise">Revise</td><td>Keep the principle; reclassify a missing or unsupported <em>named</em> input as an error (M4) and add failure wording to the summary (L2).</td></tr>
+      <tr><td>0015</td><td><em>(no file)</em></td><td class="retire">Note</td><td>Record why the number is unused.</td></tr>
+      <tr><td>0016</td><td>Document extraction seam for the run</td><td class="keep">Keep</td><td>As narrowed by ADR-0018.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="solid">
+  <h2>What is solid</h2>
+  <div class="cols">
+    <div class="panel">
+      <h3>Archive names never reach the filesystem</h3>
+      <p>Output paths are built only from the Output placement and a canonical extension. A hostile entry name (<code>../../x</code>) has nothing to influence, so the classic zip-slip class is closed by design.</p>
+    </div>
+    <div class="panel">
+      <h3>Writes cannot clobber or leave debris</h3>
+      <p>Files are reserved with <code>create_new</code>, collisions advance a suffix, and a failed write removes its partial file, with the handle dropped first for Windows.</p>
+    </div>
+    <div class="panel">
+      <h3>Counts are correct by construction</h3>
+      <p>The Emitted image tally and the closed role enum make inconsistent totals unrepresentable. No assertion re-checks them because none is needed.</p>
+    </div>
+    <div class="panel">
+      <h3>Presentation is testable end to end</h3>
+      <p>The one-transcript capture lets a test assert ordering across stdout, stderr and the progress display, and even that a line was written while the display was suspended.</p>
+    </div>
+    <div class="panel">
+      <h3>A clean, fast gate</h3>
+      <p>327 tests run in about a second once compiled; clippy is clean at <code>-D warnings</code> with not one <code>#[allow]</code> in production code.</p>
+    </div>
+    <div class="panel">
+      <h3>A shared vocabulary that is used</h3>
+      <p><code>GLOSSARY.md</code> terms match the module and type names one for one, which made this audit considerably faster to perform.</p>
+    </div>
+  </div>
+</section>
+
+<section id="order">
+  <h2>Suggested order of work</h2>
+  <div class="cols">
+    <div class="panel">
+      <h3>1. Small, contained fixes</h3>
+      <ul>
+        <li><a href="#H4">H4</a> one clap attribute <span class="badge fixed">Fixed</span></li>
+        <li><a href="#M1">M1</a> normalize before the WebP encoder <span class="badge fixed">Fixed</span></li>
+        <li><a href="#H1">H1</a> root-element check in <code>is_svg</code> <span class="badge fixed">Fixed</span></li>
+        <li><a href="#M7">M7</a> path prefix on warnings <span class="badge fixed">Fixed</span></li>
+        <li><a href="#L2">L2</a> failure count in the summary <span class="badge fixed">Fixed</span></li>
+        <li><a href="#M8">M8</a> step 1: trim <code>zip</code> features, refresh the lockfile <span class="badge fixed">Fixed</span></li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>2. Behaviour decisions to make first</h3>
+      <ul>
+        <li><a href="#H2">H2</a> deduplication key, reporting, opt-out</li>
+        <li><a href="#H3">H3</a> where the summary goes (ADR-0013)</li>
+        <li><a href="#M4">M4</a> exit status for named inputs (ADR-0014)</li>
+        <li><a href="#M3">M3</a> unknown formats: error or warn</li>
+        <li><a href="#M5">M5</a> which DOCX entries are eligible (near ADR-0020)</li>
+        <li><a href="#M2">M2</a> cover candidate list (amends ADR-0021/0023)</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>3. Structural</h3>
+      <ul>
+        <li><a href="#L10">L10</a> realistic fixture corpus, with a regression test for each reproduced finding</li>
+        <li><a href="#M9">M9</a> CI on Windows and Linux</li>
+        <li><a href="#M6">M6</a> entry size ceiling and streaming writes</li>
+        <li><a href="#M8">M8</a> step 2: <code>zip</code> upgrade <span class="badge fixed">Fixed</span></li>
+        <li><a href="#M8">M8</a> step 3: replace <code>epub</code> (ADR-0001)</li>
+      </ul>
+    </div>
+  </div>
+
+  <h4>Opportunities beyond defects</h4>
+  <ul>
+    <li><strong>Other ZIP-based documents.</strong> The DOCX adapter is already a generic "images in a ZIP" reader. Accepting <code>.docm</code>, <code>.dotx</code>, <code>.pptx</code>, <code>.xlsx</code> and <code>.odt</code> is mostly an extension table once M5 defines which entries count.</li>
+    <li><strong>A dry run.</strong> <code>--dry-run</code> listing what would be selected, skipped as duplicate, and written would make H2-style surprises visible before any file exists.</li>
+    <li><strong>Per-document subfolders.</strong> With <code>-o</code>, two documents that share a base name interleave their collision suffixes; an option to write each document into its own folder removes the ambiguity.</li>
+    <li><strong>Parallel conversion.</strong> Documents are processed one at a time and conversion is CPU-bound. Parallelism would have to preserve the first-come naming order ADR-0019 fixes, so decode and encode in parallel and emit in sequence.</li>
+  </ul>
+</section>
+
+<section id="appendix">
+  <h2>Appendix: fixtures used for reproduction</h2>
+  <p>All fixtures were generated by a throwaway script for this audit and are not part of the repository. Each is small enough to describe completely.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Fixture</th><th>Contents</th><th>Used for</th></tr></thead>
+    <tbody>
+      <tr><td><code>calibre/calibre.epub</code></td><td>EPUB 2. <code>titlepage.xhtml</code> wrapping <code>cover.jpeg</code> in inline <code>&lt;svg&gt;</code> (Calibre's template), one chapter, <code>cover.jpeg</code>, <code>images/pic.png</code>.</td><td>H1</td></tr>
+      <tr><td><code>serial/weekly-2026-0{1,2,3}.epub</code></td><td>Three EPUB 2 files, each creator "The Weekly", title "The Weekly", one PNG.</td><td>H2</td></tr>
+      <tr><td><code>creator_only/{first,second}.epub</code></td><td>Two EPUB 2 files, creator "Jane Doe", no title element, one PNG each.</td><td>H2</td></tr>
+      <tr><td><code>epub3/epub3_meta_cover.epub</code></td><td>EPUB 3 (<code>version="3.0"</code>) declaring its cover only as <code>&lt;meta name="cover" content="front"/&gt;</code>; cover at <code>images/front.png</code>.</td><td>M2</td></tr>
+      <tr><td><code>docx/colors.docx</code></td><td>Three 4×4 PNGs under <code>word/media/</code>: 8-bit grayscale, 16-bit RGB, 8-bit RGB.</td><td>M1, M7</td></tr>
+      <tr><td><code>docx/thumb.docx</code></td><td><code>docProps/thumbnail.jpeg</code> (JPEG signature) and <code>word/media/image1.png</code>.</td><td>H3, H4, M3, M5, L1, L6</td></tr>
+      <tr><td><code>docx/notes.txt</code></td><td>A plain text file.</td><td>M4</td></tr>
+      <tr><td><code>big/big.docx</code></td><td>One entry: a PNG signature followed by 512 MiB of zeros, deflated to 522 KB. Deleted after the run.</td><td>M6</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Commands were run with stderr attached to a pipe, not a terminal. That is the condition H3 describes, and it is why no summary line appears in any transcript above.</p>
+</section>
+
+<footer>
+  <p>Audit of <code>word-image-extractor</code> at <code>e3ce9fb5f</code>. No source files were modified by the audit itself; the implementation notes record later fixes. Severity reflects effect on a user's output: High means wrong or silently missing results in ordinary use; Medium means a functional gap, a robustness limit or a maintenance risk; Low means polish.</p>
+</footer>
+
+</main>
+</body>
+</html>

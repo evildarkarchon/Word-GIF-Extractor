@@ -334,12 +334,22 @@ fn encode_webp_lossless(img: &DynamicImage) -> Result<Vec<u8>> {
 
 /// Encodes a DynamicImage as lossy WebP using the `webp` crate.
 ///
-/// Uses `webp::Encoder::from_image` for direct `DynamicImage` integration.
-/// The quality parameter controls lossy compression (1-100, where 100 is highest quality).
+/// The source is first normalized to 8-bit RGBA when it carries alpha and to 8-bit
+/// RGB otherwise. `webp::Encoder::from_image` accepts only those two layouts and
+/// returns `Err("Unimplemented")` for grayscale, gray-alpha and every 16-bit or
+/// float image, which left common grayscale scans unconverted. The `image` crate's
+/// own encoders (JPEG, PNG, lossless WebP) convert colour types themselves, so only
+/// this path needs it. The quality parameter controls lossy compression (1-100,
+/// where 100 is highest quality).
 fn encode_webp_lossy(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
-    let encoder = webp::Encoder::from_image(img)
-        .map_err(|e| anyhow::anyhow!("WebP encoder creation failed: {}", e))?;
-    let webp_data = encoder.encode(quality as f32);
+    let (width, height) = (img.width(), img.height());
+    let webp_data = if img.color().has_alpha() {
+        let rgba = img.to_rgba8();
+        webp::Encoder::from_rgba(rgba.as_raw(), width, height).encode(quality as f32)
+    } else {
+        let rgb = img.to_rgb8();
+        webp::Encoder::from_rgb(rgb.as_raw(), width, height).encode(quality as f32)
+    };
     Ok(webp_data.to_vec())
 }
 

@@ -428,6 +428,46 @@ fn test_existing_flags_unchanged() {
     assert!(args.cover_fallback);
 }
 
+/// Verifies `--formats` placed before the input takes only its own value.
+///
+/// An open-ended value count once made `-f png,jpg file.docx` read the document
+/// path as a third format token, leaving no input and retargeting the run at the
+/// current directory.
+#[test]
+fn formats_before_the_input_leaves_the_input_positional() {
+    for flag in ["-f", "--formats"] {
+        let args = Args::try_parse_from(["test", flag, "png,jpg", "file.docx"]).unwrap();
+        assert_eq!(
+            args.formats,
+            Some(vec!["png".to_string(), "jpg".to_string()]),
+            "{flag} should take exactly one comma-separated value"
+        );
+        assert_eq!(args.inputs, vec![PathBuf::from("file.docx")]);
+    }
+}
+
+/// Verifies repeating `--formats` accumulates rather than replaces.
+#[test]
+fn repeated_formats_flags_accumulate() {
+    let args =
+        Args::try_parse_from(["test", "-f", "png", "--formats", "jpg,gif", "book.epub"]).unwrap();
+    assert_eq!(
+        args.formats,
+        Some(vec![
+            "png".to_string(),
+            "jpg".to_string(),
+            "gif".to_string()
+        ])
+    );
+    assert_eq!(args.inputs, vec![PathBuf::from("book.epub")]);
+}
+
+/// Verifies `--formats` with no value is a parse error rather than an empty filter.
+#[test]
+fn formats_requires_a_value() {
+    assert!(Args::try_parse_from(["test", "--formats"]).is_err());
+}
+
 #[test]
 fn test_gif_only_and_gif_output_both_set() {
     let args = Args::try_parse_from(["test", "--gif-only", "--gif-output", "/tmp/gifs"]).unwrap();

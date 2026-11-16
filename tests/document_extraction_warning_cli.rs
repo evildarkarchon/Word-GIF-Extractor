@@ -6,12 +6,13 @@ use std::fs;
 
 use support::{run_captured, temp_test_dir, write_extension_fallback_docx};
 
-/// Verifies a whole run prefixes a Document extraction warning exactly once.
+/// Verifies a whole run prefixes a Document extraction warning once and names its document.
 ///
 /// This drives the run end to end rather than the presentation helper alone, so it also
-/// proves the run's document path never reaches the rendered line.
+/// proves the run's document path reaches the rendered line. Entry names repeat across
+/// documents, so a batch's warnings could not be traced without it.
 #[test]
-fn renders_document_extraction_warning_with_one_prefix_and_no_document_path() {
+fn renders_document_extraction_warning_with_one_prefix_and_the_document_path() {
     let temp_dir = temp_test_dir("extraction-warning", "single-prefix");
     let output_dir = temp_dir.join("output");
     fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
@@ -38,19 +39,17 @@ fn renders_document_extraction_warning_with_one_prefix_and_no_document_path() {
     let stderr = capture.stderr();
     let stderr_lines = stderr.lines().collect::<Vec<_>>();
     assert_eq!(stderr_lines.len(), 1, "unexpected standard error: {stderr}");
-    // Stripping one prefix must leave a non-empty body that still carries no prefix of
-    // its own, which is the presentation contract without this test owning the Document
-    // extraction wording.
+    // Stripping one prefix and then the document path must leave a non-empty body that
+    // still carries no prefix of its own, which is the presentation contract without this
+    // test owning the Document extraction wording.
     let body = stderr_lines[0]
         .strip_prefix("Warning: ")
-        .unwrap_or_else(|| panic!("standard error did not use the warning prefix: {stderr}"));
+        .unwrap_or_else(|| panic!("standard error did not use the warning prefix: {stderr}"))
+        .strip_prefix(&format!("{}: ", document_path.display()))
+        .unwrap_or_else(|| panic!("the warning should name its document: {stderr}"));
     assert!(!body.is_empty(), "warning body should remain non-empty");
     assert!(
         !body.contains("Warning:"),
         "presentation should add exactly one prefix: {stderr}"
-    );
-    assert!(
-        !stderr_lines[0].contains(&document_path.display().to_string()),
-        "the document path is run context only and must not be rendered: {stderr}"
     );
 }

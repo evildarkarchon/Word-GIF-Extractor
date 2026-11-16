@@ -974,9 +974,11 @@ const EPUB_CONTAINER_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 /// The navigation document written whenever a fixture declares a navigation item.
 ///
 /// Its body is deliberately empty, and no test asserts anything about it: navigation is
-/// declared as `application/xhtml+xml`, so extraction never treats it as an image
-/// resource. Only its presence matters, so the declared manifest item resolves to a
-/// real archive entry.
+/// declared as `application/xhtml+xml` and its bytes carry no image signature, so
+/// extraction never treats it as an image resource. Magic bytes outrank the declared
+/// MIME, so it is the bytes that decide; a page whose root is `<html>` is not SVG
+/// evidence even when it wraps inline `<svg>`. Only its presence matters, so the
+/// declared manifest item resolves to a real archive entry.
 const EPUB_NAV_XHTML: &[u8] = b"<html xmlns=\"http://www.w3.org/1999/xhtml\"><body/></html>";
 
 /// Whether a package document declares a navigation item and references it from the spine.

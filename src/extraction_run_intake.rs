@@ -80,7 +80,11 @@ pub struct Args {
     pub(crate) recursive: bool,
 
     /// Image formats to extract (e.g., "png,jpg"). Defaults to all supported formats.
-    #[arg(short, long, value_delimiter = ',', num_args = 0..)]
+    // One value per occurrence, split on commas. An open-ended `num_args` would keep
+    // consuming arguments, so `-f png,jpg book.docx` would swallow the document path
+    // as a format token and the run would fall back to the current directory.
+    // Repeating the flag still accumulates, because `Vec` fields append by default.
+    #[arg(short, long, value_delimiter = ',', num_args = 1, action = clap::ArgAction::Append)]
     pub(crate) formats: Option<Vec<String>>,
 
     /// Extract only cover image from EPUB files
