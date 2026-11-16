@@ -1,6 +1,7 @@
 //! DOCX file processing module
 
 use anyhow::Context;
+use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
 use zip::ZipArchive;
@@ -30,10 +31,14 @@ pub(super) fn process_file(
 
     pipeline.write_from(placement, |visitor| {
         for index in 0..archive.len() {
+            // `zip` decodes entry names lazily, so a name can be present yet fail to
+            // decode. It is only a diagnostic name here, so an undecodable one falls
+            // back to the index exactly as a missing one does; reading the entry
+            // itself still reports any real failure through `unreadable`.
             let source_name = archive
                 .name_for_index(index)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("archive entry #{index}"));
+                .and_then(Result::ok)
+                .map_or_else(|| format!("archive entry #{index}"), Cow::into_owned);
             let source = ArchiveImageSource::named(source_name);
 
             match archive.by_index(index) {

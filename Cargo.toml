@@ -4,7 +4,12 @@ version = "0.3.0"
 edition = "2024"
 
 [dependencies]
-zip = "2.1.0"
+# DOCX and EPUB entries are stored or deflated, so only the deflate codec is
+# needed. The default features would also compile AES, bzip2, deflate64, LZMA,
+# PPMd, xz, zstd and `time`. The major version and features match what `epub`
+# asks of `zip`, so the two resolve to one copy and each EPUB's central
+# directory is parsed by one implementation.
+zip = { version = "9.6.0", default-features = false, features = ["deflate"] }
 clap = { version = "4.5.4", features = ["derive"] }
 anyhow = "1.0.82"
 walkdir = "2.5.0"

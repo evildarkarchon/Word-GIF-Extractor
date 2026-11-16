@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use percent_encoding::percent_decode;
+use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::io::Read;
@@ -223,10 +224,15 @@ impl EpubResourceArchive {
                 // This departs from the letter of ADR-0020, which names the resolved
                 // spelling itself as the sort key: for a decoded match that would sort
                 // `%7A.png` before `a.png` and renumber output that extracts today.
+                // An entry name that fails to decode sorts by its manifest path, the
+                // same fallback as a missing one. It cannot happen for an entry that
+                // was resolved by name lookup, but `zip` reports name decoding as
+                // fallible, so the fallback is spelled out rather than assumed.
                 let sort_path = match &resolution {
                     ResourceResolution::Resolved(index) => archive
                         .name_for_index(*index)
-                        .map_or_else(|| manifest_path.clone(), str::to_string),
+                        .and_then(Result::ok)
+                        .map_or_else(|| manifest_path.clone(), Cow::into_owned),
                     ResourceResolution::Unresolved(_) => manifest_path.clone(),
                 };
                 CatalogSeed {
