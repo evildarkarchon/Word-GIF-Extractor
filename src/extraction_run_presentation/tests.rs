@@ -1,6 +1,7 @@
 use super::*;
 
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser};
@@ -385,14 +386,15 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
     );
 }
 
-/// Verifies warning presentation adds one prefix and suspends the extraction bar.
+/// Verifies warning presentation adds one prefix and the document path, and
+/// suspends the extraction bar.
 ///
 /// The stable body stays owned by Document extraction, so the warning is
 /// fabricated through its test entry point and the assertions compare against
 /// that value rather than restating any wording. The observations are the ones
 /// the run emits around one warned document.
 #[test]
-fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progress() {
+fn document_warning_presentation_adds_prefix_and_path_and_suspends_extraction_progress() {
     let document_path = PathBuf::from("documents").join("warned.docx");
     let warning = DocumentExtractionWarning::fabricated(ImageWriteWarning::ExtensionFallback {
         source_name: "word/media/only.png".to_string(),
@@ -428,17 +430,17 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
         presentation.on_observation(observation);
     }
 
-    // Stripping exactly one prefix must leave the transported body untouched,
-    // which rules out both a missing prefix and a doubled one without this
-    // test knowing what the body says.
-    let rendered = document_warning_line(&warning);
+    // Stripping exactly one prefix, then the document path, must leave the
+    // transported body untouched. That rules out a missing or doubled prefix and
+    // a missing path without this test knowing what the body says.
+    let rendered = document_warning_line(&document_path, &warning);
+    let after_prefix = rendered
+        .strip_prefix("Warning: ")
+        .expect("the line should open with one warning prefix");
     assert_eq!(
-        rendered.strip_prefix("Warning: "),
-        Some(warning.get_message())
-    );
-    assert!(
-        !rendered.contains(&document_path.display().to_string()),
-        "the document path is run context only and must not reach presentation"
+        after_prefix.strip_prefix(&format!("{}: ", document_path.display())),
+        Some(warning.get_message()),
+        "the document path should sit between the prefix and the body: {rendered}"
     );
     // The same line is what presentation actually wrote, and it went to standard error.
     assert!(
@@ -449,6 +451,71 @@ fn document_warning_presentation_adds_one_prefix_and_suspends_extraction_progres
     assert!(
         capture.suspended_around(&rendered),
         "the active extraction bar should clear before the warning and redraw after it"
+    );
+}
+
+/// Finishes an images run of `documents_with_output` one-image documents and
+/// `failed` failed documents, through the accumulator as production does.
+fn outcome_with_failures(documents_with_output: usize, failed: usize) -> ExtractionRunOutcome {
+    let mut accumulator =
+        ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(false, None));
+    for _ in 0..documents_with_output {
+        let mut tally = EmittedImageTally::default();
+        tally.record_normal_image(TallyRole::Preserved);
+        accumulator.fold(&DocumentExtractionFacts::fabricated(tally, Vec::new()));
+    }
+    for _ in 0..failed {
+        accumulator.record_failed_document();
+    }
+    accumulator.finish(false)
+}
+
+/// Verifies a produced summary names how many documents failed.
+#[test]
+fn produced_output_summary_appends_failed_documents() {
+    assert_eq!(
+        final_summary_message(&outcome_with_failures(2, 30)),
+        "Extracted 2 image(s) from 2 document(s), 30 document(s) failed"
+    );
+}
+
+/// Verifies a run with no output still says its documents failed, so "every
+/// document failed" reads differently from "the documents held no images".
+#[test]
+fn no_output_summary_appends_failed_documents() {
+    assert_eq!(
+        final_summary_message(&outcome_with_failures(0, 3)),
+        "No images found, 3 document(s) failed"
+    );
+    assert_eq!(
+        final_summary_message(&ExtractionRunOutcome::NoOutput {
+            output_kind: ExtractionOutputKind::Covers,
+            failed_documents: NonZeroUsize::new(1),
+        }),
+        "No cover images found, 1 document(s) failed"
+    );
+}
+
+/// Verifies the failure count follows every produced template, conversion and
+/// GIF routing included, rather than one of them.
+#[test]
+fn conversion_and_gif_summary_appends_failed_documents() {
+    let mut accumulator = ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(
+        true,
+        Some(PathBuf::from("gifs")),
+    ));
+    let mut tally = EmittedImageTally::default();
+    tally.record_normal_image(TallyRole::Converted);
+    tally.record_normal_image(TallyRole::RoutedGif);
+    accumulator.fold(&DocumentExtractionFacts::fabricated(tally, Vec::new()));
+    accumulator.record_failed_document();
+
+    assert_eq!(
+        final_summary_message(&accumulator.finish(false)),
+        format!(
+            "Extracted 2 image(s), converted 1, skipped 0, routed 1 GIF(s) to {} from 1 document(s), 1 document(s) failed",
+            PathBuf::from("gifs").display()
+        )
     );
 }
 
