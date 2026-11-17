@@ -177,7 +177,7 @@
   </div>
 
   <div class="status">
-    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. H2 is fixed on the <code>fix/h2-epub-dedup</code> branch (ADR-0025). Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
+    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. H2 is fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a> (ADR-0025). Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
   </div>
 </header>
 
@@ -249,7 +249,7 @@ $ head -c 96 "out/calibre/Some Author - Calibre Book_3.svg"
   <article class="finding high" id="H2">
     <header><span class="id">H2</span><h3>EPUB deduplication silently drops books that are not duplicates</h3></header>
     <div class="meta">
-      <span class="badge high">High</span><span class="badge fixed">Fixed · ADR-0025</span><span class="badge ok">Reproduced</span>
+      <span class="badge high">High</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a></span><span class="badge ok">Reproduced</span>
       <code>src/document_selection/phases.rs:203-278</code>
       <code>src/document_selection/document_identity.rs:121-131</code>
     </div>
