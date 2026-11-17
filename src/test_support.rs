@@ -462,6 +462,7 @@ pub(crate) struct DeclaredEpubDeclarations {
 /// What one declared EPUB reports when its declarations are acquired.
 enum DeclaredEpub {
     Readable {
+        identifier: Option<String>,
         creator: Option<String>,
         title: Option<String>,
     },
@@ -477,16 +478,28 @@ impl DeclaredEpubDeclarations {
         }
     }
 
-    /// Declares the creator and title one EPUB reports.
+    /// Declares the creator and title one EPUB reports, with no unique identifier.
     pub(crate) fn with_declarations(
+        self,
+        path: impl Into<PathBuf>,
+        creator: Option<&str>,
+        title: Option<&str>,
+    ) -> Self {
+        self.with_identified_declarations(path, None, creator, title)
+    }
+
+    /// Declares the unique identifier, creator and title one EPUB reports.
+    pub(crate) fn with_identified_declarations(
         mut self,
         path: impl Into<PathBuf>,
+        identifier: Option<&str>,
         creator: Option<&str>,
         title: Option<&str>,
     ) -> Self {
         self.declarations.insert(
             path.into(),
             DeclaredEpub::Readable {
+                identifier: identifier.map(str::to_string),
                 creator: creator.map(str::to_string),
                 title: title.map(str::to_string),
             },
@@ -511,10 +524,14 @@ impl EpubDeclarationSource for DeclaredEpubDeclarations {
     fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError> {
         self.acquisitions.borrow_mut().push(path.to_path_buf());
         match self.declarations.get(path) {
-            Some(DeclaredEpub::Readable { creator, title }) => Ok(EpubDeclarations::declared(
-                creator.as_deref(),
-                title.as_deref(),
-            )),
+            Some(DeclaredEpub::Readable {
+                identifier,
+                creator,
+                title,
+            }) => Ok(
+                EpubDeclarations::declared(creator.as_deref(), title.as_deref())
+                    .with_identifier(identifier.as_deref()),
+            ),
             // An undeclared path reads as an EPUB that will not parse, which is
             // what an unreadable file on disk produces.
             _ => Err(EpubDeclarationError::unreadable()),
@@ -882,6 +899,7 @@ fn observation_kind(observation: &ExtractionRunObservation) -> ObservationKind {
         }
         ExtractionRunObservation::MissingInput { .. }
         | ExtractionRunObservation::SkippedNonEpubInput { .. }
+        | ExtractionRunObservation::SkippedDuplicateEpub { .. }
         | ExtractionRunObservation::DocumentDiscoveryFailed { .. }
         | ExtractionRunObservation::UnreadableEpubDeclarations { .. } => {
             ObservationKind::SelectionDiagnostic

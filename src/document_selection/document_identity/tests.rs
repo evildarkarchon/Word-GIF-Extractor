@@ -114,37 +114,80 @@ fn dedupe_key_ignores_case_and_surrounding_whitespace() {
         Path::new("second.epub"),
     );
 
-    assert_eq!(first.dedupe_key(), second.dedupe_key());
+    let key = first.dedupe_key(Some(" URN:UUID:ABC "));
+    assert!(key.is_some());
+    assert_eq!(key, second.dedupe_key(Some("urn:uuid:abc")));
+    assert!(first.dedupe_key(None).is_some());
+    assert_eq!(first.dedupe_key(None), second.dedupe_key(None));
 }
 
+/// Pins the serial case: issues share a creator and title and differ only in identifier.
 #[test]
-fn dedupe_key_of_a_blank_title_comes_from_the_file_name() {
-    let first = DocumentIdentity::of_epub(None, Some(""), Path::new("first.epub"));
-    let second = DocumentIdentity::of_epub(None, Some(""), Path::new("second.epub"));
+fn dedupe_key_tells_apart_books_whose_identifiers_differ() {
+    let issue = epub(Some("The Weekly"), Some("The Weekly"));
 
-    assert_eq!(
-        first.dedupe_key(),
-        DedupeKey::Path {
-            file_name: "first.epub".to_string()
-        }
+    assert_ne!(
+        issue.dedupe_key(Some("weekly-2026-01")),
+        issue.dedupe_key(Some("weekly-2026-02"))
     );
-    assert_ne!(first.dedupe_key(), second.dedupe_key());
+}
+
+/// Pins that a shared identifier alone does not make two books one.
+///
+/// Placeholder identifiers and ISBNs reused across volumes are common enough that an
+/// identifier match with different titles is taken as two books.
+#[test]
+fn dedupe_key_tells_apart_books_that_share_an_identifier_but_not_a_title() {
+    let first = epub(Some("Author"), Some("Volume One"));
+    let second = epub(Some("Author"), Some("Volume Two"));
+
+    assert_ne!(
+        first.dedupe_key(Some("9780000000000")),
+        second.dedupe_key(Some("9780000000000"))
+    );
 }
 
 #[test]
-fn dedupe_key_of_undeclared_epubs_ignores_their_directory() {
+fn dedupe_key_does_not_equate_an_identified_book_with_an_unidentified_one() {
+    let identity = epub(Some("Author"), Some("Title"));
+
+    assert_ne!(identity.dedupe_key(Some("id")), identity.dedupe_key(None));
+}
+
+/// Pins the creator-only case: without an identifier, one declaration is not enough.
+#[test]
+fn dedupe_key_needs_both_creator_and_title_without_an_identifier() {
+    assert_eq!(epub(Some("Jane Doe"), None).dedupe_key(None), None);
+    assert_eq!(epub(None, Some("Untitled")).dedupe_key(None), None);
+    assert_eq!(epub(Some("Jane Doe"), None).dedupe_key(Some("   ")), None);
+}
+
+#[test]
+fn dedupe_key_of_a_single_declaration_comes_from_its_identifier() {
+    let first = DocumentIdentity::of_epub(Some("Jane Doe"), None, Path::new("first.epub"));
+    let second = DocumentIdentity::of_epub(Some("jane doe"), None, Path::new("second.epub"));
+
+    assert!(first.dedupe_key(Some("id")).is_some());
+    assert_eq!(first.dedupe_key(Some("id")), second.dedupe_key(Some("ID")));
+}
+
+/// Pins that a file name is never a duplicate key, whatever directory the file is in.
+#[test]
+fn dedupe_key_of_an_undeclared_epub_without_an_identifier_is_absent() {
     let first = DocumentIdentity::of_epub(None, None, Path::new("first/Book.epub"));
-    let second = DocumentIdentity::of_epub(None, None, Path::new("second/book.epub"));
+    let blank = DocumentIdentity::of_epub(None, Some(""), Path::new("second/book.epub"));
 
-    assert_eq!(first.dedupe_key(), second.dedupe_key());
+    assert_eq!(first.dedupe_key(None), None);
+    assert_eq!(blank.dedupe_key(None), None);
 }
 
 #[test]
-fn declared_dedupe_key_never_equals_a_file_name_key() {
-    let declared = DocumentIdentity::of_epub(None, Some("book.epub"), Path::new("other.epub"));
-    let undeclared = DocumentIdentity::of_epub(None, None, Path::new("book.epub"));
+fn dedupe_key_of_an_undeclared_epub_comes_from_its_identifier() {
+    let first = DocumentIdentity::of_epub(None, None, Path::new("first/a.epub"));
+    let second = DocumentIdentity::of_epub(None, None, Path::new("second/b.epub"));
 
-    assert_ne!(declared.dedupe_key(), undeclared.dedupe_key());
+    assert!(first.dedupe_key(Some("id")).is_some());
+    assert_eq!(first.dedupe_key(Some("id")), second.dedupe_key(Some("id")));
 }
 
 #[test]

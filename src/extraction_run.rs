@@ -50,6 +50,7 @@ impl ExtractionRunRequest {
         recursive: bool,
         output: Option<PathBuf>,
         epub_filter: EpubFilter,
+        keep_duplicate_epubs: bool,
         epub_cover_policy: Option<EpubCoverPolicy>,
         image_write_policy: ImageWritePolicy,
     ) -> Self {
@@ -59,6 +60,7 @@ impl ExtractionRunRequest {
                 recursive,
                 output,
                 epub_filter,
+                keep_duplicate_epubs,
             },
             epub_cover_policy,
             image_write_policy,
@@ -80,6 +82,7 @@ struct RunSelectionInputs {
     recursive: bool,
     output: Option<PathBuf>,
     epub_filter: EpubFilter,
+    keep_duplicate_epubs: bool,
 }
 
 /// Executes one Extraction run and returns its semantic outcome directly.
@@ -158,6 +161,7 @@ fn run_with(
         recursive,
         output,
         epub_filter,
+        keep_duplicate_epubs,
     } = selection_inputs;
     let selected_documents = document_selection::select_documents(
         DocumentSelectionOptions {
@@ -166,6 +170,7 @@ fn run_with(
             output: output.as_deref(),
             epub_filter: &epub_filter,
             epub_only: cover_only,
+            keep_duplicate_epubs,
         },
         surface,
         declarations,

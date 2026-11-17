@@ -136,6 +136,8 @@ pub struct DocumentSelectionOptions<'a> {
     /// Document extraction's business, and a plain flag keeps selection's imports
     /// answering what it depends on — the same rule ADR-0005 applies one level down.
     pub epub_only: bool,
+    /// Whether EPUBs that declare the same book are all kept rather than deduplicated.
+    pub keep_duplicate_epubs: bool,
 }
 
 /// How one candidate reached Document discovery's output.
@@ -224,6 +226,8 @@ impl DocumentCandidate {
 /// filters. Missing inputs, requested-root inspection failures, named inputs
 /// skipped because only EPUBs are eligible
 /// ([`SkippedNonEpubInput`](crate::extraction_run_observation::ExtractionRunObservation::SkippedNonEpubInput)),
+/// EPUBs skipped as duplicates of an earlier EPUB
+/// ([`SkippedDuplicateEpub`](crate::extraction_run_observation::ExtractionRunObservation::SkippedDuplicateEpub)),
 /// and unreadable EPUB declarations are reported as structured, non-fatal
 /// diagnostics through the informational observer. A path sighted more than once
 /// is selected once, silently.
@@ -263,7 +267,8 @@ pub fn select_documents(
         docx_files
     };
     let filtered = lifecycle.filtering(options.epub_filter, epubs, declarations);
-    let deduplicated = lifecycle.deduplicating(filtered, declarations);
+    let deduplicated =
+        lifecycle.deduplicating(filtered, declarations, options.keep_duplicate_epubs);
 
     // The one join that makes the Selected documents: EPUBs first, then other
     // documents, each in encounter order. The order is kept on purpose rather than

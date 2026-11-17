@@ -52,7 +52,8 @@ pub enum DocumentDiscoveryScope {
 pub enum EpubDeclarationPurpose {
     /// Declarations were needed to apply a requested EPUB filter.
     Filtering,
-    /// Declarations were needed to deduplicate EPUBs before filename fallback.
+    /// Declarations were needed to deduplicate EPUBs. Without them the EPUB is never
+    /// recognized as a duplicate, and its Document identity comes from its filename.
     Deduplication,
 }
 
@@ -377,6 +378,16 @@ pub enum ExtractionRunObservation {
     /// reach this variant — documents dropped during directory traversal are
     /// accounted for by the discovery counters, as filtered-out EPUBs are.
     SkippedNonEpubInput { path: PathBuf },
+    /// An EPUB was skipped because an EPUB selected before it declares the same book.
+    ///
+    /// Both paths travel so the user can tell which copy was kept. Unlike
+    /// [`Self::SkippedNonEpubInput`], this is reported whether the EPUB was named or
+    /// turned up by a directory search: a skipped duplicate is a decision about the
+    /// user's documents, not about which inputs were eligible.
+    SkippedDuplicateEpub {
+        path: PathBuf,
+        duplicate_of: PathBuf,
+    },
     /// A Document discovery path could not be inspected; detail stays presentation-neutral.
     DocumentDiscoveryFailed { path: PathBuf, detail: String },
     /// EPUB declarations could not be read for the stated selection purpose.

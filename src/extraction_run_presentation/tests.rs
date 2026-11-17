@@ -386,6 +386,56 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
     );
 }
 
+/// Verifies a skipped duplicate names both EPUBs and suspends the deduplication bar.
+///
+/// The diagnostic arrives while the deduplication bar is drawing, ahead of the running
+/// observation that counts it, so a write that skipped the suspend would be overdrawn.
+#[test]
+fn skipped_duplicate_names_both_epubs_and_suspends_the_deduplication_bar() {
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+    let running = |checked, duplicates_found, unique_remaining| {
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked,
+            total: 2,
+            duplicates_found,
+            unique_remaining,
+        }
+    };
+
+    for observation in [
+        running(0, 0, 0),
+        running(1, 0, 1),
+        ExtractionRunObservation::SkippedDuplicateEpub {
+            path: PathBuf::from("downloads").join("copy.epub"),
+            duplicate_of: PathBuf::from("library").join("book.epub"),
+        },
+        running(2, 1, 1),
+        ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            total: 2,
+            duplicates_found: 1,
+            unique_remaining: 1,
+        },
+    ] {
+        presentation.on_observation(observation);
+    }
+
+    let expected = format!(
+        "Warning: Skipped {}: it declares the same book as {} (use --keep-duplicates to extract both)",
+        PathBuf::from("downloads").join("copy.epub").display(),
+        PathBuf::from("library").join("book.epub").display()
+    );
+    assert_eq!(
+        capture.stderr().lines().collect::<Vec<_>>(),
+        [expected.as_str()]
+    );
+    assert!(
+        capture.suspended_around(&expected),
+        "the deduplication bar should clear before the warning and redraw after it"
+    );
+}
+
 /// Verifies warning presentation adds one prefix and the document path, and
 /// suspends the extraction bar.
 ///

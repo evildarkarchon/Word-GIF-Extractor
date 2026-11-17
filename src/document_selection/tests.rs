@@ -36,6 +36,41 @@ fn select_against(
     )
 }
 
+/// The run-policy choices a selection test varies, with every one off by default.
+#[derive(Default)]
+struct SelectionPolicy<'a> {
+    filter: Option<&'a EpubFilter>,
+    recursive: bool,
+    epub_only: bool,
+    keep_duplicate_epubs: bool,
+}
+
+/// Selects against a declared surface and declaration source under one policy.
+fn select_with(
+    surface: &InMemorySearchSurface,
+    declarations: &DeclaredEpubDeclarations,
+    inputs: &[&str],
+    policy: SelectionPolicy<'_>,
+) -> (Vec<SelectedDocument>, RecordingRunObserver) {
+    let inputs: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
+    let no_filter = EpubFilter::default();
+    let mut observer = RecordingRunObserver::default();
+    let selected = select_documents(
+        DocumentSelectionOptions {
+            inputs: &inputs,
+            recursive: policy.recursive,
+            output: None,
+            epub_filter: policy.filter.unwrap_or(&no_filter),
+            epub_only: policy.epub_only,
+            keep_duplicate_epubs: policy.keep_duplicate_epubs,
+        },
+        surface,
+        declarations,
+        &mut observer,
+    );
+    (selected, observer)
+}
+
 /// Selects against a declared surface and declaration source under one filter.
 fn select_declared(
     surface: &InMemorySearchSurface,
@@ -44,21 +79,16 @@ fn select_declared(
     inputs: &[&str],
     recursive: bool,
 ) -> (Vec<SelectedDocument>, RecordingRunObserver) {
-    let inputs: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
-    let mut observer = RecordingRunObserver::default();
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &inputs,
-            recursive,
-            output: None,
-            epub_filter: filter,
-            epub_only: false,
-        },
+    select_with(
         surface,
         declarations,
-        &mut observer,
-    );
-    (selected, observer)
+        inputs,
+        SelectionPolicy {
+            filter: Some(filter),
+            recursive,
+            ..SelectionPolicy::default()
+        },
+    )
 }
 
 /// Selects against a declared surface for a run in which only EPUBs are eligible.
@@ -68,21 +98,16 @@ fn select_epub_only(
     inputs: &[&str],
     recursive: bool,
 ) -> (Vec<SelectedDocument>, RecordingRunObserver) {
-    let inputs: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
-    let mut observer = RecordingRunObserver::default();
-    let selected = select_documents(
-        DocumentSelectionOptions {
-            inputs: &inputs,
-            recursive,
-            output: None,
-            epub_filter: &EpubFilter::default(),
-            epub_only: true,
-        },
+    select_with(
         surface,
         declarations,
-        &mut observer,
-    );
-    (selected, observer)
+        inputs,
+        SelectionPolicy {
+            recursive,
+            epub_only: true,
+            ..SelectionPolicy::default()
+        },
+    )
 }
 
 /// Selects against declared declarations with no EPUB filter, so only deduplication acquires.
@@ -1338,6 +1363,210 @@ fn select_documents_deduplicates_matching_readable_epub_declarations() {
             }
         )
     }));
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedDuplicateEpub {
+            path: PathBuf::from("second.epub"),
+            duplicate_of: PathBuf::from("first.epub"),
+        }]
+    );
+}
+
+/// Pins the serial case from the audit: issues share a creator and title, not an identifier.
+#[test]
+fn select_documents_keeps_every_issue_of_a_serial() {
+    let issues = [
+        "weekly-2026-01.epub",
+        "weekly-2026-02.epub",
+        "weekly-2026-03.epub",
+    ];
+    let surface = issues
+        .iter()
+        .fold(InMemorySearchSurface::new(), |surface, issue| {
+            surface.with_file(*issue)
+        });
+    let declarations =
+        issues
+            .iter()
+            .fold(DeclaredEpubDeclarations::new(), |declarations, issue| {
+                declarations.with_identified_declarations(
+                    *issue,
+                    Some(&format!("urn:uuid:{issue}")),
+                    Some("The Weekly"),
+                    Some("The Weekly"),
+                )
+            });
+
+    let (selected, observer) = select_against_declared(&surface, &declarations, &issues);
+
+    assert_eq!(selected_paths(&selected), issues.map(Path::new));
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Pins that true copies, which share an identifier as well as a creator and title, are
+/// still recognized, and that the second copy is named with the first.
+#[test]
+fn select_documents_skips_a_copy_that_declares_the_same_identifier() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("library")
+        .with_directory("downloads")
+        .with_file("library/book.epub")
+        .with_file("downloads/book (1).epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_identified_declarations(
+            "library/book.epub",
+            Some("isbn:9780000000000"),
+            Some("Author"),
+            Some("Title"),
+        )
+        .with_identified_declarations(
+            "downloads/book (1).epub",
+            Some("ISBN:9780000000000"),
+            Some("author"),
+            Some("TITLE"),
+        );
+
+    let (selected, observer) = select_against_declared(
+        &surface,
+        &declarations,
+        &["library/book.epub", "downloads/book (1).epub"],
+    );
+
+    assert_eq!(selected_paths(&selected), [Path::new("library/book.epub")]);
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedDuplicateEpub {
+            path: PathBuf::from("downloads/book (1).epub"),
+            duplicate_of: PathBuf::from("library/book.epub"),
+        }]
+    );
+}
+
+/// Pins the creator-only case from the audit: an author's untitled books are not one book.
+#[test]
+fn select_documents_keeps_books_that_declare_only_the_same_creator() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("Jane Doe"), None)
+        .with_declarations("second.epub", Some("Jane Doe"), None);
+
+    let (selected, observer) =
+        select_against_declared(&surface, &declarations, &["first.epub", "second.epub"]);
+
+    assert_eq!(
+        selected_paths(&selected),
+        [Path::new("first.epub"), Path::new("second.epub")]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Pins the opt-out: duplicates are all kept, and each still gets its declared identity.
+///
+/// The phase still runs, because it is where an EPUB no filter read acquires the
+/// declarations its display name and output base name are built from.
+#[test]
+fn keeping_duplicates_selects_every_epub_under_its_declared_identity() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("Shared Creator"), Some("Shared Title"))
+        .with_declarations("second.epub", Some("Shared Creator"), Some("Shared Title"));
+
+    let (selected, observer) = select_with(
+        &surface,
+        &declarations,
+        &["first.epub", "second.epub"],
+        SelectionPolicy {
+            keep_duplicate_epubs: true,
+            ..SelectionPolicy::default()
+        },
+    );
+
+    let display_names: Vec<_> = selected
+        .iter()
+        .map(SelectedDocument::get_display_name)
+        .collect();
+    assert_eq!(
+        display_names,
+        [
+            "Shared Creator - Shared Title",
+            "Shared Creator - Shared Title"
+        ]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
+    assert!(observer.selection_progress().contains(
+        &ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            total: 2,
+            duplicates_found: 0,
+            unique_remaining: 2,
+        }
+    ));
+}
+
+/// Pins ADR-0024's ordering for the new diagnostic: it precedes the running observation
+/// that records the skipped EPUB.
+#[test]
+fn select_documents_orders_the_duplicate_diagnostic_before_the_progress_that_counts_it() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("first.epub")
+        .with_file("second.epub");
+    let declarations = DeclaredEpubDeclarations::new()
+        .with_declarations("first.epub", Some("Creator"), Some("Title"))
+        .with_declarations("second.epub", Some("Creator"), Some("Title"));
+
+    let (_, observer) =
+        select_against_declared(&surface, &declarations, &["first.epub", "second.epub"]);
+
+    let deduplication_facts: Vec<_> = observer
+        .observations
+        .iter()
+        .filter(|fact| {
+            matches!(
+                fact,
+                ExtractionRunObservation::DeduplicatingEpubs { .. }
+                    | ExtractionRunObservation::EpubDeduplicationFinished { .. }
+                    | ExtractionRunObservation::SkippedDuplicateEpub { .. }
+            )
+        })
+        .cloned()
+        .collect();
+    assert_eq!(
+        deduplication_facts,
+        vec![
+            ExtractionRunObservation::DeduplicatingEpubs {
+                checked: 0,
+                total: 2,
+                duplicates_found: 0,
+                unique_remaining: 0,
+            },
+            ExtractionRunObservation::DeduplicatingEpubs {
+                checked: 1,
+                total: 2,
+                duplicates_found: 0,
+                unique_remaining: 1,
+            },
+            ExtractionRunObservation::SkippedDuplicateEpub {
+                path: PathBuf::from("second.epub"),
+                duplicate_of: PathBuf::from("first.epub"),
+            },
+            ExtractionRunObservation::DeduplicatingEpubs {
+                checked: 2,
+                total: 2,
+                duplicates_found: 1,
+                unique_remaining: 1,
+            },
+            ExtractionRunObservation::EpubDeduplicationFinished {
+                checked: 2,
+                total: 2,
+                duplicates_found: 1,
+                unique_remaining: 1,
+            },
+        ]
+    );
 }
 
 /// Pins that a blank title with no creator is no declaration at all.
@@ -1366,8 +1595,12 @@ fn select_documents_keeps_distinct_epubs_whose_only_declaration_is_a_blank_title
     assert!(observer.selection_diagnostics().is_empty());
 }
 
+/// Pins the same-name case from the audit: a file name is never evidence of a duplicate.
+///
+/// Both EPUBs fall back to a path identity named `book.epub`, which used to be their
+/// duplicate key, so the second was dropped although it is a different file.
 #[test]
-fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_read() {
+fn unreadable_epubs_sharing_a_file_name_in_different_directories_are_both_kept() {
     let surface = InMemorySearchSurface::new()
         .with_directory("first")
         .with_directory("second")
@@ -1383,14 +1616,17 @@ fn declaration_deduplication_falls_back_to_filename_when_declarations_cannot_be_
         &["first/book.epub", "second/book.epub"],
     );
 
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].get_path(), Path::new("first/book.epub"));
+    let display_names: Vec<_> = selected
+        .iter()
+        .map(SelectedDocument::get_display_name)
+        .collect();
+    assert_eq!(display_names, ["book.epub", "book.epub"]);
     assert!(observer.selection_progress().iter().any(|progress| {
         matches!(
             progress,
             ExtractionRunObservation::EpubDeduplicationFinished {
-                duplicates_found: 1,
-                unique_remaining: 1,
+                duplicates_found: 0,
+                unique_remaining: 2,
                 ..
             }
         )

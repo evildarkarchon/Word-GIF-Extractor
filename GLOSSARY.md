@@ -53,7 +53,7 @@ The per-run choice to extract a required EPUB cover instead of normal document i
 _Avoid_: Document extraction policy, cover flags, extraction booleans
 
 **Document selection**:
-The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, Document identity, and per-document Output placement. A run may restrict eligibility to EPUB documents alone; selection is told that eligibility is restricted, never why, and reports each document it skips for that reason as a Document selection diagnostic. A path discovery found more than once is one document, named by the user if any of its sightings was; recognizing two different files as the same book is a separate rule, decided by Document identity. A selected document's Document identity is stable across EPUB cover policies.
+The part of an Extraction run that decides which discovered documents are eligible to process and what document-level facts are known before extraction, including EPUB filtering, duplicate handling, Document identity, and per-document Output placement. A run may restrict eligibility to EPUB documents alone; selection is told that eligibility is restricted, never why, and reports each document it skips for that reason as a Document selection diagnostic. A path discovery found more than once is one document, named by the user if any of its sightings was; recognizing two different files as the same book is a separate rule, decided by Document identity together with the package's unique identifier. Each EPUB skipped as a duplicate is reported as a Document selection diagnostic naming the EPUB it duplicates, and a run may keep every duplicate instead. A selected document's Document identity is stable across EPUB cover policies.
 _Avoid_: File collection, scan results, work item builder
 
 **Document discovery**:
@@ -77,7 +77,7 @@ Where one Selected document's images are written: its output directory and the o
 _Avoid_: Output target, output location, destination pair, output dir, output path
 
 **Document identity**:
-The identity Document selection assigns one document, from which its duplicate recognition, output base name, display name, and EPUB filter match are all decided. It is declared when the document's EPUB declarations carry a non-blank creator or title, and otherwise comes from the document's path; a blank declaration counts as no declaration, and a declared identity never equals a path identity. It decides the base name an Output placement carries but not the output directory, and it excludes the Archive resource identity of anything inside the document.
+The identity Document selection assigns one document, from which its output base name, display name, and EPUB filter match are all decided, and from which, together with the package's unique identifier, its duplicate recognition is decided. Two EPUBs are the same book when they declare the same identifier, creator and title; an EPUB with no identifier counts only when it declares both a creator and a title, and an EPUB that declares neither is never a duplicate, whatever its file name. It is declared when the document's EPUB declarations carry a non-blank creator or title, and otherwise comes from the document's path; a blank declaration counts as no declaration, and a declared identity never equals a path identity. It decides the base name an Output placement carries but not the output directory, and it excludes the Archive resource identity of anything inside the document.
 _Avoid_: Declared identity, display identity, metadata identity
 
 **Document selection progress**:
@@ -85,7 +85,7 @@ The live, user-observable status of Document selection while it discovers docume
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:
-A non-fatal fact explaining why Document selection skipped a requested input, could not inspect part of its document search, or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
+A non-fatal fact explaining why Document selection skipped a requested input or a duplicate EPUB, could not inspect part of its document search, or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
 _Avoid_: Warning string, selection error, progress message
 
 **Extraction run intake**:
