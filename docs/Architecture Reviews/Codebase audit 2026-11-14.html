@@ -177,7 +177,7 @@
   </div>
 
   <div class="status">
-    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
+    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. H2 is fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a> (ADR-0025). Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
   </div>
 </header>
 
@@ -249,7 +249,7 @@ $ head -c 96 "out/calibre/Some Author - Calibre Book_3.svg"
   <article class="finding high" id="H2">
     <header><span class="id">H2</span><h3>EPUB deduplication silently drops books that are not duplicates</h3></header>
     <div class="meta">
-      <span class="badge high">High</span><span class="badge ok">Reproduced</span>
+      <span class="badge high">High</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a></span><span class="badge ok">Reproduced</span>
       <code>src/document_selection/phases.rs:203-278</code>
       <code>src/document_selection/document_identity.rs:121-131</code>
     </div>
@@ -277,6 +277,7 @@ Jane Doe.png</pre>
       <li>Add an opt-out (<code>--keep-duplicates</code>) and document the behaviour in the README.</li>
     </ol>
     <p class="adr"><strong>ADR note:</strong> ADR-0019 (binding) governs the repeat-sighting collapse and the join order, not identity-based deduplication, so none of this contradicts it. The Document identity entry in <code>GLOSSARY.md</code> would need its duplicate-recognition sentence revised.</p>
+  <p class="impl"><strong>Implementation:</strong> All three recommendations are in, and ADR-0025 records the decision. <code>EpubDeclarations</code> now carries the identifier the package's <code>unique-identifier</code> attribute names. The duplicate key is that identifier together with the creator and title, all trimmed and case-folded. Without an identifier, an EPUB has a key only when it declares both a creator and a title. An EPUB that declares neither, or cannot be read, has no key, so file names never collide. One difference from the recommendation: the identifier does not decide alone. The creator and title stay in the key beside it, so a placeholder identifier or an ISBN reused across volumes cannot merge different books. The cost is that a copy whose identifier was stripped is kept rather than recognized. Each skip is a new <code>SkippedDuplicateEpub { path, duplicate_of }</code> diagnostic, rendered as <code>Warning: Skipped &lt;path&gt;: it declares the same book as &lt;kept&gt; (use --keep-duplicates to extract both)</code>. It is reported for EPUBs found by a directory search too, and does not change the exit status. <code>--keep-duplicates</code> keeps every EPUB. The phase still runs under the flag, because it is where an unfiltered EPUB gets the declarations its output name comes from. The README gains a <em>Duplicate EPUBs</em> section, and <code>GLOSSARY.md</code> revises Document selection, Document identity and Document selection diagnostic. <code>tests/epub_deduplication_cli.rs</code> reproduces the serial, creator-only and same-name cases against real archives, plus a true copy with and without the flag.</p>
   </article>
 
   <article class="finding high" id="H3">

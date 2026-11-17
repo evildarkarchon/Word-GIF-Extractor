@@ -690,6 +690,16 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
                     path.display()
                 ));
             }
+            ExtractionRunObservation::SkippedDuplicateEpub { path, duplicate_of } => {
+                // Unlike the eligibility warning above, this one names the flag: a
+                // duplicate is reported only when deduplication was not turned off,
+                // so the remedy is always the same and always applies.
+                self.print_error_suspended(&format!(
+                    "Warning: Skipped {}: it declares the same book as {} (use --keep-duplicates to extract both)",
+                    path.display(),
+                    duplicate_of.display()
+                ));
+            }
             ExtractionRunObservation::DocumentDiscoveryFailed { path, detail } => {
                 // Recursive discovery can warn while its spinner is active; suspending
                 // prevents the next redraw from corrupting or overwriting the warning.

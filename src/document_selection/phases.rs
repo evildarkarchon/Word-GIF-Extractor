@@ -21,7 +21,8 @@
 //! purpose as a literal at its single emission site. The tests that pin each
 //! phase's purpose keep that literal right, not the type system (ADR-0024).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 
 use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
@@ -185,33 +186,39 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
         matching_epubs
     }
 
-    /// Deduplicates EPUB candidates by their creator and title declarations and returns
-    /// the unique ones.
+    /// Deduplicates EPUB candidates by their declarations and returns the unique ones.
     ///
-    /// Keeps the first occurrence of each unique (author, title) combination.
-    /// EPUBs without a non-blank creator or title declaration are deduplicated by filename.
+    /// Keeps the first EPUB under each duplicate key and skips every later one, naming
+    /// the skipped EPUB and the one it duplicates in a Document selection diagnostic.
+    /// The key compares the package's unique identifier, creator and title; an EPUB
+    /// that declares too little to have one is never a duplicate (see
+    /// [`DocumentIdentity::dedupe_key`]). With `keep_duplicates` no EPUB has a key,
+    /// so every EPUB is kept.
     ///
     /// The phase is active exactly when there is at least one EPUB: an empty EPUB list
-    /// emits nothing. Declarations retained by filtering are reused, and only an EPUB
-    /// without them is acquired from `declarations` (ADR-0002); an EPUB whose
-    /// declarations cannot be read is kept or dropped by its filename key.
+    /// emits nothing. It runs under `keep_duplicates` too, because it is where an EPUB
+    /// no filter read gets the declarations its Document identity is built from.
+    /// Declarations retained by filtering are reused, and only an EPUB without them is
+    /// acquired from `declarations` (ADR-0002); an EPUB whose declarations cannot be
+    /// read has no key and is kept.
     ///
     /// An active phase emits one initial running observation, one running observation
     /// after each EPUB, and one finished observation. An EPUB's unreadable-declarations
-    /// diagnostic precedes the running observation that records it. Panic unwinding
-    /// intentionally skips the final observation.
+    /// or skipped-duplicate diagnostic precedes the running observation that records it.
+    /// Panic unwinding intentionally skips the final observation.
     pub(super) fn deduplicating(
         &mut self,
         epubs: Vec<EpubCandidate>,
         declarations: &dyn EpubDeclarationSource,
+        keep_duplicates: bool,
     ) -> Vec<EpubCandidate> {
         if epubs.is_empty() {
             return epubs;
         }
         let total = epubs.len();
-        // Track the Document identity keys already seen. Keys are case-insensitive,
-        // and declared keys never equal filename keys.
-        let mut seen: HashSet<DedupeKey> = HashSet::new();
+        // Maps each duplicate key already seen to the path of the EPUB kept under it,
+        // which the diagnostic for a later duplicate names.
+        let mut seen: HashMap<DedupeKey, PathBuf> = HashMap::new();
         let running = |checked, duplicates_found, unique_remaining| {
             ExtractionRunObservation::DeduplicatingEpubs {
                 checked,
@@ -251,17 +258,38 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
                     }
                 };
 
-            let key = DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
-                .dedupe_key();
+            let key = if keep_duplicates {
+                None
+            } else {
+                DocumentIdentity::of_epub_declarations(epub_declarations.as_ref(), &path)
+                    .dedupe_key(
+                        epub_declarations
+                            .as_ref()
+                            .and_then(EpubDeclarations::identifier),
+                    )
+            };
 
-            // Only add if we haven't seen this combination before.
-            if seen.insert(key) {
-                unique_epubs.push(EpubCandidate {
+            match key.map(|key| seen.entry(key)) {
+                Some(Entry::Occupied(kept)) => {
+                    duplicates_found += 1;
+                    self.observer
+                        .on_observation(ExtractionRunObservation::SkippedDuplicateEpub {
+                            path,
+                            duplicate_of: kept.get().clone(),
+                        });
+                }
+                Some(Entry::Vacant(vacant)) => {
+                    vacant.insert(path.clone());
+                    unique_epubs.push(EpubCandidate {
+                        path,
+                        epub_declarations,
+                    });
+                }
+                // No key: this EPUB can be no other's duplicate, so it is always kept.
+                None => unique_epubs.push(EpubCandidate {
                     path,
                     epub_declarations,
-                });
-            } else {
-                duplicates_found += 1;
+                }),
             }
             self.observer
                 .on_observation(running(index + 1, duplicates_found, unique_epubs.len()));

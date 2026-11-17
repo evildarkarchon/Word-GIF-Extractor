@@ -44,6 +44,7 @@ fn expected_for_book(
         false,
         None,
         epub_filter,
+        false,
         epub_cover_policy,
         image_write_policy,
     )
@@ -73,6 +74,7 @@ fn combines_positional_and_named_inputs() {
             false,
             Some(PathBuf::from("output")),
             EpubFilter::default(),
+            false,
             None,
             accepting_formats(ImageFormat::all_set()),
         )
@@ -501,7 +503,7 @@ fn test_convert_and_lossless_args_threaded() {
 /// Run-level tests build [`Args`] from this default and override two or three fields, so
 /// a drift between the two would silently change what those tests actually request. The
 /// whole-value comparison is deliberate: a per-field version would keep passing after a
-/// fifteenth flag arrived.
+/// sixteenth flag arrived.
 #[test]
 fn default_args_match_an_invocation_with_no_flags() {
     let parsed = Args::try_parse_from(["test"]).expect("an invocation with no flags should parse");

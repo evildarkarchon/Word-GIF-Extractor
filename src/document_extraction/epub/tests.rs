@@ -27,6 +27,7 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
             output: Some(output_dir),
             epub_filter: &EpubFilter::default(),
             epub_only: false,
+            keep_duplicate_epubs: false,
         },
         &FilesystemSearchSurface,
         &EpubFileDeclarations,

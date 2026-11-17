@@ -12,6 +12,11 @@
 //! moment it is needed, rather than stored on the candidate. Dedupe may acquire
 //! declarations that filtering never saw, and a stored identity could fall out of step
 //! with them; a derived one cannot.
+//!
+//! Duplicate recognition reads one declaration the identity does not hold: the
+//! package's unique identifier. It is asked of the identity together with that
+//! identifier, so the creator and title it compares are the same normalized values
+//! naming and filtering see.
 
 use std::path::Path;
 
@@ -39,17 +44,18 @@ pub(super) enum DocumentIdentity {
     },
 }
 
-/// Key under which Document selection recognizes duplicate EPUBs.
+/// Key under which Document selection recognizes two EPUBs as the same book.
 ///
-/// Declared and path keys are separate variants, so a book whose declared title is
-/// literally `book.epub` can never collide with an undeclared file named `book.epub`.
-/// Both variants are case-insensitive.
+/// Only a book that declares enough to tell it apart has a key; see
+/// [`DocumentIdentity::dedupe_key`]. Every part is trimmed and case-folded.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum DedupeKey {
-    /// Case-folded creator and title; an absent half is the empty string.
-    Declared { creator: String, title: String },
-    /// Case-folded file name, extension included.
-    Path { file_name: String },
+pub(super) struct DedupeKey {
+    /// The package's unique identifier, when it declares a non-blank one.
+    identifier: Option<String>,
+    /// The declared creator; empty only when an identifier is present.
+    creator: String,
+    /// The declared title; empty only when an identifier is present.
+    title: String,
 }
 
 /// EPUB filter terms case-folded once for a whole filtering phase.
@@ -117,17 +123,34 @@ impl DocumentIdentity {
         )
     }
 
-    /// Returns the case-insensitive key under which duplicates are recognized.
-    pub(super) fn dedupe_key(&self) -> DedupeKey {
-        match self {
-            Self::Declared { creator, title } => DedupeKey::Declared {
-                creator: creator.as_deref().unwrap_or_default().to_lowercase(),
-                title: title.as_deref().unwrap_or_default().to_lowercase(),
-            },
-            Self::Path { file_name, .. } => DedupeKey::Path {
-                file_name: file_name.to_lowercase(),
-            },
+    /// Returns the key under which this EPUB is recognized as a duplicate, if it has one.
+    ///
+    /// `identifier` is the package's unique identifier as declared. Two EPUBs are the
+    /// same book when they declare the same identifier, creator and title, compared
+    /// case-insensitively after trimming. The identifier is what tells the issues of
+    /// a periodical apart, since they share a creator and title; the creator and
+    /// title stay in the key so that two different books carrying one placeholder or
+    /// reused identifier are not taken for one book.
+    ///
+    /// Without an identifier, a book is keyed by creator and title only when it
+    /// declares both: one by itself names an author's whole shelf, or every book
+    /// with that title. A path identity with no identifier has no key at all, so
+    /// two files are never taken for one book on their file names alone. `None`
+    /// means the EPUB is never a duplicate and never has one.
+    pub(super) fn dedupe_key(&self, identifier: Option<&str>) -> Option<DedupeKey> {
+        let identifier = non_blank(identifier).map(|identifier| identifier.to_lowercase());
+        let (creator, title) = match self {
+            Self::Declared { creator, title } => (creator.as_deref(), title.as_deref()),
+            Self::Path { .. } => (None, None),
+        };
+        if identifier.is_none() && (creator.is_none() || title.is_none()) {
+            return None;
         }
+        Some(DedupeKey {
+            identifier,
+            creator: creator.unwrap_or_default().to_lowercase(),
+            title: title.unwrap_or_default().to_lowercase(),
+        })
     }
 
     /// Returns the output filename stem for this document's images.

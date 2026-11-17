@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 /// Complete payload-free facts declared by one readable EPUB document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EpubDeclarations {
+    /// The package's unique identifier, as the `epub` crate resolves it.
+    identifier: Option<String>,
     title: Option<String>,
     creator: Option<String>,
     cover_id: Option<String>,
@@ -20,6 +22,10 @@ impl EpubDeclarations {
     /// independently opened EPUB resource archive.
     pub(crate) fn acquire(path: &Path) -> Result<Self, EpubDeclarationError> {
         let doc = EpubDoc::new(path).map_err(EpubDeclarationError::new)?;
+        // The crate resolves the `<dc:identifier>` that the package's
+        // `unique-identifier` attribute names, falling back to the first
+        // identifier when the attribute is absent or names none.
+        let identifier = doc.unique_identifier.clone();
         let title = doc.mdata("title").map(|metadata| metadata.value.clone());
         let creator = doc.mdata("creator").map(|metadata| metadata.value.clone());
         let cover_id = doc.get_cover_id();
@@ -30,6 +36,7 @@ impl EpubDeclarations {
             .collect();
 
         Ok(Self {
+            identifier,
             title,
             creator,
             cover_id,
@@ -59,6 +66,13 @@ impl EpubDeclarations {
         }
     }
 
+    /// Returns the package's unique identifier when one is declared.
+    ///
+    /// The value is as declared, untrimmed; Document selection decides what counts.
+    pub(crate) fn identifier(&self) -> Option<&str> {
+        self.identifier.as_deref()
+    }
+
     /// Returns the declared title when present.
     pub(crate) fn title(&self) -> Option<&str> {
         self.title.as_deref()
@@ -80,14 +94,24 @@ impl EpubDeclarations {
     }
 
     /// Builds declarations directly, for tests whose subject never reads an archive.
+    ///
+    /// The package declares no unique identifier; see [`Self::with_identifier`].
     #[cfg(test)]
     pub(crate) fn declared(creator: Option<&str>, title: Option<&str>) -> Self {
         Self {
+            identifier: None,
             title: title.map(str::to_string),
             creator: creator.map(str::to_string),
             cover_id: None,
             resources: Vec::new(),
         }
+    }
+
+    /// Returns these declarations with `identifier` as the package's unique identifier.
+    #[cfg(test)]
+    pub(crate) fn with_identifier(mut self, identifier: Option<&str>) -> Self {
+        self.identifier = identifier.map(str::to_string);
+        self
     }
 }
 

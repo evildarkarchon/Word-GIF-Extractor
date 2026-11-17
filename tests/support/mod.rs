@@ -315,6 +315,53 @@ pub fn write_epub(
     write_zip_archive(path, &entries);
 }
 
+/// Writes an EPUB 2 declaring the given identity facts and holding one PNG.
+///
+/// Every declaration is optional, so a test can write the sparse metadata real books
+/// carry: a periodical issue that shares its creator and title with every other issue,
+/// or a book that names its creator and nothing else. An absent identifier leaves the
+/// package with no `unique-identifier` attribute and no `<dc:identifier>` at all.
+pub fn write_declared_epub(
+    path: &Path,
+    identifier: Option<&str>,
+    creator: Option<&str>,
+    title: Option<&str>,
+) {
+    let unique_identifier = identifier
+        .map(|_| " unique-identifier=\"bookid\"")
+        .unwrap_or_default();
+    let declarations = [
+        identifier.map(|value| format!("    <dc:identifier id=\"bookid\">{value}</dc:identifier>")),
+        creator.map(|value| format!("    <dc:creator>{value}</dc:creator>")),
+        title.map(|value| format!("    <dc:title>{value}</dc:title>")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n");
+    let package = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<package version="2.0"{unique_identifier} xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+{declarations}
+  </metadata>
+  <manifest>
+    <item id="pic" href="images/pic.png" media-type="image/png"/>
+  </manifest>
+  <spine></spine>
+</package>"#
+    );
+    write_zip_archive(
+        path,
+        &[
+            ("mimetype", b"application/epub+zip"),
+            ("META-INF/container.xml", EPUB_CONTAINER_XML),
+            ("OEBPS/content.opf", package.as_bytes()),
+            ("OEBPS/images/pic.png", MINIMAL_PNG),
+        ],
+    );
+}
+
 /// Encodes a small valid JPEG whose bytes can be compared after extraction.
 pub fn test_jpeg() -> Vec<u8> {
     let mut image = RgbImage::new(8, 8);

@@ -2,9 +2,9 @@
 //!
 //! Intake owns the command-line argument structure it consumes. That keeps the
 //! module graph acyclic — nothing here reaches back up to the crate root, which in
-//! turn reaches back down for the module tree — and it keeps the fourteen flags
+//! turn reaches back down for the module tree — and it keeps the fifteen flags
 //! defined in exactly one place. `clap` in the library interface is the accepted
-//! cost of that: the alternative is a fourteen-field parallel structure with a
+//! cost of that: the alternative is a fifteen-field parallel structure with a
 //! mapping to keep in sync.
 
 use std::collections::HashSet;
@@ -59,7 +59,7 @@ impl From<ConversionTargetArg> for ConversionTarget {
 /// or three options it cares about and leave the rest alone; it is not part of what
 /// the library promises. [`PartialEq`] is test-only for the same reason: it lets one
 /// test hold that default against a real parse without enumerating the fields, so a
-/// fifteenth flag cannot drift the two apart unnoticed.
+/// sixteenth flag cannot drift the two apart unnoticed.
 #[derive(Parser, Debug)]
 #[cfg_attr(test, derive(Default, PartialEq))]
 #[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
@@ -102,6 +102,10 @@ pub struct Args {
     /// Filter EPUB files by author (case-insensitive substring match)
     #[arg(long)]
     pub(crate) author: Option<String>,
+
+    /// Process every EPUB, even when several declare the same book
+    #[arg(long)]
+    pub(crate) keep_duplicates: bool,
 
     /// Convert extracted images to specified format (jpg, png, webp)
     #[arg(short = 'C', long, conflicts_with = "gif_only")]
@@ -202,6 +206,7 @@ pub fn prepare(
         cover_fallback,
         title,
         author,
+        keep_duplicates,
         convert,
         quality,
         lossless,
@@ -249,6 +254,7 @@ pub fn prepare(
         recursive,
         output,
         EpubFilter { title, author },
+        keep_duplicates,
         epub_cover_policy,
         image_write_policy,
     );
