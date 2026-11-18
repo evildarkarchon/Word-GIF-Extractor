@@ -417,7 +417,7 @@ thumb_2.png      <span class="note">← the document's only image</span></pre>
   <article class="finding med" id="M6">
     <header><span class="id">M6</span><h3>Accepted entries are buffered whole with no size limit</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge fixed">Fixed</span><span class="badge ok">Output reproduced</span><span class="badge plain">Memory: from code</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/118">PR #118</a></span><span class="badge ok">Output reproduced</span><span class="badge plain">Memory: from code</span>
       <code>src/image_write_pipeline/discovery.rs:241</code>
     </div>
     <p>Identification is bounded to 1,027 bytes, but an accepted entry is then read to the end into a <code>Vec</code> before anything is written, and conversion decodes a second copy. Nothing checks the entry's declared or actual size. A 522 KB document built for this audit inflated to a 512 MiB output file:</p>
