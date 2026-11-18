@@ -178,11 +178,11 @@ pub struct Args {
     #[arg(long, requires = "cover_only")]
     pub(crate) cover_fallback: bool,
 
-    /// Filter EPUB files by title (case-insensitive substring match)
+    /// Extract only EPUBs whose title contains TITLE (case-insensitive); non-EPUB inputs are skipped
     #[arg(long)]
     pub(crate) title: Option<String>,
 
-    /// Filter EPUB files by author (case-insensitive substring match)
+    /// Extract only EPUBs whose author contains AUTHOR (case-insensitive); non-EPUB inputs are skipped
     #[arg(long)]
     pub(crate) author: Option<String>,
 
@@ -203,7 +203,11 @@ pub struct Args {
     pub(crate) lossless: bool,
 
     /// Extract only GIF files (skip all other image formats)
-    #[arg(short = 'g', long, conflicts_with = "convert")]
+    // `--formats` conflicts rather than being overridden: `-g -f png` used to drop the
+    // format list without a word and run GIF-only, which wrote nothing. `-f gif` says
+    // the same thing as `-g`, so refusing the pair loses no run worth asking for.
+    // See ADR-0033.
+    #[arg(short = 'g', long, conflicts_with_all = ["convert", "formats"])]
     pub(crate) gif_only: bool,
 
     /// Separate output directory for GIF files
@@ -361,8 +365,9 @@ pub fn prepare(
 /// Resolves the image formats accepted by one extraction run.
 ///
 /// Every token was already parsed into an Image format, so there is nothing left to
-/// reject here. No `--formats` flag accepts every format, and `--gif-only` replaces
-/// whatever was requested with GIF alone.
+/// reject here. No `--formats` flag accepts every format, and `--gif-only` accepts GIF
+/// alone. The command line cannot pass both, because the two flags conflict at parse
+/// time; a test that builds [`Args`] directly with both still gets GIF alone.
 fn select_allowed_formats(
     formats: Option<Vec<ImageFormat>>,
     gif_only: bool,

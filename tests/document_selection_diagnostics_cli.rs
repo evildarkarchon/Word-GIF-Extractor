@@ -151,6 +151,53 @@ fn rejected_named_inputs_fail_the_run_and_the_rest_still_extract() {
     assert_eq!(sorted_file_names(&output_dir), ["sample.png"]);
 }
 
+/// Verifies a title or author filter extracts no Office document, named or found.
+///
+/// Audit finding L6: `--author nobody ./docs` used to extract every DOCX in the folder,
+/// because the filter applied to EPUBs alone. A filter asks for particular books, so
+/// an Office document is not eligible (ADR-0033). The named DOCX is reported as skipped,
+/// the one inside the directory is dropped without a line, nothing is written, and the
+/// run still exits 0, because skipping an ineligible input is a decision, not an error.
+#[test]
+fn an_epub_filter_extracts_no_office_document() {
+    let temp_dir = temp_test_dir("selection-diagnostic", "filter-skips-office");
+    let docs_dir = temp_dir.join("docs");
+    let output_dir = temp_dir.join("output");
+    let named_path = temp_dir.join("named.docx");
+    fs::create_dir_all(&docs_dir).expect("documents directory should be creatable");
+    write_png_docx(&docs_dir.join("found.docx"));
+    write_png_docx(&named_path);
+
+    let (result, capture) = run_captured(&[
+        "--author",
+        "nobody",
+        docs_dir.to_string_lossy().as_ref(),
+        named_path.to_string_lossy().as_ref(),
+        "--output",
+        output_dir.to_string_lossy().as_ref(),
+    ]);
+
+    assert_eq!(
+        result.expect("intake should accept an author filter"),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(
+        capture.stderr().lines().collect::<Vec<_>>(),
+        [format!(
+            "Warning: Skipped {}: this run extracts EPUB documents only",
+            named_path.display()
+        )]
+    );
+    assert_eq!(
+        capture.stdout().lines().collect::<Vec<_>>(),
+        ["No documents found to process."]
+    );
+    assert!(
+        !output_dir.exists(),
+        "a run with no eligible document should write nothing"
+    );
+}
+
 /// Verifies a nested non-recursive inspection failure renders once before normal completion.
 ///
 /// This is also the contrast case for

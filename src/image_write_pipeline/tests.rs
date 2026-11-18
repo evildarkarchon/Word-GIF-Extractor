@@ -3,7 +3,8 @@
 use super::*;
 use crate::conversion::{ConversionRequest, ConversionTarget};
 use crate::test_support::{
-    FailAfterReader, MINIMAL_PNG, pipeline_accepting, pipeline_converting, temp_test_dir,
+    FailAfterReader, MINIMAL_PNG, animated_gif, pipeline_accepting, pipeline_converting,
+    temp_test_dir,
 };
 use std::fs;
 use std::io::{self, Cursor, Read};
@@ -292,6 +293,77 @@ fn required_cover_conversion_failure_is_a_written_cover_in_its_original_bytes() 
             if source_name == "OPS/cover.png" && detail == "Failed to decode image"
     ));
     assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), corrupt_png);
+}
+
+/// Proves an animated GIF under conversion is written whole, as a conversion-skipped
+/// image, beside a warning that names it and says why (audit L7, ADR-0034).
+///
+/// A still GIF in the same document converts, so the test also shows the fallback is
+/// decided per image from its bytes, not from the GIF format.
+#[test]
+fn animated_gif_under_conversion_is_kept_in_its_original_bytes() {
+    let temp_dir = temp_test_dir("pipeline", "animated-gif-conversion");
+    let pipeline = pipeline_converting(
+        HashSet::from([ImageFormat::Gif]),
+        ConversionTarget::Png,
+        None,
+    );
+    let animated = animated_gif(2);
+
+    let result = write_sources(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        vec![
+            named_source(animated.clone(), "word/media/image1.gif"),
+            named_source(animated_gif(1), "word/media/image2.gif"),
+        ],
+    )
+    .expect("an animated GIF should be emitted");
+
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(result.tally.conversion_skipped(), 1);
+    assert_eq!(result.tally.converted(), 1);
+    assert!(matches!(
+        &result.warnings[..],
+        [ImageWriteWarning::AnimatedConversionSkipped { source_name, format: ImageFormat::Gif }]
+            if source_name == "word/media/image1.gif"
+    ));
+    assert_eq!(fs::read(temp_dir.join("sample_1.gif")).unwrap(), animated);
+    assert!(temp_dir.join("sample_2.png").exists());
+}
+
+/// Proves an animated GIF cover under conversion is a written cover in its original
+/// bytes, counted as a conversion-skipped cover, the way ADR-0023 treats any cover
+/// whose conversion falls back.
+#[test]
+fn required_animated_gif_cover_is_a_written_cover_in_its_original_bytes() {
+    let temp_dir = temp_test_dir("pipeline", "required-cover-animated-gif");
+    let pipeline = pipeline_converting(
+        HashSet::from([ImageFormat::Gif]),
+        ConversionTarget::Jpg,
+        None,
+    );
+    let animated = animated_gif(2);
+    let mut reader = Cursor::new(animated.clone());
+
+    let (has_written_cover, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.gif",
+        "image/gif",
+        &mut reader,
+    )
+    .expect("an animated cover should be a normal outcome");
+
+    assert!(has_written_cover);
+    assert_eq!(result.tally.covers(), 1);
+    assert_eq!(result.tally.conversion_skipped(), 1);
+    assert!(matches!(
+        &result.warnings[..],
+        [ImageWriteWarning::AnimatedConversionSkipped { source_name, .. }]
+            if source_name == "OPS/cover.gif"
+    ));
+    assert_eq!(fs::read(temp_dir.join("sample.gif")).unwrap(), animated);
 }
 
 #[test]

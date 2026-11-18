@@ -385,6 +385,26 @@ pub fn test_jpeg() -> Vec<u8> {
     bytes
 }
 
+/// Encodes a 4x4 GIF of `frames` frames, each a different solid colour.
+///
+/// With one frame it is a still GIF; with two or more conversion keeps it in its
+/// original bytes (ADR-0034). Byte-identical to the crate-private helper of the same
+/// name, for the reason [`MINIMAL_PNG`] is.
+pub fn animated_gif(frames: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+        for index in 0..frames {
+            let shade = index.wrapping_mul(80);
+            let frame = image::RgbaImage::from_pixel(4, 4, image::Rgba([shade, 0, 255, 255]));
+            encoder
+                .encode_frame(image::Frame::new(frame))
+                .expect("test GIF frame should encode");
+        }
+    }
+    bytes
+}
+
 /// Lists the names of every entry directly inside `directory`, sorted.
 ///
 /// Sorting makes the comparison independent of the platform's directory order, so

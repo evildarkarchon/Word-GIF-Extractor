@@ -216,6 +216,13 @@ impl DocumentExtractionWarning {
                 "Skipping conversion for {source_name} ({} format not supported for conversion)",
                 format.extension()
             ),
+            ImageWriteWarning::AnimatedConversionSkipped {
+                source_name,
+                format,
+            } => format!(
+                "Skipping conversion for {source_name} (animated {}; converting would keep only its first frame)",
+                format.extension().to_ascii_uppercase()
+            ),
             ImageWriteWarning::ConversionFailed {
                 source_name,
                 detail,

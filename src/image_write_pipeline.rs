@@ -104,6 +104,13 @@ pub(crate) enum ImageWriteWarning {
         source_name: String,
         format: ImageFormat,
     },
+    /// An image was left unconverted because it is animated, and converting it would
+    /// keep only its first frame (ADR-0034). It is emitted conversion-skipped, like
+    /// [`Self::ConversionSkipped`], and `source_name` names the image the same way.
+    AnimatedConversionSkipped {
+        source_name: String,
+        format: ImageFormat,
+    },
     /// An image's conversion failed, whatever its Image write purpose.
     /// `source_name` is the source's diagnostic name, as for [`Self::ConversionSkipped`].
     ConversionFailed {
@@ -270,8 +277,9 @@ enum PreparationPlan<'policy> {
 struct ImagePreparation<'policy> {
     /// The image ready to emit, in the role preparation decided.
     image: PreparedImage<'policy>,
-    /// The conversion-skipped or conversion-failed warning naming the source
-    /// image, present exactly when conversion fell back to the original bytes.
+    /// The conversion-skipped, animated conversion-skipped or conversion-failed
+    /// warning naming the source image, present exactly when conversion fell back
+    /// to the original bytes.
     conversion_warning: Option<ImageWriteWarning>,
 }
 
@@ -816,9 +824,12 @@ fn plan_preparation<'policy>(
                 format: original_format,
             }),
         },
-        // `outcome_without_decoding` never converts; this arm only keeps the match
-        // exhaustive, and treating it as "needs decoding" is the safe reading.
-        Some(ConversionOutcome::Converted(..)) | None => PreparationPlan::Convert(conversion),
+        // `outcome_without_decoding` never converts and never inspects the bytes, so
+        // it cannot report either outcome below; these arms only keep the match
+        // exhaustive, and treating them as "needs decoding" is the safe reading.
+        Some(ConversionOutcome::Converted(..) | ConversionOutcome::AnimatedSource(_)) | None => {
+            PreparationPlan::Convert(conversion)
+        }
     }
 }
 
@@ -848,6 +859,16 @@ fn convert_accepted<'policy>(
             image.data,
             original_format,
             ImageWriteWarning::ConversionSkipped {
+                source_name: image.source_name,
+                format: original_format,
+            },
+        ),
+        // Kept the same way an unsupported source is, so an animated GIF cover is
+        // still a written cover (ADR-0023) and is counted among skipped conversions.
+        Ok(ConversionOutcome::AnimatedSource(original_format)) => ImagePreparation::fell_back(
+            image.data,
+            original_format,
+            ImageWriteWarning::AnimatedConversionSkipped {
                 source_name: image.source_name,
                 format: original_format,
             },

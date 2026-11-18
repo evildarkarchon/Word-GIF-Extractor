@@ -156,11 +156,13 @@ pub struct DocumentSelectionOptions<'a> {
     pub output: Option<&'a Path>,
     /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
-    /// Whether only EPUB documents are eligible for this run.
+    /// Whether a reason outside selection makes only EPUB documents eligible.
     ///
     /// Selection is told that eligibility is restricted, not why: the reason is
     /// Document extraction's business, and a plain flag keeps selection's imports
     /// answering what it depends on — the same rule ADR-0005 applies one level down.
+    /// A non-empty [`Self::epub_filter`] restricts eligibility as well, whatever this
+    /// says. That reason is selection's own, so it is not passed in (ADR-0033).
     pub epub_only: bool,
     /// Whether EPUBs that declare the same book are all kept rather than deduplicated.
     pub keep_duplicate_epubs: bool,
@@ -298,8 +300,11 @@ pub fn select_documents(
     let (epubs, office_documents) = split_by_kind(candidates);
 
     // The EPUB-only restriction runs before filtering opens, so its diagnostics
-    // precede every EPUB phase observation, as ADR-0011 places it.
-    let office_documents = if options.epub_only {
+    // precede every EPUB phase observation, as ADR-0011 places it. A title or author
+    // filter asks for particular books, which no Office document can be, so an
+    // active filter restricts eligibility the same way a cover run does (ADR-0033).
+    let epub_only = options.epub_only || !options.epub_filter.is_empty();
+    let office_documents = if epub_only {
         skip_non_epub_candidates(office_documents, &mut lifecycle);
         Vec::new()
     } else {
