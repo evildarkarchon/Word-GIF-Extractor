@@ -474,12 +474,13 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
   <article class="finding med" id="M9">
     <header><span class="id">M9</span><h3>There is no CI, so the gate and the Unix code paths rely on memory</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge ok">Observed</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed</span><span class="badge ok">Observed</span>
       <span class="badge plain">no <code>.github/</code> directory</span>
     </div>
     <p><code>AGENTS.md</code> defines "done" as tests plus clippy passing, and nothing enforces it on a pull request. The test support carries <code>#[cfg(unix)]</code> branches (<code>src/test_support.rs:739-793</code>, <code>tests/support/mod.rs:371-404</code>) that a Windows-only workflow never compiles, and L3 describes behaviour that differs by platform. <code>Cargo.toml</code> declares no <code>rust-version</code> although the source needs a recent compiler (edition 2024, let-chains).</p>
     <h4>Recommendation</h4>
     <p>One GitHub Actions workflow on <code>windows-latest</code> and <code>ubuntu-latest</code>: fmt check, clippy with <code>-D warnings</code>, test, and the advisory scan from M8. Declare <code>rust-version</code>.</p>
+  <p class="impl"><strong>Implementation:</strong> <code>.github/workflows/ci.yml</code> runs on every pull request, on pushes to <code>main</code>, weekly, and on demand. Clippy with <code>-D warnings</code> and <code>cargo test</code> run on <code>windows-latest</code> and <code>ubuntu-latest</code>, both with <code>--locked</code> and with <code>fail-fast</code> off, so a failure on one platform does not cancel the other. <code>cargo fmt --check</code> runs as its own job, so a formatting slip does not skip the tests. <code>cargo deny check advisories</code> runs once on Linux, because the action needs a Linux container and advisories describe the lockfile, not the host. The weekly run catches an advisory published against an unchanged lockfile. <code>Cargo.toml</code> now declares <code>rust-version = "1.88"</code>. Edition 2024 needs 1.85 and let-chains need 1.88, and <code>zip</code> 9.6 and <code>image</code> 0.25.10, the highest declarations in the dependency tree, also need 1.88. A fourth job reads that field and runs <code>cargo check --all-targets</code> on that compiler, so the floor is tested rather than stated. <code>AGENTS.md</code> adds <code>cargo fmt --check</code> to the gate the workflow enforces, and the README states the minimum Rust version. Before the push, the workflow passed <code>actionlint</code>, and the whole gate plus a 1.88 build passed on Windows. The first Linux compile and test run of the <code>#[cfg(unix)]</code> test support happens in CI.</p>
   </article>
 </section>
 
@@ -657,7 +658,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
       <h3>3. Structural</h3>
       <ul>
         <li><a href="#L10">L10</a> realistic fixture corpus, with a regression test for each reproduced finding</li>
-        <li><a href="#M9">M9</a> CI on Windows and Linux</li>
+        <li><a href="#M9">M9</a> CI on Windows and Linux <span class="badge fixed">Fixed</span></li>
         <li><a href="#M6">M6</a> entry size ceiling and streaming writes <span class="badge fixed">Fixed</span></li>
         <li><a href="#M8">M8</a> step 2: <code>zip</code> upgrade <span class="badge fixed">Fixed</span></li>
         <li><a href="#M8">M8</a> step 3: replace <code>epub</code> (ADR-0001)</li>

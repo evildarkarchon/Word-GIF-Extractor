@@ -2,6 +2,10 @@
 name = "word-image-extractor"
 version = "0.3.0"
 edition = "2024"
+# The oldest compiler that builds every target, checked by the `msrv` CI job.
+# Edition 2024 needs 1.85 and let-chains need 1.88; `zip` 9.6 and `image`
+# 0.25.10 also declare 1.88. Raise it when a dependency upgrade does.
+rust-version = "1.88"
 
 [dependencies]
 # DOCX and EPUB entries are stored or deflated, so only the deflate codec is

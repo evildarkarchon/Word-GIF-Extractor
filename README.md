@@ -13,6 +13,8 @@ A fast CLI tool that extracts images from Microsoft Office, OpenDocument and EPU
 
 ## Installation
 
+Building needs Rust 1.88 or newer.
+
 ```bash
 cargo build --release
 ```
