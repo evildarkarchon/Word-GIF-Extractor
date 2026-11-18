@@ -4,7 +4,9 @@
 //! `walkdir` report, not that Document selection selects correctly — selection's
 //! own behaviour is asserted against a declared surface with no disk behind it.
 //! ADR-0008 keeps exactly the cases only an operating system can settle here:
-//! the two link kinds, the two link positions, and the absent path.
+//! the two link kinds, the two link positions, and the absent path. ADR-0031
+//! adds one more: the file-name order the surface puts on both of its listings,
+//! which only means something against a filesystem that lists in another order.
 //!
 //! One case is deliberately absent. An inspectable object that is neither a file
 //! nor a directory — a fifo or a socket — cannot be staged portably on Windows,
@@ -178,5 +180,59 @@ fn nested_file_link_inspects_as_a_file() {
     );
 
     remove_file_symlink(&linked_document);
+    fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
+}
+
+#[test]
+fn file_name_order_folds_case_and_breaks_ties_by_exact_bytes() {
+    let mut names =
+        ["b.epub", "_x.epub", "Z.epub", "a.epub", "B.epub", "A.epub"].map(std::ffi::OsString::from);
+    names.sort_by(|a, b| file_name_order(a, b));
+
+    // Folding to uppercase, as NTFS does, puts `_` (0x5F) after every letter
+    // rather than between the cases; only names equal once folded fall back to
+    // their bytes, which puts the uppercase spelling first.
+    assert_eq!(
+        names,
+        ["A.epub", "a.epub", "B.epub", "b.epub", "Z.epub", "_x.epub"].map(std::ffi::OsString::from)
+    );
+}
+
+#[test]
+fn listing_and_traversal_both_yield_file_name_order() {
+    let temp_dir = temp_test_dir("document-search-surface", "file-name-order");
+    let root = temp_dir.join("library");
+    let nested = root.join("m");
+    fs::create_dir_all(&nested).expect("nested directory should be creatable");
+    // Created against the expected order, so a filesystem that lists in creation
+    // order fails as surely as ext4, which lists in hash order. NTFS already
+    // lists in this order, so on Windows the comparator test above is the guard.
+    for name in ["c.docx", "B.docx", "a.docx"] {
+        fs::write(root.join(name), []).expect("DOCX should be writable");
+    }
+    for name in ["y.docx", "X.docx"] {
+        fs::write(nested.join(name), []).expect("nested DOCX should be writable");
+    }
+
+    assert_eq!(
+        FilesystemSearchSurface
+            .read_directory(&root)
+            .expect("the directory should list")
+            .collect::<io::Result<Vec<_>>>()
+            .expect("every entry should read"),
+        ["a.docx", "B.docx", "c.docx", "m"].map(|name| root.join(name))
+    );
+    assert_eq!(
+        traversed_paths(&FilesystemSearchSurface, &root),
+        [
+            root.join("a.docx"),
+            root.join("B.docx"),
+            root.join("c.docx"),
+            nested.clone(),
+            nested.join("X.docx"),
+            nested.join("y.docx"),
+        ]
+    );
+
     fs::remove_dir_all(temp_dir).expect("temporary test directory should be removable");
 }
