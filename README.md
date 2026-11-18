@@ -135,6 +135,12 @@ Extracted images use the book's metadata for naming in the format "Author - Titl
 
 Invalid filename characters in metadata are automatically replaced with underscores.
 
+### Names the filesystem would refuse
+These rules apply to both document kinds, and a name they do not cover is used exactly as built.
+
+- **Too long.** One file name holds at most 255 characters: UTF-16 code units on Windows, UTF-8 bytes on Linux and macOS. This is a per-name limit that Windows long-path support does not raise. A longer name, usually from a long subtitle, is cut from the end of its author and title, and its number and extension are kept. Every image of that document is cut to the same length, so they still share one name.
+- **Windows device names.** A name whose part before the first dot is `CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9` or `LPT0` to `LPT9` gets a leading underscore, for example `_NUL.png`. This happens on every operating system, so the files stay usable when they are copied to Windows.
+
 For both document kinds, the number is the image's position in the document, counted
 across every image it emits. GIFs routed to a separate directory with `--gif-output`
 keep their place in that count, so a document with one PNG and one GIF writes

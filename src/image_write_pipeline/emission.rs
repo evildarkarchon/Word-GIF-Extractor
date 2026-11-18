@@ -1,6 +1,10 @@
 //! Collision-safe Image file emission inside the Image write pipeline.
 
+mod file_name_fit;
+
 use anyhow::{Context, Result};
+use file_name_fit::fitted_file_name;
+use std::borrow::Cow;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -309,6 +313,10 @@ impl<'policy, 'placement> ImageFileEmission<'policy, 'placement> {
     /// output directory. That directory is created before every file, so it
     /// appears only once something is written to it.
     ///
+    /// Every candidate name is fitted to what the filesystem can create: an overlong
+    /// one has its base name shortened, and a Windows device name gains a leading
+    /// `_` (ADR-0032). A name that already fits is used exactly as built.
+    ///
     /// Returns the newly created, empty file and its path.
     ///
     /// # Errors
@@ -338,32 +346,21 @@ impl<'policy, 'placement> ImageFileEmission<'policy, 'placement> {
             )
         })?;
 
-        let output_filename = match naming {
-            OutputNaming::Numbered(ordinal) => format!(
-                "{}_{}.{}",
-                self.placement.base_name(),
-                ordinal,
-                format.extension()
-            ),
-            OutputNaming::Singular => {
-                format!("{}.{}", self.placement.base_name(), format.extension())
-            }
+        let base_name = self.placement.base_name();
+        let extension = format.extension();
+        let ordinal_suffix = match naming {
+            OutputNaming::Numbered(ordinal) => format!("_{ordinal}"),
+            OutputNaming::Singular => String::new(),
         };
 
-        let base_stem = Path::new(&output_filename)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let extension = format.extension();
-
         for collision_index in 0..=MAX_COLLISION_ATTEMPTS {
-            let output_path = candidate_path(
-                output_dir,
-                &output_filename,
-                &base_stem,
-                extension,
-                collision_index,
-            );
+            // A collision suffix follows the ordinal: `<base>_<ordinal>_<collision>`.
+            let suffix = if collision_index == 0 {
+                Cow::Borrowed(ordinal_suffix.as_str())
+            } else {
+                Cow::Owned(format!("{ordinal_suffix}_{collision_index}"))
+            };
+            let output_path = output_dir.join(fitted_file_name(base_name, &suffix, extension));
 
             match OpenOptions::new()
                 .write(true)
@@ -381,25 +378,11 @@ impl<'policy, 'placement> ImageFileEmission<'policy, 'placement> {
         }
 
         anyhow::bail!(
-            "Could not find unique filename after {} attempts for {}",
+            "Could not find unique filename after {} attempts for {}{}",
             MAX_COLLISION_ATTEMPTS,
-            base_stem
+            base_name,
+            ordinal_suffix
         )
-    }
-}
-
-/// Builds one deterministic filename candidate while preserving existing naming.
-fn candidate_path(
-    output_dir: &Path,
-    output_filename: &str,
-    base_stem: &str,
-    extension: &str,
-    collision_index: u32,
-) -> PathBuf {
-    if collision_index == 0 {
-        output_dir.join(output_filename)
-    } else {
-        output_dir.join(format!("{}_{}.{}", base_stem, collision_index, extension))
     }
 }
 
