@@ -199,8 +199,8 @@ fn rejects_an_unrecognized_format_among_recognized_ones() {
 }
 
 #[test]
-fn gif_only_overrides_format_selection() {
-    let prepared = prepare_named(["test", "book.epub", "--formats", "png,jpg", "--gif-only"]);
+fn gif_only_builds_a_gif_only_policy() {
+    let prepared = prepare_named(["test", "book.epub", "--gif-only"]);
 
     assert!(prepared.notices.is_empty());
     assert_eq!(
@@ -211,6 +211,29 @@ fn gif_only_overrides_format_selection() {
             accepting_formats(HashSet::from([ImageFormat::Gif])),
         )
     );
+}
+
+/// Verifies `--gif-only` with `--formats` is a usage error, in either order and spelling.
+///
+/// `--gif-only` used to override the format list without notice, so `-g -f png` ran a
+/// GIF-only extraction that wrote nothing. Even `-f gif` is refused: it asks for what
+/// `-g` already does, and allowing only the agreeing pair would make the rule depend
+/// on the list's contents.
+#[test]
+fn gif_only_conflicts_with_formats() {
+    for args in [
+        ["test", "book.epub", "--gif-only", "--formats", "png"],
+        ["test", "book.epub", "-f", "png,jpg", "-g"],
+        ["test", "book.epub", "-g", "-f", "gif"],
+    ] {
+        let error = Args::try_parse_from(args).expect_err("the two flags should conflict");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{args:?}"
+        );
+        assert_eq!(error.exit_code(), 2, "{args:?}");
+    }
 }
 
 /// Verifies `--convert` alone builds the target's Conversion policy with no overrides.

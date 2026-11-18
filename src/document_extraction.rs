@@ -180,7 +180,7 @@ impl DocumentExtractionFacts {
 
 /// Opaque non-fatal warning exposed by Document extraction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DocumentExtractionWarning {
+pub(crate) struct DocumentExtractionWarning {
     message: String,
 }
 
@@ -216,6 +216,13 @@ impl DocumentExtractionWarning {
                 "Skipping conversion for {source_name} ({} format not supported for conversion)",
                 format.extension()
             ),
+            ImageWriteWarning::AnimatedConversionSkipped {
+                source_name,
+                format,
+            } => format!(
+                "Skipping conversion for {source_name} (animated {}; converting would keep only its first frame)",
+                format.extension().to_ascii_uppercase()
+            ),
             ImageWriteWarning::ConversionFailed {
                 source_name,
                 detail,
@@ -234,7 +241,7 @@ impl DocumentExtractionWarning {
     }
 
     /// Returns the stable user-visible wording for this warning fact.
-    pub fn get_message(&self) -> &str {
+    pub(crate) fn get_message(&self) -> &str {
         &self.message
     }
 }

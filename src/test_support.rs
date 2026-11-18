@@ -635,6 +635,30 @@ pub(crate) fn valid_png() -> Vec<u8> {
     cursor.into_inner()
 }
 
+/// Encodes a 4x4 GIF of `frames` frames, each a different solid colour.
+///
+/// With one frame it is a still GIF; with two or more the Conversion policy keeps it
+/// unconverted (ADR-0034). The frames differ so that no encoder can merge them.
+/// Byte-identical to the integration-test helper of the same name.
+///
+/// # Panics
+///
+/// If the `image` crate's GIF encoder rejects the frames.
+pub(crate) fn animated_gif(frames: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+        for index in 0..frames {
+            let shade = index.wrapping_mul(80);
+            let frame = image::RgbaImage::from_pixel(4, 4, image::Rgba([shade, 0, 255, 255]));
+            encoder
+                .encode_frame(image::Frame::new(frame))
+                .expect("test GIF frame should encode");
+        }
+    }
+    bytes
+}
+
 /// Builds an Image write pipeline that accepts `formats` and does nothing else.
 ///
 /// No Conversion policy and no GIF destination: the shape nearly every pipeline

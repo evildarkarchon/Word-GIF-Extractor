@@ -58,6 +58,9 @@ word-image-extractor book.epub -f png,jpg
 | `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
 | `-r, --recursive`     | Recursively search directories for supported documents            |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract: `jpg` (or `jpeg`), `png`, `gif`, `bmp`, `tiff` (or `tif`), `svg`, `wmf`, `emf`, `webp`, `ico`. An unrecognized name is an error and nothing runs |
+| `-g, --gif-only`      | Extract GIF images only. Cannot be combined with `--formats` or `--convert` |
+| `--title <TEXT>`      | Extract only EPUBs whose title contains `TEXT`, ignoring case; non-EPUB inputs are skipped. See [EPUB Filters](#epub-filters) |
+| `--author <TEXT>`     | Extract only EPUBs whose author contains `TEXT`, ignoring case; non-EPUB inputs are skipped |
 | `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
 | `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when no cover is written, including when `--formats` filters it out |
 | `--keep-duplicates`   | Extract every EPUB, even when several declare the same book       |
@@ -77,6 +80,10 @@ word-image-extractor book.epub -f png,jpg
 Extensions are matched without regard to case. Office and OpenDocument files are ZIP archives, and only the images in the media folder above are extracted. Everything else in the archive is left alone, notably the preview thumbnail a file manager shows (`docProps/thumbnail.*` or `Thumbnails/thumbnail.png`), which is not one of the document's images. A video or sound clip in a presentation's media folder is not an image either and is passed over.
 
 The older binary formats (`.doc`, `.ppt`, `.xls`) and flat OpenDocument XML files (`.fodt` and the like) are not ZIP archives and are not supported.
+
+## EPUB Filters
+
+`--title` and `--author` select EPUBs by the title and creator the book declares, as a case-insensitive substring match. Pass both and an EPUB must match both. A filter asks for particular books, so Office and OpenDocument files are not eligible in a filtered run, as in a cover run: one you name on the command line is reported as skipped, and one found while searching a directory is dropped without a message.
 
 ## EPUB Covers
 
@@ -100,7 +107,7 @@ Use `--convert jpg`, `--convert png`, or `--convert webp` to encode extracted im
 
 When an image already matches the conversion target, its original bytes are preserved unless an encoding setting was explicit. JPEG and WebP are re-encoded when `--quality` is supplied, WebP is re-encoded when `--lossless` is supplied, and matching PNG files are always preserved.
 
-An image that cannot be converted, because its format is not supported for conversion (such as SVG) or its data cannot be decoded, is kept in its original format, with a warning naming the image. The same applies to an EPUB cover with `--cover-only`: a cover that cannot be converted is kept in its original format, still counts as the cover, and is counted among the summary's skipped conversions.
+An image that cannot be converted, because its format is not supported for conversion (such as SVG) or its data cannot be decoded, is kept in its original format, with a warning naming the image. An animated GIF is kept the same way: every conversion target holds one still image, so converting it would keep only its first frame. A GIF with a single frame is converted as usual. The same applies to an EPUB cover with `--cover-only`: a cover that cannot be converted is kept in its original format, still counts as the cover, and is counted among the summary's skipped conversions.
 
 ## Image Size Limit
 

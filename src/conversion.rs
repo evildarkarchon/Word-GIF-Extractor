@@ -5,14 +5,21 @@
 //! or WebP). Handles alpha compositing for JPEG conversion and provides lossy
 //! WebP encoding via the `webp` crate.
 //!
-//! Note: Animated GIFs are decoded as their first frame only.
+//! Every target is encoded from one still image, so converting an animated GIF would
+//! keep only its first frame. An animated GIF is therefore never converted: it is
+//! reported as [`ConversionOutcome::AnimatedSource`] and kept in its original bytes
+//! (ADR-0034).
 
 use anyhow::{Context, Result};
+use image::codecs::gif::GifDecoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPEncoder;
-use image::{DynamicImage, ImageError, Rgb, RgbImage, Rgba};
+use image::{
+    AnimationDecoder, DynamicImage, ImageDecoder, ImageError, Limits, Rgb, RgbImage, Rgba,
+};
 use std::fmt;
+use std::io::Cursor;
 
 use crate::image_format::ImageFormat;
 
@@ -20,7 +27,7 @@ const DEFAULT_QUALITY: u8 = 85;
 
 /// A format that the conversion module can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConversionTarget {
+pub(crate) enum ConversionTarget {
     /// JPEG output.
     Jpg,
     /// PNG output.
@@ -31,7 +38,7 @@ pub enum ConversionTarget {
 
 /// Raw, CLI-independent facts used to construct a valid Conversion policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConversionRequest {
+pub(crate) struct ConversionRequest {
     /// Requested output target.
     pub target: ConversionTarget,
     /// Explicit JPEG or lossy WebP quality, when supplied.
@@ -42,7 +49,7 @@ pub struct ConversionRequest {
 
 /// Why a raw conversion request cannot become a valid Conversion policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConversionPolicyError {
+pub(crate) enum ConversionPolicyError {
     /// Quality must be within the encoder-supported range.
     QualityOutOfRange { quality: u8 },
     /// PNG has no configurable quality setting.
@@ -100,13 +107,13 @@ enum ConversionMode {
 
 /// A validated target encoding and its matching-source preservation behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConversionPolicy {
+pub(crate) struct ConversionPolicy {
     mode: ConversionMode,
 }
 
 /// Observable result of applying a Conversion policy to one image.
 #[derive(Debug)]
-pub enum ConversionOutcome {
+pub(crate) enum ConversionOutcome {
     /// New bytes were encoded in the requested target format.
     Converted(Vec<u8>, ImageFormat),
     /// Original bytes should be preserved because source and target match and no
@@ -114,6 +121,9 @@ pub enum ConversionOutcome {
     PreservedMatchingSource,
     /// The source Image format is not supported by the available decoders.
     UnsupportedSource(ImageFormat),
+    /// The source is animated, and converting it would keep only its first frame,
+    /// so its original bytes should be kept. Only a GIF is recognized as animated.
+    AnimatedSource(ImageFormat),
 }
 
 impl TryFrom<ConversionRequest> for ConversionPolicy {
@@ -172,11 +182,23 @@ impl TryFrom<ConversionRequest> for ConversionPolicy {
 impl ConversionPolicy {
     /// Applies this policy to one image without deciding write fallback behavior.
     ///
-    /// Unsupported sources are returned as a normal outcome. Decoder or encoder
-    /// failures are returned as errors for the Image write pipeline to interpret.
-    pub fn convert(&self, data: &[u8], source_format: ImageFormat) -> Result<ConversionOutcome> {
+    /// Unsupported and animated sources are returned as normal outcomes. Decoder or
+    /// encoder failures are returned as errors for the Image write pipeline to
+    /// interpret.
+    pub(crate) fn convert(
+        &self,
+        data: &[u8],
+        source_format: ImageFormat,
+    ) -> Result<ConversionOutcome> {
         if let Some(outcome) = self.outcome_without_decoding(source_format) {
             return Ok(outcome);
+        }
+
+        // Animation is a property of the bytes, not the format, so it can only be
+        // asked here, after `outcome_without_decoding` has sent this image down the
+        // buffered path. No target matches GIF, so a GIF always reaches this point.
+        if source_format == ImageFormat::Gif && is_animated_gif(data) {
+            return Ok(ConversionOutcome::AnimatedSource(source_format));
         }
 
         let (format, quality, lossless) = match self.mode {
@@ -206,7 +228,7 @@ impl ConversionPolicy {
     /// [`ConversionOutcome::Converted`]. The Image write pipeline asks this first
     /// so that an image whose bytes are kept can be streamed rather than buffered
     /// (ADR-0030); `convert` asks it too, so the two cannot disagree.
-    pub fn outcome_without_decoding(
+    pub(crate) fn outcome_without_decoding(
         &self,
         source_format: ImageFormat,
     ) -> Option<ConversionOutcome> {
@@ -298,6 +320,28 @@ fn convert_image(
     };
 
     Ok(Some(encoded))
+}
+
+/// Returns whether `data` is a GIF that holds more than one frame.
+///
+/// At most two frames are decoded, because the only question is whether a second one
+/// exists. A GIF that cannot be read that far counts as still: a damaged first frame
+/// then fails in the normal decode with its own error, and a damaged second frame
+/// leaves a first frame that converts exactly as it did before. Only a frame that
+/// decodes makes the GIF animated, so a still GIF missing its trailer is not one.
+fn is_animated_gif(data: &[u8]) -> bool {
+    let Ok(mut decoder) = GifDecoder::new(Cursor::new(data)) else {
+        return false;
+    };
+    // `GifDecoder::new` starts with no allocation limit, while the normal decode goes
+    // through `load_from_memory`, which applies the default one. Applying it here too
+    // keeps this check from allocating what the conversion itself would refuse.
+    if decoder.set_limits(Limits::default()).is_err() {
+        return false;
+    }
+    let mut frames = decoder.into_frames();
+    let mut next_frame_decodes = || frames.next().is_some_and(|frame| frame.is_ok());
+    next_frame_decodes() && next_frame_decodes()
 }
 
 /// Composites an RGBA image onto a white background, producing an RGB image.

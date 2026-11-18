@@ -1026,6 +1026,49 @@ fn epub_only_selection_drops_a_traversed_docx_in_silence() {
     assert!(observer.selection_diagnostics().is_empty());
 }
 
+/// Verifies an EPUB filter alone makes only EPUBs eligible, as `epub_only` does.
+///
+/// A title or author filter asks for particular books, and an Office document can
+/// never match one, so `--author nobody ./docs` used to extract every DOCX in the
+/// folder (ADR-0033). The named DOCX is diagnosed and the traversed one dropped in
+/// silence, the same split ADR-0011 makes for a cover run. An author-only filter is
+/// used so the rule is seen not to hang on the title.
+#[test]
+fn an_epub_filter_alone_makes_only_epubs_eligible() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/book.epub")
+        .with_file("root/traversed.docx")
+        .with_file("named.docx");
+    let declarations = DeclaredEpubDeclarations::new().with_declarations(
+        "root/book.epub",
+        Some("Test Author"),
+        Some("Magic Book"),
+    );
+    let filter = EpubFilter {
+        title: None,
+        author: Some("test".to_string()),
+    };
+
+    let (selected, observer) = select_with(
+        &surface,
+        &declarations,
+        &["root", "named.docx"],
+        SelectionPolicy {
+            filter: Some(&filter),
+            ..SelectionPolicy::default()
+        },
+    );
+
+    assert_eq!(selected_paths(&selected), [Path::new("root/book.epub")]);
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: PathBuf::from("named.docx")
+        }]
+    );
+}
+
 #[test]
 fn epub_only_selection_diagnoses_a_requested_docx_once_when_its_directory_is_also_requested() {
     // The DOCX is discovered twice — once through the directory, once as the file
@@ -1172,8 +1215,9 @@ fn select_documents_checks_an_epub_reached_twice_once() {
 /// encounter order would put a DOCX first. The order is kept deliberately: Image
 /// file emission claims names first come, first served, so extraction order decides
 /// which of two documents sharing an Output placement gets the unsuffixed names.
-/// Both the unfiltered and the filtered run are covered because each EPUB phase
-/// that runs is a place the order could be lost.
+/// The filtered run is covered too, because each EPUB phase that runs is a place the
+/// order could be lost. A filter makes only EPUBs eligible (ADR-0033), so there the
+/// DOCX files are skipped and the EPUBs must still keep their encounter order.
 #[test]
 fn select_documents_selects_epubs_before_other_documents_each_in_encounter_order() {
     let surface = InMemorySearchSurface::new()
@@ -1184,34 +1228,43 @@ fn select_documents_selects_epubs_before_other_documents_each_in_encounter_order
     let declarations = DeclaredEpubDeclarations::new()
         .with_declarations("first.epub", Some("First Creator"), Some("Magic One"))
         .with_declarations("second.epub", Some("Second Creator"), Some("Magic Two"));
+    let inputs = ["first.docx", "first.epub", "second.docx", "second.epub"];
 
-    for filter in [EpubFilter::default(), magic_title_filter()] {
-        let (selected, observer) = select_declared(
-            &surface,
-            &declarations,
-            &filter,
-            &["first.docx", "first.epub", "second.docx", "second.epub"],
-            false,
-        );
+    let (selected, observer) = select_declared(
+        &surface,
+        &declarations,
+        &EpubFilter::default(),
+        &inputs,
+        false,
+    );
+    assert_eq!(
+        selected_paths(&selected),
+        [
+            Path::new("first.epub"),
+            Path::new("second.epub"),
+            Path::new("first.docx"),
+            Path::new("second.docx"),
+        ]
+    );
+    assert!(observer.selection_diagnostics().is_empty());
 
-        let paths = selected_paths(&selected);
-        assert_eq!(
-            paths,
-            [
-                Path::new("first.epub"),
-                Path::new("second.epub"),
-                Path::new("first.docx"),
-                Path::new("second.docx"),
-            ],
-            "filter: {filter:?}"
-        );
-        assert!(
-            observer.selection_diagnostics().is_empty(),
-            "filter: {filter:?}"
-        );
-    }
+    let (selected, _) = select_declared(
+        &surface,
+        &declarations,
+        &magic_title_filter(),
+        &inputs,
+        false,
+    );
+    assert_eq!(
+        selected_paths(&selected),
+        [Path::new("first.epub"), Path::new("second.epub")]
+    );
 }
 
+/// Verifies a filtered run with no EPUB opens no EPUB phase.
+///
+/// The requested DOCX is ineligible under a filter (ADR-0033), so selection skips it
+/// with a diagnostic, and with no EPUB left there is nothing to filter or deduplicate.
 #[test]
 fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
     let surface = InMemorySearchSurface::new().with_file("doc.docx");
@@ -1228,7 +1281,13 @@ fn select_documents_skips_epub_filter_progress_when_no_epubs_are_selected() {
         false,
     );
 
-    assert_eq!(selected.len(), 1);
+    assert!(selected.is_empty());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::SkippedNonEpubInput {
+            path: PathBuf::from("doc.docx")
+        }]
+    );
     assert!(
         !observer
             .selection_progress()
@@ -1263,7 +1322,9 @@ fn select_documents_reports_ordered_monotonic_phase_snapshots() {
         false,
     );
 
-    assert_eq!(selected.len(), 2);
+    // Discovery still counts the DOCX it found; the filter then makes it ineligible
+    // (ADR-0033), and a traversed document is dropped without a diagnostic.
+    assert_eq!(selected.len(), 1);
     // Each phase is read as (count, is_final), which is what the running and
     // finished variants together say: monotonic counts, one terminating entry.
     let discovery: Vec<_> = observer

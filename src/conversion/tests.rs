@@ -1,6 +1,7 @@
 //! Tests for image format conversion.
 
 use super::*;
+use crate::test_support::animated_gif;
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, ImageFormat as EncodedImageFormat, Rgba, RgbaImage};
 use std::io::Cursor;
@@ -444,6 +445,71 @@ fn unsupported_sources_are_normal_outcomes() {
             result,
             ConversionOutcome::UnsupportedSource(actual) if actual == format
         ));
+    }
+}
+
+/// Verifies an animated GIF is kept for every target rather than cut to one frame.
+///
+/// Audit finding L7: every target is encoded from one still image, so converting an
+/// animated GIF used to write its first frame alone, with nothing to say so.
+#[test]
+fn animated_gif_is_an_animated_source_for_every_target() {
+    let gif = animated_gif(3);
+
+    for (target, quality, lossless) in [
+        (ConversionTarget::Jpg, None, false),
+        (ConversionTarget::Jpg, Some(90), false),
+        (ConversionTarget::Png, None, false),
+        (ConversionTarget::Webp, None, false),
+        (ConversionTarget::Webp, None, true),
+    ] {
+        let outcome = policy(target, quality, lossless)
+            .convert(&gif, ImageFormat::Gif)
+            .expect("an animated GIF should not be an error");
+        assert!(
+            matches!(outcome, ConversionOutcome::AnimatedSource(ImageFormat::Gif)),
+            "{target:?} quality {quality:?} lossless {lossless}: {outcome:?}"
+        );
+    }
+}
+
+/// Verifies a one-frame GIF still converts, so only animation changes the outcome.
+#[test]
+fn still_gif_converts() {
+    let outcome = policy(ConversionTarget::Png, None, false)
+        .convert(&animated_gif(1), ImageFormat::Gif)
+        .expect("a still GIF should convert");
+
+    assert!(matches!(
+        outcome,
+        ConversionOutcome::Converted(_, ImageFormat::Png)
+    ));
+}
+
+/// Verifies a GIF whose second frame cannot be decoded is not treated as animated.
+///
+/// Two cases. A still GIF that lost its trailer ends early where a second frame would
+/// begin, and a two-frame GIF cut inside its second frame has one frame that decodes.
+/// Each converts its first frame, as before; the animation check only claims a GIF
+/// whose second frame actually decodes.
+#[test]
+fn gif_without_a_decodable_second_frame_converts() {
+    let mut still_without_trailer = animated_gif(1);
+    assert_eq!(still_without_trailer.pop(), Some(b';'), "GIF trailer");
+    let mut animated = animated_gif(2);
+    animated.truncate(animated.len() - 4);
+
+    for (case, data) in [
+        ("still GIF without trailer", still_without_trailer),
+        ("second frame cut short", animated),
+    ] {
+        let outcome = policy(ConversionTarget::Png, None, false)
+            .convert(&data, ImageFormat::Gif)
+            .unwrap_or_else(|error| panic!("{case}: should convert: {error:#}"));
+        assert!(
+            matches!(outcome, ConversionOutcome::Converted(_, ImageFormat::Png)),
+            "{case}: {outcome:?}"
+        );
     }
 }
 

@@ -19,7 +19,7 @@ use self::phases::{DocumentDiscoveryProgress, DocumentSelectionLifecycle};
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct EpubFilter {
+pub(crate) struct EpubFilter {
     /// Case-insensitive title substring required for an EPUB to be selected.
     pub title: Option<String>,
     /// Case-insensitive author substring required for an EPUB to be selected.
@@ -28,7 +28,7 @@ pub struct EpubFilter {
 
 impl EpubFilter {
     /// Returns true if no EPUB declaration filter criteria are set.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.title.is_none() && self.author.is_none()
     }
 }
@@ -147,7 +147,7 @@ pub(crate) struct DocumentSelection {
 }
 
 /// Options used to select documents for one extraction run.
-pub struct DocumentSelectionOptions<'a> {
+pub(crate) struct DocumentSelectionOptions<'a> {
     /// Input files or directories to inspect.
     pub inputs: &'a [PathBuf],
     /// Whether directory inputs should be traversed recursively.
@@ -156,11 +156,13 @@ pub struct DocumentSelectionOptions<'a> {
     pub output: Option<&'a Path>,
     /// EPUB title and creator filter criteria.
     pub epub_filter: &'a EpubFilter,
-    /// Whether only EPUB documents are eligible for this run.
+    /// Whether a reason outside selection makes only EPUB documents eligible.
     ///
     /// Selection is told that eligibility is restricted, not why: the reason is
     /// Document extraction's business, and a plain flag keeps selection's imports
     /// answering what it depends on — the same rule ADR-0005 applies one level down.
+    /// A non-empty [`Self::epub_filter`] restricts eligibility as well, whatever this
+    /// says. That reason is selection's own, so it is not passed in (ADR-0033).
     pub epub_only: bool,
     /// Whether EPUBs that declare the same book are all kept rather than deduplicated.
     pub keep_duplicate_epubs: bool,
@@ -284,7 +286,7 @@ impl DocumentCandidate {
 /// Substituting `declarations` cannot change ADR-0002's retention rule. This
 /// function decides when a declaration is acquired and when a retained one is
 /// reused; the source only answers.
-pub fn select_documents(
+pub(crate) fn select_documents(
     options: DocumentSelectionOptions<'_>,
     surface: &dyn DocumentSearchSurface,
     declarations: &dyn EpubDeclarationSource,
@@ -298,8 +300,11 @@ pub fn select_documents(
     let (epubs, office_documents) = split_by_kind(candidates);
 
     // The EPUB-only restriction runs before filtering opens, so its diagnostics
-    // precede every EPUB phase observation, as ADR-0011 places it.
-    let office_documents = if options.epub_only {
+    // precede every EPUB phase observation, as ADR-0011 places it. A title or author
+    // filter asks for particular books, which no Office document can be, so an
+    // active filter restricts eligibility the same way a cover run does (ADR-0033).
+    let epub_only = options.epub_only || !options.epub_filter.is_empty();
+    let office_documents = if epub_only {
         skip_non_epub_candidates(office_documents, &mut lifecycle);
         Vec::new()
     } else {
