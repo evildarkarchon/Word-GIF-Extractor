@@ -177,7 +177,7 @@
   </div>
 
   <div class="status">
-    <p><strong>Implementation status, 15 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. H2 is fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a> (ADR-0025). Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
+    <p><strong>Implementation status, 17 November 2026.</strong> The six <a href="#order">small, contained fixes</a> (H4, M1, H1, M7, L2 and M8 step 1) are fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/112">PR #112</a>, which also takes M8 step 2, the <code>zip</code> major upgrade. H2 is fixed in <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/113">PR #113</a> (ADR-0025). H3 is fixed (ADR-0026), not yet merged. Those findings carry a status badge and an <em>Implementation</em> note. Everything else, including every transcript, count and line reference, is the audit as written at <code>e3ce9fb5f</code>.</p>
   </div>
 </header>
 
@@ -283,7 +283,7 @@ Jane Doe.png</pre>
   <article class="finding high" id="H3">
     <header><span class="id">H3</span><h3>The run summary vanishes whenever stderr is not a terminal</h3></header>
     <div class="meta">
-      <span class="badge high">High</span><span class="badge ok">Reproduced</span>
+      <span class="badge high">High</span><span class="badge fixed">Fixed</span><span class="badge ok">Reproduced</span>
       <code>src/extraction_run_presentation.rs:534-539</code>
       <code>:243-252</code>
     </div>
@@ -296,6 +296,7 @@ stdout: 0 bytes    stderr: 0 bytes        <span class="note"># two files were wr
     <h4>Recommendation</h4>
     <p>Treat the summary as output, not as progress decoration: clear the live display, then print the summary line to stdout in every case. Give <code>TerminalOutput::captured</code> a non-terminal mode (a hidden draw target) and pin the summary with it.</p>
     <p class="adr"><strong>ADR note:</strong> this revises the routing rule in ADR-0013 ("the terminal summary finishes the live display or, when none is live, is printed to standard output"). ADR-0013 is expired and open for re-evaluation; the transcript design it also records is unaffected.</p>
+  <p class="impl"><strong>Implementation:</strong> The recommendation is in, and ADR-0026 records the decision. It replaces ADR-0013's summary routing rule and keeps its transcript. The progress display now carries only lines that may disappear when the run moves on. The terminal summary clears whatever display is live with <code>finish_and_clear</code>, then prints to standard output in every case, so "No documents found to process." and every other summary share one stream. One extension of the recommendation: the phase conclusions this finding lists, "Found N document(s)", "Found N matching EPUB(s)" and "Removed N duplicate EPUB(s)", follow the same rule. Each is printed after its phase's display clears, and still only when that phase raised a display, so non-recursive discovery adds no line. <code>TerminalOutput::captured_without_terminal</code> is the non-terminal mode. It draws to <code>ProgressDrawTarget::hidden()</code>, the target the progress library substitutes off a terminal, and keeps the one ordered transcript. The library still exports four items. In-crate tests pin that each summary and conclusion follows a clear and is never drawn, and that a hidden-display run reports conclusions, a warning and its summary in order. A new test in <code>tests/binary_smoke.rs</code> runs the compiled binary with both streams piped and requires standard output to be exactly the summary line. It failed before the change with both streams empty, as in the transcript above. The README gains an <em>Output</em> section saying which stream carries what.</p>
   </article>
 
   <article class="finding high" id="H4">
@@ -641,7 +642,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
       <h3>2. Behaviour decisions to make first</h3>
       <ul>
         <li><a href="#H2">H2</a> deduplication key, reporting, opt-out</li>
-        <li><a href="#H3">H3</a> where the summary goes (ADR-0013)</li>
+        <li><a href="#H3">H3</a> where the summary goes (ADR-0013) <span class="badge fixed">Fixed</span></li>
         <li><a href="#M4">M4</a> exit status for named inputs (ADR-0014)</li>
         <li><a href="#M3">M3</a> unknown formats: error or warn</li>
         <li><a href="#M5">M5</a> which DOCX entries are eligible (near ADR-0020)</li>

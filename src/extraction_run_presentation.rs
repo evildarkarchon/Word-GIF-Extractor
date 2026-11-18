@@ -20,6 +20,17 @@
 //! Routing the two text streams through the progress library instead was rejected:
 //! it collapses the standard-output and standard-error split that pre-run notice
 //! behaviour depends on, which would be a behaviour change rather than a move.
+//!
+//! # What the progress display may carry
+//!
+//! The progress display is decoration. The progress library hides it whenever
+//! standard error is not a terminal: under a pipe, a redirect, a scheduled task or
+//! CI. So it carries only lines that may disappear when the run moves on. A line
+//! meant to stay after the display ends is printed instead. Those lines are a
+//! phase's conclusion, such as "Found 3 matching EPUB(s)", and the terminal summary.
+//! The display is cleared first, and then the line is printed to standard output, on
+//! a terminal or not. Warnings and errors keep going to standard error. ADR-0026
+//! records why; it replaces the summary routing rule ADR-0013 set.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -167,9 +178,14 @@ impl TermLike for RecordingTerm {
 /// Where the progress display of one run draws.
 enum ProgressSink {
     /// The terminal, through the progress library's own buffered stderr target.
+    ///
+    /// That target hides itself when standard error is not a terminal, so in
+    /// production this is also how the non-terminal case arises.
     Terminal,
     /// A recording terminal shared with the [`Capture`] handed back to the caller.
     Recording(Transcript),
+    /// Nowhere: the target the progress library substitutes for a non-terminal.
+    Hidden,
 }
 
 /// Where one of the two direct text streams of a run goes.
@@ -236,11 +252,33 @@ impl TerminalOutput {
         )
     }
 
+    /// Builds a capturing destination whose standard error is not a terminal.
+    ///
+    /// This is the run a pipe, a redirect, a scheduled task or CI sees. The progress
+    /// display is hidden, so nothing is drawn or cleared, and [`Capture::progress_text`]
+    /// stays empty. Anything a user must see has to reach one of the two text streams.
+    /// [`TerminalOutput::captured`] cannot show that, because its recording terminal
+    /// always draws.
+    pub fn captured_without_terminal() -> (Self, Capture) {
+        let transcript = Transcript::default();
+
+        (
+            Self {
+                progress: ProgressSink::Hidden,
+                stdout: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stdout),
+                stderr: TextSink::Captured(Arc::clone(&transcript), TranscriptEntry::Stderr),
+            },
+            Capture { transcript },
+        )
+    }
+
     /// Returns the draw target every progress display of this run must be created with.
     ///
     /// `ProgressDrawTarget::stderr()` is exactly what the progress library picks by
-    /// itself, so naming it costs the production path nothing and keeps both
-    /// destinations on one code path.
+    /// itself, so naming it costs the production path nothing and keeps every
+    /// destination on one code path. When standard error is not a terminal, that
+    /// target turns into `ProgressDrawTarget::hidden()`, which is why the hidden
+    /// capture uses that target and no other.
     fn progress_draw_target(&self) -> ProgressDrawTarget {
         match &self.progress {
             ProgressSink::Terminal => ProgressDrawTarget::stderr(),
@@ -249,6 +287,7 @@ impl TerminalOutput {
                     transcript: Arc::clone(transcript),
                 }))
             }
+            ProgressSink::Hidden => ProgressDrawTarget::hidden(),
         }
     }
 
@@ -353,12 +392,14 @@ impl Capture {
 
     /// Returns every line the progress display has drawn so far, each terminated.
     ///
-    /// This is the readback for the terminal summaries that end an output-bearing
-    /// run: they are drawn onto the extraction display rather than printed, so
-    /// [`Capture::stdout`] and [`Capture::stderr`] stay empty for them.
+    /// This is the readback for phase captions and per-document messages. Nothing
+    /// else is drawn: a phase's conclusion and the terminal summary are printed to
+    /// standard output once the display is cleared, so [`Capture::stdout`] is where
+    /// they are read. A destination from [`TerminalOutput::captured_without_terminal`]
+    /// draws nothing, and this stays empty.
     ///
     /// A live progress display redraws the same line on every update, so a phase
-    /// contributes one entry per redraw and an assertion wants to match a summary
+    /// contributes one entry per redraw and an assertion wants to match a caption
     /// within the text rather than compare the whole of it. The progress library
     /// renders through its own styling, so entries may carry terminal escapes
     /// around the parts a style colours.
@@ -454,8 +495,8 @@ struct LiveDisplay {
 ///
 /// Phases never overlap, so a single slot holds whichever progress display is
 /// live. Every direct write to standard error suspends that display, whichever
-/// phase drew it, and the terminal summary finishes it or is printed when none is
-/// live.
+/// phase drew it. The terminal summary clears it, if one is live, and is always
+/// printed to standard output.
 pub(crate) struct ExtractionRunPresentation {
     output: TerminalOutput,
     live: Option<LiveDisplay>,
@@ -527,15 +568,34 @@ impl ExtractionRunPresentation {
         progress
     }
 
-    /// Ends the run with its summary: finishes the live display, or prints when none is live.
+    /// Ends the run with its summary: clears whatever display is live, then prints.
     ///
-    /// The routing follows display state rather than the outcome, so a summary can
-    /// never be dropped: no documents leaves nothing live and is printed, and any
-    /// other outcome finishes the extraction display the run raised before it.
+    /// The summary is output, not progress, so where it goes depends neither on the
+    /// outcome nor on whether a display is live. It used to finish the live display
+    /// instead. That made it vanish whenever standard error was not a terminal,
+    /// because the progress library then hides the display (ADR-0026).
     fn finish_run(&mut self, summary: String) {
-        match self.live.take() {
-            Some(live) => live.bar.finish_with_message(summary),
-            None => self.output.print(&summary),
+        if let Some(live) = self.live.take() {
+            live.bar.finish_and_clear();
+        }
+        self.output.print(&summary);
+    }
+
+    /// Ends `phase`'s display and prints its conclusion, when `phase` drew the live one.
+    ///
+    /// Clearing comes first and is forced by the progress library, so on a terminal
+    /// the bar is gone before the line is written and cannot be redrawn over it. A
+    /// `None` conclusion just clears, for a phase with nothing worth keeping. A
+    /// display drawn by another phase is left live and nothing is printed, as with
+    /// [`Self::take_live`]. That keeps the conclusion tied to the display the phase
+    /// raised, so a phase that raises none, such as non-recursive discovery, adds no
+    /// line.
+    fn conclude_phase(&mut self, phase: DisplayPhase, conclusion: Option<String>) {
+        if let Some(bar) = self.take_live(phase) {
+            bar.finish_and_clear();
+            if let Some(line) = conclusion {
+                self.output.print(&line);
+            }
         }
     }
 
@@ -625,10 +685,13 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             ExtractionRunObservation::DiscoveringDocuments { scope, discovered } => {
                 self.render_discovering_documents(scope, discovered);
             }
+            // Each phase's conclusion is printed rather than left on its finished
+            // bar, so that it survives when the display is hidden (ADR-0026).
             ExtractionRunObservation::DocumentDiscoveryFinished { discovered, .. } => {
-                if let Some(pb) = self.take_live(DisplayPhase::Discovery) {
-                    pb.finish_with_message(format!("Found {} document(s)", discovered));
-                }
+                self.conclude_phase(
+                    DisplayPhase::Discovery,
+                    Some(format!("Found {} document(s)", discovered)),
+                );
             }
             ExtractionRunObservation::FilteringEpubs {
                 title,
@@ -639,34 +702,29 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             } => {
                 self.render_filtering_epubs(title, author, checked, total);
             }
-            ExtractionRunObservation::EpubFilteringFinished {
-                checked, matching, ..
-            } => {
-                if let Some(pb) = self.take_live(DisplayPhase::Filtering) {
-                    pb.set_position(checked as u64);
-                    pb.finish_with_message(format!("Found {} matching EPUB(s)", matching));
-                }
+            ExtractionRunObservation::EpubFilteringFinished { matching, .. } => {
+                self.conclude_phase(
+                    DisplayPhase::Filtering,
+                    Some(format!("Found {} matching EPUB(s)", matching)),
+                );
             }
             ExtractionRunObservation::DeduplicatingEpubs { checked, total, .. } => {
                 self.render_deduplicating_epubs(checked, total);
             }
             ExtractionRunObservation::EpubDeduplicationFinished {
-                checked,
                 duplicates_found,
                 unique_remaining,
                 ..
             } => {
-                if let Some(pb) = self.take_live(DisplayPhase::Deduplication) {
-                    pb.set_position(checked as u64);
-                    if duplicates_found > 0 {
-                        pb.finish_with_message(format!(
-                            "Removed {} duplicate EPUB(s), {} unique remaining",
-                            duplicates_found, unique_remaining
-                        ));
-                    } else {
-                        pb.finish_and_clear();
-                    }
-                }
+                // A phase that skipped nothing has nothing to conclude, so its bar
+                // just clears, as it always did.
+                let conclusion = (duplicates_found > 0).then(|| {
+                    format!(
+                        "Removed {} duplicate EPUB(s), {} unique remaining",
+                        duplicates_found, unique_remaining
+                    )
+                });
+                self.conclude_phase(DisplayPhase::Deduplication, conclusion);
             }
             // The arms below render structured Document selection diagnostics
             // with terminal wording. Every one suspends whatever progress display

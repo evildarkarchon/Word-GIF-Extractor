@@ -98,6 +98,21 @@ across every image it emits. GIFs routed to a separate directory with `--gif-out
 keep their place in that count, so a document with one PNG and one GIF writes
 `document_1.png` in the output directory and `document_2.gif` in the GIF directory.
 
+## Output
+
+A run ends with one summary line on standard output, such as
+`Extracted 3 image(s) from 2 document(s)`, `No images found` or
+`No documents found to process.`. The summary is printed whether or not the output
+goes to a terminal, so a script or a redirect can read it from the last line of
+standard output. Some earlier steps also print a line there, ahead of the summary:
+`--recursive` prints how many documents it found, `--title` or `--author` prints how
+many EPUBs matched, and skipping duplicate EPUBs prints how many were removed.
+Warnings and `Error processing ...` lines go to standard error.
+
+The progress bar is drawn on standard error and only when that is a terminal. It is
+cleared before each line above is printed, so it never stays on screen under the
+result.
+
 ## Exit Status
 
 - `0`: the run completed and no document failed. This includes runs that found no

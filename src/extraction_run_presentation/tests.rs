@@ -13,7 +13,7 @@ use crate::extraction_run_intake::prepare as prepare_extraction_run;
 use crate::extraction_run_observation::{ConversionFacts, ExtractionRunOutcomeAccumulator};
 use crate::image_format::ImageFormat;
 use crate::image_write_pipeline::ImageWriteWarning;
-use crate::test_support::{no_fallback_directory, temp_test_dir};
+use crate::test_support::{MINIMAL_PNG, no_fallback_directory, temp_test_dir, write_docx};
 
 /// Builds one produced outcome of the given shape through the outcome accumulator.
 ///
@@ -91,15 +91,15 @@ fn produced_outcome(
     outcome
 }
 
-/// Verifies one non-empty terminal outcome is rendered onto the progress display.
+/// Verifies one non-empty terminal outcome clears the extraction display, then prints.
 ///
-/// The summary each outcome produces is asserted word for word against
-/// [`final_summary_message`] in the tests above. What those cannot see is where the
-/// summary goes: every non-empty outcome ends the run by drawing on the extraction
-/// display, and reaches neither text stream. That is the whole difference between
-/// these outcomes and the no-documents one, and it is visible through the capture
-/// without the test holding the display the presentation owns.
-fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) {
+/// The tests above check each outcome's summary word for word against
+/// [`final_summary_message`]. What they cannot see is where the summary goes. Every
+/// non-empty outcome ends a run whose extraction display is live. The summary must
+/// leave that display behind and land on standard output, the same stream the
+/// no-documents summary uses. A summary drawn onto the display vanishes whenever
+/// standard error is not a terminal (ADR-0026).
+fn assert_terminal_observation_clears_then_prints_the_summary(outcome: ExtractionRunOutcome) {
     let summary = final_summary_message(&outcome);
     let (output, capture) = TerminalOutput::captured();
     let mut presentation = ExtractionRunPresentation::new(output);
@@ -119,23 +119,28 @@ fn assert_terminal_observation_draws_the_summary(outcome: ExtractionRunOutcome) 
 
     presentation.on_observation(ExtractionRunObservation::Terminal(outcome));
 
-    // The summary cannot be in the drawn text before the terminal observation, so
-    // finding it there is what shows that observation drew it.
-    assert!(
-        capture.progress_text().contains(&summary),
-        "the drawn summary should be readable back; wanted {:?} within {:?}",
-        summary,
-        capture.progress_text()
-    );
-    assert_eq!(
-        capture.stdout(),
-        "",
-        "a non-empty outcome must not reach standard output"
-    );
+    assert_eq!(capture.stdout(), format!("{summary}\n"));
     assert_eq!(
         capture.stderr(),
         "",
-        "a non-empty outcome must not reach standard error"
+        "a summary is output, not a warning, so it must not reach standard error"
+    );
+    assert!(
+        !capture.progress_text().contains(&summary),
+        "the summary must not be drawn, or a hidden display would swallow it: {:?}",
+        capture.progress_text()
+    );
+    // The summary is the last thing the run does, and the display cleared just
+    // before it. A draw after it would be a bar left on screen beneath the result.
+    let entries = capture.entries();
+    let (last, earlier) = entries
+        .split_last()
+        .expect("the run should have recorded something");
+    assert_eq!(*last, TranscriptEntry::Stdout(summary));
+    assert_eq!(
+        earlier.iter().rev().find(|entry| entry.is_progress()),
+        Some(&TranscriptEntry::Cleared),
+        "the extraction display should clear before the summary: {earlier:?}"
     );
 }
 
@@ -631,9 +636,9 @@ fn gif_routing_summary_preserves_existing_wording() {
     );
 }
 
-/// Verifies every outcome shape ends on the progress display rather than a stream.
+/// Verifies every outcome shape clears the extraction display and prints its summary.
 #[test]
-fn terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display() {
+fn terminal_observer_prints_every_nonempty_outcome_after_clearing_the_display() {
     let gif_dir = PathBuf::from("/tmp/gifs");
     let outcomes = [
         ExtractionRunOutcome::NoOutput {
@@ -671,17 +676,17 @@ fn terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display() {
     ];
 
     for outcome in outcomes {
-        assert_terminal_observation_draws_the_summary(outcome);
+        assert_terminal_observation_clears_then_prints_the_summary(outcome);
     }
 }
 
-/// Verifies the capture reads back progress text other than the final summary.
+/// Verifies the capture reads back what a run draws before its summary.
 ///
-/// The summary assertion in
-/// [`assert_terminal_observation_draws_the_summary`] covers the last thing a run
-/// draws. This covers what it drew on the way there: a phase caption and the
-/// per-document message that replaces it both belong to the progress display and
-/// reach neither text stream, so the capture is the only place they are readable.
+/// The summary itself is printed, not drawn; see
+/// [`assert_terminal_observation_clears_then_prints_the_summary`]. What a run does
+/// draw on the way there is a phase caption and the per-document message that
+/// replaces it. Both belong to the progress display and reach neither text stream,
+/// so the capture is the only place they are readable.
 #[test]
 fn captured_progress_text_retains_the_captions_drawn_before_the_summary() {
     let (output, capture) = TerminalOutput::captured();
@@ -711,12 +716,12 @@ fn captured_progress_text_retains_the_captions_drawn_before_the_summary() {
     assert_eq!(capture.stderr(), "");
 }
 
-/// Verifies the one outcome that has no display to finish is printed instead.
+/// Verifies the one outcome that has no display to clear is printed with no clear.
 ///
 /// No documents means no extraction ever started, so there is no progress display
-/// to carry the summary. This is the contrast case for
-/// [`terminal_observer_draws_every_nonempty_outcome_on_the_extraction_display`]:
-/// the same observation lands on standard output and draws nothing.
+/// to clear. This is the companion case for
+/// [`terminal_observer_prints_every_nonempty_outcome_after_clearing_the_display`].
+/// The summary lands on the same stream, with nothing cleared or drawn around it.
 #[test]
 fn no_documents_terminal_outcome_is_printed_rather_than_drawn() {
     let (output, capture) = TerminalOutput::captured();
@@ -831,6 +836,235 @@ fn terminal_summary_without_a_live_display_is_printed_rather_than_dropped() {
     assert_eq!(capture.stdout(), format!("{summary}\n"));
     assert_eq!(capture.stderr(), "");
     assert_eq!(capture.progress_text(), "");
+}
+
+/// The Document selection observations of a recursive, title-filtered EPUB run that
+/// found three documents, kept two by the filter and skipped one as a duplicate.
+///
+/// Every phase opens its display with a running observation before its finished
+/// one, as Document selection emits them. The duplicate diagnostic itself is left
+/// out, because these tests are about the phase conclusions.
+fn selection_phase_observations() -> Vec<ExtractionRunObservation> {
+    let scope = DocumentDiscoveryScope::RecursiveDirectories;
+    let filtering = |checked, matching| ExtractionRunObservation::FilteringEpubs {
+        title: Some("Magic Book".to_string()),
+        author: None,
+        checked,
+        total: 3,
+        matching,
+    };
+    let deduplicating = |checked, duplicates_found, unique_remaining| {
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked,
+            total: 2,
+            duplicates_found,
+            unique_remaining,
+        }
+    };
+
+    vec![
+        ExtractionRunObservation::DiscoveringDocuments {
+            scope,
+            discovered: 0,
+        },
+        ExtractionRunObservation::DiscoveringDocuments {
+            scope,
+            discovered: 3,
+        },
+        ExtractionRunObservation::DocumentDiscoveryFinished {
+            scope,
+            discovered: 3,
+        },
+        filtering(0, 0),
+        filtering(3, 2),
+        ExtractionRunObservation::EpubFilteringFinished {
+            checked: 3,
+            total: 3,
+            matching: 2,
+        },
+        deduplicating(0, 0, 0),
+        deduplicating(2, 1, 1),
+        ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            total: 2,
+            duplicates_found: 1,
+            unique_remaining: 1,
+        },
+    ]
+}
+
+/// The phase conclusions [`selection_phase_observations`] produces, in order.
+const SELECTION_PHASE_CONCLUSIONS: [&str; 3] = [
+    "Found 3 document(s)",
+    "Found 2 matching EPUB(s)",
+    "Removed 1 duplicate EPUB(s), 1 unique remaining",
+];
+
+/// Verifies each phase's conclusion is printed once its display has cleared.
+///
+/// A conclusion is meant to stay on screen after its phase ends. Left on the
+/// finished bar, it would vanish with the display whenever standard error is not a
+/// terminal (ADR-0026). Each one must instead come after a clear, with no draw
+/// between that clear and the line.
+#[test]
+fn phase_conclusions_are_printed_after_their_display_clears() {
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    for observation in selection_phase_observations() {
+        presentation.on_observation(observation);
+    }
+
+    assert_eq!(
+        capture.stdout().lines().collect::<Vec<_>>(),
+        SELECTION_PHASE_CONCLUSIONS
+    );
+    assert_eq!(capture.stderr(), "");
+    let entries = capture.entries();
+    for conclusion in SELECTION_PHASE_CONCLUSIONS {
+        let index = entries
+            .iter()
+            .position(|entry| entry.text_line() == Some(conclusion))
+            .expect("every conclusion was printed");
+        assert_eq!(
+            entries[..index]
+                .iter()
+                .rev()
+                .find(|entry| entry.is_progress()),
+            Some(&TranscriptEntry::Cleared),
+            "{conclusion:?} should follow the clear of its phase's display"
+        );
+    }
+    drop(entries);
+    // Compared on the end of each drawn line, not as a substring: the running
+    // discovery caption "Found 3 document(s)..." contains the conclusion's words
+    // but is a different line. A finished bar would end with the conclusion.
+    let progress = capture.progress_text();
+    assert!(
+        progress.lines().all(|drawn| SELECTION_PHASE_CONCLUSIONS
+            .iter()
+            .all(|conclusion| !drawn.trim_end().ends_with(conclusion))),
+        "no conclusion should be drawn: {progress:?}"
+    );
+}
+
+/// Verifies a deduplication phase that skipped nothing clears without a line.
+#[test]
+fn deduplication_without_duplicates_concludes_silently() {
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    for observation in [
+        ExtractionRunObservation::DeduplicatingEpubs {
+            checked: 0,
+            total: 2,
+            duplicates_found: 0,
+            unique_remaining: 0,
+        },
+        ExtractionRunObservation::EpubDeduplicationFinished {
+            checked: 2,
+            total: 2,
+            duplicates_found: 0,
+            unique_remaining: 2,
+        },
+    ] {
+        presentation.on_observation(observation);
+    }
+
+    assert_eq!(capture.stdout(), "");
+    assert_eq!(capture.stderr(), "");
+    // The bar still has to go, or it would sit on screen under the next phase.
+    assert_eq!(
+        capture
+            .entries()
+            .iter()
+            .rev()
+            .find(|entry| entry.is_progress()),
+        Some(&TranscriptEntry::Cleared)
+    );
+}
+
+/// Verifies a run with no terminal still says everything a user has to see.
+///
+/// This is H3 from the 2026-11-14 audit, pinned in-process. With the display hidden,
+/// as it is under a pipe or a redirect, the phase conclusions, a warning and the
+/// summary must all reach a text stream, in the order they happened.
+#[test]
+fn a_run_without_a_terminal_reports_conclusions_warnings_and_summary() {
+    let (output, capture) = TerminalOutput::captured_without_terminal();
+    let mut presentation = ExtractionRunPresentation::new(output);
+    let document_path = PathBuf::from("documents").join("warned.docx");
+    let warning = DocumentExtractionWarning::fabricated(ImageWriteWarning::ExtensionFallback {
+        source_name: "word/media/only.png".to_string(),
+        format: ImageFormat::Png,
+    });
+    let outcome = produced_outcome(ExtractionOutputKind::Images, 1, 1, None, None);
+    let summary = final_summary_message(&outcome);
+
+    let mut observations = selection_phase_observations();
+    observations.extend([
+        ExtractionRunObservation::ExtractionStarted {
+            total: 1,
+            cover_only: false,
+        },
+        ExtractionRunObservation::DocumentStarted {
+            path: document_path.clone(),
+            display_name: "warned.docx".to_string(),
+        },
+        ExtractionRunObservation::DocumentWarning {
+            path: document_path.clone(),
+            warning: warning.clone(),
+        },
+        ExtractionRunObservation::DocumentFinished {
+            path: document_path.clone(),
+        },
+        ExtractionRunObservation::Terminal(outcome),
+    ]);
+    for observation in observations {
+        presentation.on_observation(observation);
+    }
+
+    let expected = SELECTION_PHASE_CONCLUSIONS
+        .iter()
+        .map(|line| TranscriptEntry::Stdout(line.to_string()))
+        .chain([
+            TranscriptEntry::Stderr(document_warning_line(&document_path, &warning)),
+            TranscriptEntry::Stdout(summary),
+        ])
+        .collect::<Vec<_>>();
+    // The whole transcript, with no progress entries anywhere: a hidden display
+    // draws and clears nothing, so only the text streams carry the run.
+    assert_eq!(*capture.entries(), expected);
+    assert_eq!(capture.progress_text(), "");
+}
+
+/// Verifies the published entry point prints its summary to a destination with no terminal.
+///
+/// This drives a real document through [`run_cli`], as the binary does under a
+/// redirect. Before ADR-0026 the run below said nothing at all.
+#[test]
+fn run_cli_prints_the_summary_to_standard_output_without_a_terminal() {
+    let temp_dir = temp_test_dir("presentation", "run-cli-without-terminal");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let document_path = temp_dir.join("sample.docx");
+    write_docx(&document_path, &[("word/media/image1.png", MINIMAL_PNG)]);
+    let args = Args::try_parse_from([
+        "test",
+        document_path.to_string_lossy().as_ref(),
+        "--output",
+        temp_dir.join("output").to_string_lossy().as_ref(),
+    ])
+    .expect("entry point arguments should parse");
+    let (output, capture) = TerminalOutput::captured_without_terminal();
+
+    let exit = run_cli(args, output).expect("a readable document is not an intake failure");
+
+    assert_eq!(exit, ExitCode::SUCCESS);
+    assert_eq!(
+        capture.stdout(),
+        "Extracted 1 image(s) from 1 document(s)\n"
+    );
+    assert_eq!(capture.stderr(), "");
 }
 
 /// Verifies the two pre-run notices keep their existing wording and streams.

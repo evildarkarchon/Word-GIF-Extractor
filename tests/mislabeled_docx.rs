@@ -3,6 +3,7 @@
 mod support;
 
 use std::fs;
+use std::process::ExitCode;
 
 use support::{has_file_with_extension, run_captured, temp_test_dir, write_mislabeled_png_docx};
 
@@ -25,7 +26,12 @@ fn extracts_mislabeled_png_when_filtering_for_png() {
         "png",
     ]);
 
-    result.expect("intake should accept a named input, output directory and format filter");
+    // A misleading entry name is resolved from the magic bytes, not failed, so the
+    // run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept a named input, output directory and format filter"),
+        ExitCode::SUCCESS
+    );
     assert!(
         has_file_with_extension(&output_dir, "png"),
         "expected at least one PNG output in {}",

@@ -103,7 +103,11 @@ fn extracts_undeclared_epubs_that_share_a_file_name_in_different_directories() {
         second_dir.join("book.epub").to_string_lossy().as_ref(),
     ]);
 
-    result.expect("intake should accept two named EPUBs");
+    // Both books are extracted and neither fails, so the run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept two named EPUBs"),
+        ExitCode::SUCCESS
+    );
     assert_eq!(sorted_file_names(&first_dir), ["book.epub", "book.png"]);
     assert_eq!(sorted_file_names(&second_dir), ["book.epub", "book.png"]);
     assert_eq!(capture.stderr(), "");

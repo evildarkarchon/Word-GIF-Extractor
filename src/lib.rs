@@ -30,7 +30,9 @@
 //! Nothing here should be widened to let a test reach in — in-crate tests stay in-crate
 //! for exactly that reason, and a test whose subject lives in the library belongs in the
 //! library with it. A test that needs to see what a run said takes
-//! [`TerminalOutput::captured`] instead.
+//! [`TerminalOutput::captured`] instead, or [`TerminalOutput::captured_without_terminal`]
+//! to see what a run says when standard error is not a terminal and the progress
+//! display is hidden.
 
 mod conversion;
 mod document_extraction;

@@ -52,7 +52,12 @@ fn matching_jpeg_is_preserved_when_quality_is_implicit() {
 
     let (result, capture) = run_jpeg_conversion(&input_path, &output_dir, None);
 
-    result.expect("intake should accept a JPEG conversion with no quality named");
+    // Keeping a source that already matches the target is a decision, not a
+    // failure, so the run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept a JPEG conversion with no quality named"),
+        ExitCode::SUCCESS
+    );
     assert_eq!(capture.stderr(), "", "unexpected standard error");
     assert_eq!(
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable"),
@@ -73,7 +78,11 @@ fn matching_jpeg_is_reencoded_when_quality_is_explicit() {
 
     let (result, capture) = run_jpeg_conversion(&input_path, &output_dir, Some(70));
 
-    result.expect("intake should accept a JPEG conversion at an explicit quality");
+    // Re-encoding succeeded for the only document, so the run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept a JPEG conversion at an explicit quality"),
+        ExitCode::SUCCESS
+    );
     assert_eq!(capture.stderr(), "", "unexpected standard error");
     let converted =
         fs::read(output_dir.join("sample.jpg")).expect("output JPEG should be readable");
