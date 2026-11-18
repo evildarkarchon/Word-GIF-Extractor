@@ -445,7 +445,7 @@ pub(crate) fn has_file_with_extension(directory: &Path, extension: &str) -> bool
 
 /// Creates a directory link used to exercise requested-root inspection through a run.
 #[cfg(unix)]
-pub fn create_directory_link(target: &Path, link: &Path) {
+pub(crate) fn create_directory_link(target: &Path, link: &Path) {
     std::os::unix::fs::symlink(target, link).expect("test directory symlink should be creatable");
 }
 
@@ -471,7 +471,7 @@ pub(crate) fn create_directory_link(target: &Path, link: &Path) {
 
 /// Removes a directory link without following it into its target.
 #[cfg(unix)]
-pub fn remove_directory_link(link: &Path) {
+pub(crate) fn remove_directory_link(link: &Path) {
     fs::remove_file(link).expect("test directory symlink should be removable");
 }
 
