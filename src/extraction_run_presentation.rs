@@ -742,8 +742,11 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             ExtractionRunObservation::UnsupportedInput { path } => {
                 // Names what is accepted, so `report.doc` or `book.mobi` reads as the
                 // wrong kind of file rather than as a document that held nothing.
+                // The accepted list is too long to print whole (ADR-0029), so it
+                // names one extension per suite; `.docx` beside `report.doc` is
+                // still the contrast that tells the user what went wrong.
                 self.print_error_suspended(&format!(
-                    "Error: Input is not a .docx or .epub file or a directory: {}",
+                    "Error: Input is not a supported document (such as .docx, .pptx, .xlsx, .odt or .epub) or a directory: {}",
                     path.display()
                 ));
             }

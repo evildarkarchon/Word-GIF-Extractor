@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::document_search_surface::DocumentSearchSurface;
 use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
 use crate::extraction_run_observation::ExtractionRunObserver;
+use crate::office_package::OfficePackage;
 use crate::output_placement::OutputPlacement;
 
 use self::document_identity::DocumentIdentity;
@@ -37,16 +38,19 @@ impl EpubFilter {
 /// The authoritative variant is consumed by Document extraction exactly once.
 #[derive(Debug)]
 pub(crate) enum SelectedDocument {
-    /// A selected DOCX document with DOCX-only extraction facts.
-    Docx(SelectedDocx),
+    /// A selected Office document with the Office package its extension named.
+    Office(SelectedOfficeDocument),
     /// A selected EPUB document with its optional declaration snapshot.
     Epub(SelectedEpub),
 }
 
-/// Opaque DOCX payload whose fields and construction belong to Document selection.
+/// Opaque Office document payload whose fields and construction belong to Document selection.
 #[derive(Debug)]
-pub(crate) struct SelectedDocx {
+pub(crate) struct SelectedOfficeDocument {
     path: PathBuf,
+    /// The package selection classified the document as, which tells extraction
+    /// where in the archive its document images are (ADR-0029).
+    package: OfficePackage,
     placement: OutputPlacement,
     display_name: String,
 }
@@ -64,7 +68,7 @@ impl SelectedDocument {
     /// Returns the source path visible to the Extraction run before handoff.
     pub(crate) fn get_path(&self) -> &Path {
         match self {
-            Self::Docx(document) => &document.path,
+            Self::Office(document) => &document.path,
             Self::Epub(document) => &document.path,
         }
     }
@@ -72,25 +76,31 @@ impl SelectedDocument {
     /// Returns the stable progress identity visible to the Extraction run.
     pub(crate) fn get_display_name(&self) -> &str {
         match self {
-            Self::Docx(document) => &document.display_name,
+            Self::Office(document) => &document.display_name,
             Self::Epub(document) => &document.display_name,
         }
     }
 }
 
-impl SelectedDocx {
-    /// Creates a DOCX handoff after selection has established eligibility.
-    fn new(path: PathBuf, placement: OutputPlacement, display_name: String) -> Self {
+impl SelectedOfficeDocument {
+    /// Creates an Office document handoff after selection has established eligibility.
+    fn new(
+        path: PathBuf,
+        package: OfficePackage,
+        placement: OutputPlacement,
+        display_name: String,
+    ) -> Self {
         Self {
             path,
+            package,
             placement,
             display_name,
         }
     }
 
-    /// Consumes the DOCX payload into the facts owned by Document extraction.
-    pub(crate) fn into_extraction_parts(self) -> (PathBuf, OutputPlacement) {
-        (self.path, self.placement)
+    /// Consumes the Office document payload into the facts owned by Document extraction.
+    pub(crate) fn into_extraction_parts(self) -> (PathBuf, OfficePackage, OutputPlacement) {
+        (self.path, self.package, self.placement)
     }
 }
 
@@ -171,14 +181,18 @@ enum CandidateOrigin {
 }
 
 /// The document kind of a supported candidate, as its extension classifies it.
+///
+/// An Office document's kind carries its package, because the extension that
+/// decided the kind is also the only thing that says which suite laid out the
+/// archive, and nothing downstream sees the extension again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DocumentKind {
-    Docx,
+    Office(OfficePackage),
     Epub,
 }
 
 /// Private pre-eligibility representation of one sighting, from Document discovery
-/// until [`split_by_kind`] turns it into a typed EPUB or DOCX candidate.
+/// until [`split_by_kind`] turns it into a typed EPUB or Office document candidate.
 ///
 /// Every sighting carries its origin here, whatever its kind, because collapsing
 /// repeat sightings merges origins before anything knows which side will read them.
@@ -191,13 +205,14 @@ struct DocumentCandidate {
     origin: CandidateOrigin,
 }
 
-/// Private pre-eligibility DOCX, as the EPUB-only restriction and the join see it.
+/// Private pre-eligibility Office document, as the EPUB-only restriction and the join see it.
 ///
 /// It keeps its [`CandidateOrigin`] because the EPUB-only restriction diagnoses
-/// only a DOCX the user named (ADR-0011).
+/// only an Office document the user named (ADR-0011).
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DocxCandidate {
+struct OfficeCandidate {
     path: PathBuf,
+    package: OfficePackage,
     origin: CandidateOrigin,
 }
 
@@ -220,15 +235,11 @@ impl DocumentKind {
     ///
     /// Returns `None` for a path whose extension names no supported document kind.
     fn of_path(path: &Path) -> Option<Self> {
-        match path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .map(str::to_lowercase)
-            .as_deref()
-        {
-            Some("docx") => Some(Self::Docx),
-            Some("epub") => Some(Self::Epub),
-            _ => None,
+        let extension = path.extension()?.to_str()?;
+        if extension.eq_ignore_ascii_case("epub") {
+            Some(Self::Epub)
+        } else {
+            OfficePackage::of_extension(extension).map(Self::Office)
         }
     }
 }
@@ -284,15 +295,15 @@ pub fn select_documents(
     let candidates =
         discovery::discover_documents(options.inputs, options.recursive, surface, &mut lifecycle);
     let candidates = collapse_repeat_sightings(candidates);
-    let (epubs, docx_files) = split_by_kind(candidates);
+    let (epubs, office_documents) = split_by_kind(candidates);
 
     // The EPUB-only restriction runs before filtering opens, so its diagnostics
     // precede every EPUB phase observation, as ADR-0011 places it.
-    let docx_files = if options.epub_only {
-        skip_non_epub_candidates(docx_files, &mut lifecycle);
+    let office_documents = if options.epub_only {
+        skip_non_epub_candidates(office_documents, &mut lifecycle);
         Vec::new()
     } else {
-        docx_files
+        office_documents
     };
     let filtered = lifecycle.filtering(options.epub_filter, epubs, declarations);
     let deduplicated =
@@ -302,17 +313,17 @@ pub fn select_documents(
     // documents, each in encounter order. The order is kept on purpose rather than
     // inherited (ADR-0019). Image file emission claims names first come, first
     // served, so extraction order decides which of two documents sharing an Output
-    // placement gets the unsuffixed names; a DOCX and an undeclared EPUB with the
-    // same stem in one directory share one. Changing it would move output names.
-    let documents = deduplicated
-        .into_iter()
-        .map(|epub| selected_epub_from_candidate(epub, options.output))
-        .chain(
-            docx_files
-                .into_iter()
-                .map(|candidate| selected_docx_from_candidate(candidate, options.output)),
-        )
-        .collect();
+    // placement gets the unsuffixed names; an Office document and an undeclared EPUB
+    // with the same stem in one directory share one, as do `report.docx` and
+    // `report.pptx`. Changing it would move output names.
+    let documents =
+        deduplicated
+            .into_iter()
+            .map(|epub| selected_epub_from_candidate(epub, options.output))
+            .chain(office_documents.into_iter().map(|candidate| {
+                selected_office_document_from_candidate(candidate, options.output)
+            }))
+            .collect();
 
     DocumentSelection {
         documents,
@@ -366,25 +377,29 @@ fn collapse_repeat_sightings(candidates: Vec<DocumentCandidate>) -> Vec<Document
     kept
 }
 
-/// Splits the collapsed candidates by document kind into typed EPUB and DOCX lists.
+/// Splits the collapsed candidates by document kind into typed EPUB and Office document lists.
 ///
 /// This is the only place selection splits by kind (ADR-0019). Both lists keep
 /// encounter order, and from here each stage sees only the kind it acts on: the
-/// EPUB-only restriction the DOCX list, filtering and deduplication the EPUB list.
-/// The EPUB side drops the [`CandidateOrigin`], which it never reads.
-fn split_by_kind(candidates: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec<DocxCandidate>) {
+/// EPUB-only restriction the Office document list, filtering and deduplication the
+/// EPUB list. The EPUB side drops the [`CandidateOrigin`], which it never reads.
+fn split_by_kind(candidates: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec<OfficeCandidate>) {
     let mut epubs = Vec::new();
-    let mut docx_files = Vec::new();
+    let mut office_documents = Vec::new();
     for DocumentCandidate { kind, path, origin } in candidates {
         match kind {
             DocumentKind::Epub => epubs.push(EpubCandidate {
                 path,
                 epub_declarations: None,
             }),
-            DocumentKind::Docx => docx_files.push(DocxCandidate { path, origin }),
+            DocumentKind::Office(package) => office_documents.push(OfficeCandidate {
+                path,
+                package,
+                origin,
+            }),
         }
     }
-    (epubs, docx_files)
+    (epubs, office_documents)
 }
 
 /// Drops every non-EPUB candidate for a run in which only EPUBs are eligible.
@@ -405,16 +420,17 @@ fn split_by_kind(candidates: Vec<DocumentCandidate>) -> (Vec<EpubCandidate>, Vec
 /// merges their origins into it, so the origin, not the path, is what records that
 /// the user named it.
 ///
-/// It takes the DOCX list from [`split_by_kind`] and consumes all of it, since
-/// none of it stays eligible; the EPUB list never passes through here.
+/// It takes the Office document list from [`split_by_kind`] and consumes all of it,
+/// since none of it stays eligible; the EPUB list never passes through here.
 fn skip_non_epub_candidates(
-    candidates: Vec<DocxCandidate>,
+    candidates: Vec<OfficeCandidate>,
     lifecycle: &mut DocumentSelectionLifecycle<'_>,
 ) {
     for candidate in candidates {
-        if let DocxCandidate {
+        if let OfficeCandidate {
             path,
             origin: CandidateOrigin::Requested,
+            ..
         } = candidate
         {
             lifecycle.skipped_non_epub_input(path);
@@ -443,14 +459,19 @@ fn selected_epub_from_candidate(
     ))
 }
 
-/// Builds one selected DOCX from a candidate that survived the EPUB-only restriction.
-fn selected_docx_from_candidate(
-    DocxCandidate { path, .. }: DocxCandidate,
+/// Builds one selected Office document from a candidate that survived the EPUB-only restriction.
+fn selected_office_document_from_candidate(
+    OfficeCandidate { path, package, .. }: OfficeCandidate,
     global_output: Option<&Path>,
 ) -> SelectedDocument {
     let identity = DocumentIdentity::of_path(&path);
     let placement = output_placement(&path, &identity, global_output);
-    SelectedDocument::Docx(SelectedDocx::new(path, placement, identity.display_name()))
+    SelectedDocument::Office(SelectedOfficeDocument::new(
+        path,
+        package,
+        placement,
+        identity.display_name(),
+    ))
 }
 
 /// Builds the Output placement for one selected document, whatever its kind.

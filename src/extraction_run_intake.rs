@@ -135,12 +135,12 @@ impl TypedValueParser for ImageFormatArgParser {
 /// sixteenth flag cannot drift the two apart unnoticed.
 #[derive(Parser, Debug)]
 #[cfg_attr(test, derive(Default, PartialEq))]
-#[command(author, version, about = "Extract images from Word (.docx) and EPUB files", long_about = None)]
+#[command(author, version, about = "Extract images from Office (.docx, .pptx, .xlsx, .vsdx), OpenDocument and EPUB files", long_about = None)]
 pub struct Args {
-    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    /// Paths to input documents (.docx, .pptx, .xlsx, .odt, .epub, ...) or directories (defaults to current directory)
     pub(crate) inputs: Vec<PathBuf>,
 
-    /// Paths to input .docx/.epub files or directories (defaults to current directory)
+    /// Paths to input documents (.docx, .pptx, .xlsx, .odt, .epub, ...) or directories (defaults to current directory)
     #[arg(short = 'i', long = "input", num_args = 1..)]
     pub(crate) named_inputs: Vec<PathBuf>,
 
@@ -148,7 +148,7 @@ pub struct Args {
     #[arg(short, long)]
     pub(crate) output: Option<PathBuf>,
 
-    /// Recursively search for .docx/.epub files if input is a directory
+    /// Recursively search for documents if input is a directory
     #[arg(short, long)]
     pub(crate) recursive: bool,
 

@@ -68,6 +68,14 @@ _Avoid_: Filesystem, file system adapter, VFS, path provider
 The immutable handoff produced by Document selection for one eligible document, containing its source identity, document kind, Output placement, the display name its Document identity decides, and any retained EPUB declarations. Its document kind is authoritative, Document extraction consumes it exactly once, and later declaration acquisition cannot revise its identity or placement.
 _Avoid_: Extraction work item, selected file, document task
 
+**Office document**:
+A ZIP-packaged Office Open XML or OpenDocument file — a word-processing document, presentation, spreadsheet or drawing, or a template of one — that Document selection recognizes by its extension. Its document images are the entries in its Office package's media folder and nothing else: a preview thumbnail, markup, or an embedded object elsewhere in the archive is not a document image, and is neither extracted nor warned about. Legacy binary and flat-XML office files are not Office documents.
+_Avoid_: DOCX (for every Office document), Word document, ZIP document
+
+**Office package**:
+The packaging convention one Office document follows, decided by its extension: which suite laid out the archive, and so which media folder holds its document images. Macro-enabled, template and show variants of a format share its Office package.
+_Avoid_: Office format, archive layout, suite
+
 **Source identity**:
 The path a Selected document was found at, fixed by Document selection and unchanged by anything Document extraction later learns. It is distinct from Output placement even when Output placement is derived from it.
 _Avoid_: Input path, file path, source file

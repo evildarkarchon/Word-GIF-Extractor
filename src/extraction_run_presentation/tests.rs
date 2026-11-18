@@ -1101,7 +1101,7 @@ fn rejected_inputs_render_as_error_lines() {
         capture.stderr().lines().collect::<Vec<_>>(),
         [
             "Error: Input path does not exist: nope.docx",
-            "Error: Input is not a .docx or .epub file or a directory: notes.txt",
+            "Error: Input is not a supported document (such as .docx, .pptx, .xlsx, .odt or .epub) or a directory: notes.txt",
         ]
     );
     assert_eq!(capture.stdout(), "");
@@ -1131,7 +1131,7 @@ fn run_cli_exits_with_failure_for_a_missing_or_unsupported_named_input() {
         (
             &unsupported_path,
             format!(
-                "Error: Input is not a .docx or .epub file or a directory: {}",
+                "Error: Input is not a supported document (such as .docx, .pptx, .xlsx, .odt or .epub) or a directory: {}",
                 unsupported_path.display()
             ),
         ),

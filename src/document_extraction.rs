@@ -1,7 +1,7 @@
 //! Per-document extraction policy, dispatch, and outcomes.
 
-mod docx;
 mod epub;
+mod office;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -69,9 +69,9 @@ impl DocumentExtraction {
     /// run can continue processing later documents.
     pub(crate) fn extract(&self, document: SelectedDocument) -> DocumentExtractionOutcome {
         let result = match document {
-            SelectedDocument::Docx(document) => {
-                let (path, placement) = document.into_extraction_parts();
-                docx::process_file(&path, &placement, &self.image_write_pipeline)
+            SelectedDocument::Office(document) => {
+                let (path, package, placement) = document.into_extraction_parts();
+                office::process_file(&path, package, &placement, &self.image_write_pipeline)
             }
             SelectedDocument::Epub(document) => {
                 epub::extract(document, self.cover_policy, &self.image_write_pipeline)

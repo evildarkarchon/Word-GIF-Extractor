@@ -1,10 +1,10 @@
 # Word Image Extractor
 
-A fast CLI tool that extracts images from Microsoft Word (.docx) and EPUB files.
+A fast CLI tool that extracts images from Microsoft Office, OpenDocument and EPUB files.
 
 ## Features
 
-- Extract images from `.docx` and `.epub` files
+- Extract images from Word, PowerPoint, Excel and Visio files, OpenDocument files, and EPUBs (see [Supported Documents](#supported-documents))
 - Process single files or entire directories
 - Recursive directory scanning with `-r`
 - Filter by specific image formats with `-f`
@@ -32,7 +32,12 @@ word-image-extractor book.epub
 word-image-extractor document.docx -o ./images
 word-image-extractor book.epub -o ./images
 
-# Process all .docx and .epub files in a directory
+# Extract the images from a presentation, a spreadsheet or an OpenDocument file
+word-image-extractor slides.pptx
+word-image-extractor budget.xlsx
+word-image-extractor notes.odt
+
+# Process every supported document in a directory
 word-image-extractor ./documents
 
 # Recursive directory processing
@@ -47,21 +52,36 @@ word-image-extractor book.epub -f png,jpg
 
 | Option                | Description                                                       |
 | --------------------- | ----------------------------------------------------------------- |
-| `-i, --input <PATH>`  | Input .docx/.epub file or directory (also accepts positional arg) |
+| `-i, --input <PATH>`  | Input document or directory (also accepts positional arg)         |
 | `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
-| `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
+| `-r, --recursive`     | Recursively search directories for supported documents            |
 | `-f, --formats <FMT>` | Comma-separated list of formats to extract: `jpg` (or `jpeg`), `png`, `gif`, `bmp`, `tiff` (or `tif`), `svg`, `wmf`, `emf`, `webp`, `ico`. An unrecognized name is an error and nothing runs |
 | `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
 | `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when no cover is written, including when `--formats` filters it out |
 | `--keep-duplicates`   | Extract every EPUB, even when several declare the same book       |
 
+## Supported Documents
+
+| Kind | Extensions | Images are read from |
+| ---- | ---------- | -------------------- |
+| Word | `.docx`, `.docm`, `.dotx`, `.dotm` | `word/media/` |
+| PowerPoint | `.pptx`, `.pptm`, `.potx`, `.potm`, `.ppsx`, `.ppsm` | `ppt/media/` |
+| Excel | `.xlsx`, `.xlsm`, `.xltx`, `.xltm`, `.xlsb` | `xl/media/` |
+| Visio | `.vsdx`, `.vsdm`, `.vstx`, `.vstm`, `.vssx`, `.vssm` | `visio/media/` |
+| OpenDocument | `.odt`, `.ott`, `.odp`, `.otp`, `.ods`, `.ots`, `.odg`, `.otg` | `Pictures/` |
+| EPUB | `.epub` | the resources the book declares |
+
+Extensions are matched without regard to case. Office and OpenDocument files are ZIP archives, and only the images in the media folder above are extracted. Everything else in the archive is left alone, notably the preview thumbnail a file manager shows (`docProps/thumbnail.*` or `Thumbnails/thumbnail.png`), which is not one of the document's images. A video or sound clip in a presentation's media folder is not an image either and is passed over.
+
+The older binary formats (`.doc`, `.ppt`, `.xls`) and flat OpenDocument XML files (`.fodt` and the like) are not ZIP archives and are not supported.
+
 ## EPUB Covers
 
-`--cover-only` extracts one cover image per EPUB. It applies to EPUB files alone: `.docx` inputs are not eligible for a cover run and are skipped before extraction begins. A `.docx` you name on the command line is reported as skipped; one found while searching a directory is dropped without a message, the same way an EPUB that fails a title or author filter is.
+`--cover-only` extracts one cover image per EPUB. It applies to EPUB files alone: Office and OpenDocument inputs are not eligible for a cover run and are skipped before extraction begins. One you name on the command line is reported as skipped; one found while searching a directory is dropped without a message, the same way an EPUB that fails a title or author filter is.
 
 A cover is looked for in two places, in this order: the cover the EPUB declares, then a JPEG file named `cover` (such as `cover.jpg`). The first one written is the cover, and the search stops there. A candidate that writes nothing, because its format is filtered out by `--formats` or because it cannot be read, is passed over with a warning and the next one is tried.
 
-`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring `.docx` files back into a cover run. A usable cover is a cover file that was written, so a cover filtered out by `--formats` counts as no usable cover, and the fallback writes the EPUB's images that pass the filter. The fallback leaves out every cover already tried, so a passed-over cover is not written again as a normal image. Without `--cover-fallback`, an EPUB with no usable cover writes nothing, and its warnings say why.
+`--cover-fallback` applies per EPUB, not per run. An EPUB with no usable cover falls back to extracting its images; it does not bring Office or OpenDocument files back into a cover run. A usable cover is a cover file that was written, so a cover filtered out by `--formats` counts as no usable cover, and the fallback writes the EPUB's images that pass the filter. The fallback leaves out every cover already tried, so a passed-over cover is not written again as a normal image. Without `--cover-fallback`, an EPUB with no usable cover writes nothing, and its warnings say why.
 
 ## Duplicate EPUBs
 
@@ -79,7 +99,7 @@ An image that cannot be converted, because its format is not supported for conve
 
 ## Output Naming
 
-### Word Documents (.docx)
+### Office and OpenDocument Files
 Extracted images are named based on the source document filename:
 - Single image: `document.png`
 - Multiple images: `document_1.png`, `document_2.jpg`, etc.
@@ -89,7 +109,7 @@ Extracted images use the book's metadata for naming in the format "Author - Titl
 - With metadata: `Stephen King - The Shining_1.png`, `Stephen King - The Shining_2.jpg`
 - Title only: `The Shining_1.png`
 - Author only: `Stephen King_1.png`
-- No metadata: Falls back to filename like `.docx` files
+- No metadata: Falls back to filename like Office files
 
 Invalid filename characters in metadata are automatically replaced with underscores.
 
@@ -108,7 +128,7 @@ standard output. Some earlier steps also print a line there, ahead of the summar
 `--recursive` prints how many documents it found, `--title` or `--author` prints how
 many EPUBs matched, and skipping duplicate EPUBs prints how many were removed.
 Warnings and errors go to standard error. A named path that does not exist, or that
-is not a `.docx` or `.epub` file or a directory, is reported as an `Error:` line;
+is not a [supported document](#supported-documents) or a directory, is reported as an `Error:` line;
 an unsupported file found inside a directory is passed over silently.
 
 The progress bar is drawn on standard error and only when that is a terminal. It is
@@ -122,7 +142,7 @@ result.
   directory holding none, and runs whose only problems were printed as warnings.
 - `1`: at least one document failed to extract (printed as an
   `Error processing ...` line), at least one named input does not exist or is not
-  a `.docx` or `.epub` file or a directory (printed as an `Error:` line), or the
+  a supported document or a directory (printed as an `Error:` line), or the
   options were valid to parse but could not be combined, such as `--quality` with
   `--convert png`. A failed document or rejected input does not stop the run: the
   other inputs are still processed and the summary is still printed.
