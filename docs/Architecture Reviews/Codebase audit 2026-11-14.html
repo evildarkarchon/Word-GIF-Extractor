@@ -400,7 +400,7 @@ exit=0</pre>
   <article class="finding med" id="M5">
     <header><span class="id">M5</span><h3>The DOCX adapter sniffs every ZIP entry, so preview thumbnails become image 1</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge fixed">Fixed</span><span class="badge ok">Reproduced</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/117">PR #117</a></span><span class="badge ok">Reproduced</span>
       <code>src/document_extraction/docx.rs:32</code>
     </div>
     <p>The adapter visits all entries, not the media folder. Word's optional <code>docProps/thumbnail.*</code> (the file-manager preview) is therefore extracted as a document image. ZIP order puts it first, so it renumbers the real images and turns a single-image document's <code>name.png</code> into <code>name_2.png</code>.</p>
