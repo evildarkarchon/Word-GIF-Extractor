@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use crate::epub_declarations::{EpubDeclarationSource, EpubDeclarations};
@@ -36,21 +37,47 @@ use super::{EpubCandidate, EpubFilter};
 /// Sole internal authority for emitting Document selection observations.
 pub(super) struct DocumentSelectionLifecycle<'observer> {
     observer: &'observer mut dyn ExtractionRunObserver,
+    /// Requested inputs rejected so far, counted by the methods that report them.
+    rejected_inputs: usize,
 }
 
 impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// Creates one lifecycle authority for a complete Document selection call.
     pub(super) fn new(observer: &'observer mut dyn ExtractionRunObserver) -> Self {
-        Self { observer }
+        Self {
+            observer,
+            rejected_inputs: 0,
+        }
     }
 
     /// Emits one absent requested input, outside any phase and never silenced.
     ///
     /// Requested-input classification runs before the discovery phase opens, so
-    /// this fact belongs to no phase and is emitted whenever it occurs.
+    /// this fact belongs to no phase and is emitted whenever it occurs. It also
+    /// counts the input as rejected, here and only here, so the count the run
+    /// receives includes an input exactly when the stream reported it (ADR-0028).
     pub(super) fn missing_input(&mut self, path: PathBuf) {
+        self.rejected_inputs += 1;
         self.observer
             .on_observation(ExtractionRunObservation::MissingInput { path });
+    }
+
+    /// Emits one requested input that is neither a supported document nor a directory.
+    ///
+    /// Like [`Self::missing_input`], it is reported outside any phase, before
+    /// discovery opens, and counts the input as rejected where it reports it.
+    pub(super) fn unsupported_input(&mut self, path: PathBuf) {
+        self.rejected_inputs += 1;
+        self.observer
+            .on_observation(ExtractionRunObservation::UnsupportedInput { path });
+    }
+
+    /// Returns how many requested inputs this selection rejected, when any were.
+    ///
+    /// Read once, after every phase has run; rejection happens only before
+    /// discovery opens, so the count is final by then.
+    pub(super) fn rejected_inputs(&self) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(self.rejected_inputs)
     }
 
     /// Emits one requested input skipped for ineligibility, outside any phase.

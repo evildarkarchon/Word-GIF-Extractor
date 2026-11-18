@@ -58,9 +58,10 @@ use crate::extraction_run_observation::{
 /// wording out of the destination a caller is capturing.
 ///
 /// A run that got past intake returns its exit status: [`ExitCode::FAILURE`]
-/// exactly when at least one selected document failed to extract -- the same runs
-/// that printed an `Error processing` line -- and [`ExitCode::SUCCESS`] otherwise,
-/// including when no documents or no images were found. ADR-0014 records why.
+/// exactly when at least one selected document failed to extract or one requested
+/// input was rejected as missing or unsupported -- the same runs that printed an
+/// error line -- and [`ExitCode::SUCCESS`] otherwise, including when no documents
+/// or no images were found. ADR-0014 records why, as ADR-0028 revises it.
 pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     let PreparedExtractionRun { request, notices } =
         crate::extraction_run_intake::prepare(args, std::env::current_dir)
@@ -70,9 +71,10 @@ pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     presentation.render_pre_run_notices(notices);
     let outcome = crate::extraction_run::run(request, &mut presentation);
 
-    Ok(match outcome.failed_documents() {
-        Some(_) => ExitCode::FAILURE,
-        None => ExitCode::SUCCESS,
+    Ok(if outcome.reported_an_error() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     })
 }
 
@@ -725,11 +727,23 @@ impl ExtractionRunObserver for ExtractionRunPresentation {
             // with terminal wording. Every one suspends whatever progress display
             // is live, because a diagnostic can arrive while one is drawing and
             // the next redraw would otherwise corrupt or overwrite the line. The
-            // two that report on requested inputs arrive outside any phase, when
+            // three that report on requested inputs arrive outside any phase, when
             // no display is live, so for them the suspend is a direct write.
+            //
+            // A missing or unsupported requested input is an error, not a warning:
+            // the outcome counts it and the run exits 1, and the prefix says so, so
+            // the terminal and the exit status give one classification (ADR-0028).
             ExtractionRunObservation::MissingInput { path } => {
                 self.print_error_suspended(&format!(
-                    "Warning: Input path does not exist: {}",
+                    "Error: Input path does not exist: {}",
+                    path.display()
+                ));
+            }
+            ExtractionRunObservation::UnsupportedInput { path } => {
+                // Names what is accepted, so `report.doc` or `book.mobi` reads as the
+                // wrong kind of file rather than as a document that held nothing.
+                self.print_error_suspended(&format!(
+                    "Error: Input is not a .docx or .epub file or a directory: {}",
                     path.display()
                 ));
             }
@@ -850,7 +864,7 @@ fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
 /// Builds the part of the final summary that describes what the run produced.
 fn output_summary_message(outcome: &ExtractionRunOutcome) -> String {
     match outcome {
-        ExtractionRunOutcome::NoDocuments => "No documents found to process.".to_string(),
+        ExtractionRunOutcome::NoDocuments { .. } => "No documents found to process.".to_string(),
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
             ..

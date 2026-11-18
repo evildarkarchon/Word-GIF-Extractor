@@ -263,7 +263,8 @@ fn select_docx_from_surface(surface: &InMemorySearchSurface, path: &str) -> Sele
         surface,
         &DeclaredEpubDeclarations::new(),
         &mut SilentExtractionRunObserver,
-    );
+    )
+    .documents;
     assert_eq!(selected.len(), 1, "{path} should be selected exactly once");
     selected.remove(0)
 }
@@ -312,7 +313,12 @@ fn no_selected_documents_returns_no_documents_outcome() {
         &mut ScriptedDocumentExtraction::new(),
     );
 
-    assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None
+        }
+    );
     assert_single_terminal_observation(&observer, &outcome);
     assert!(!observer.observations.iter().any(|observation| matches!(
         observation,
@@ -342,7 +348,12 @@ fn all_failed_requested_inputs_reach_one_no_documents_terminal_observation() {
         &mut ScriptedDocumentExtraction::new(),
     );
 
-    assert_eq!(outcome, ExtractionRunOutcome::NoDocuments);
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None
+        }
+    );
     assert_eq!(observer.observations.len(), 5);
     assert!(matches!(
         &observer.observations[0],
@@ -399,7 +410,8 @@ fn nested_discovery_failure_precedes_later_progress_and_extraction_in_run_stream
         outcome,
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: None,
         }
     );
     assert!(matches!(
@@ -444,7 +456,8 @@ fn recursive_discovery_failure_precedes_later_progress_and_extraction() {
         outcome,
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: None,
         }
     );
     assert!(matches!(
@@ -494,11 +507,14 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
         &mut document_extraction,
     );
 
+    // The missing input is reported first and counted in the outcome; the other
+    // input still runs to completion (ADR-0028).
     assert_eq!(
         outcome,
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: NonZeroUsize::new(1),
         }
     );
     assert_eq!(
@@ -530,10 +546,72 @@ fn selection_diagnostic_and_completion_precede_extraction_in_one_observation_str
             },
             ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoOutput {
                 output_kind: ExtractionOutputKind::Images,
-                failed_documents: None
+                failed_documents: None,
+                rejected_inputs: NonZeroUsize::new(1),
             }),
         ]
     );
+}
+
+/// Verifies a run whose only inputs were rejected still ends with the count in its outcome.
+///
+/// `NoDocuments` is the outcome a missing-path typo produces, so it is the variant
+/// that most needs to carry the count: without it the run could not tell its CLI
+/// that this was an error rather than an empty search.
+#[test]
+fn rejected_inputs_alone_are_counted_in_the_no_documents_outcome() {
+    let surface = InMemorySearchSurface::new().with_file("notes.txt");
+
+    let (outcome, observer) = run_scripted(
+        &["missing.docx", "notes.txt"],
+        false,
+        false,
+        default_applicable_outcome_facts(),
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut ScriptedDocumentExtraction::new(),
+    );
+
+    assert_eq!(
+        outcome,
+        ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: NonZeroUsize::new(2)
+        }
+    );
+    assert!(outcome.reported_an_error());
+    assert_single_terminal_observation(&observer, &outcome);
+}
+
+/// Verifies a rejected input is still counted when other inputs produce output.
+#[test]
+fn rejected_inputs_are_counted_beside_produced_output() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("report.doc")
+        .with_file("sample.docx");
+    let mut document_extraction =
+        ScriptedDocumentExtraction::new().with_outcome("sample.docx", completed(normal_images(1)));
+
+    let (outcome, observer) = run_scripted(
+        &["report.doc", "sample.docx"],
+        false,
+        false,
+        default_applicable_outcome_facts(),
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &mut document_extraction,
+    );
+
+    assert_eq!(produced(&outcome).emitted_images(), 1);
+    assert_eq!(outcome.rejected_inputs(), NonZeroUsize::new(1));
+    assert_eq!(outcome.failed_documents(), None);
+    assert!(outcome.reported_an_error());
+    assert_eq!(
+        observer.observations[0],
+        ExtractionRunObservation::UnsupportedInput {
+            path: PathBuf::from("report.doc")
+        }
+    );
+    assert_single_terminal_observation(&observer, &outcome);
 }
 
 /// Verifies a cover-only run whose EPUB has no cover classifies as cover no-output.
@@ -564,7 +642,8 @@ fn selected_epub_without_a_cover_returns_cover_no_output() {
         outcome,
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Covers,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: None,
         }
     );
     assert_single_terminal_observation(&observer, &outcome);

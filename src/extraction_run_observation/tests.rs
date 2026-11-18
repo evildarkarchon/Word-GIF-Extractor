@@ -65,7 +65,17 @@ fn accumulate(
     documents: Vec<FoldedDocument>,
     cover_only: bool,
 ) -> ExtractionRunOutcome {
-    let mut accumulator = ExtractionRunOutcomeAccumulator::new(applicable);
+    accumulate_after_rejections(applicable, None, documents, cover_only)
+}
+
+/// Accumulates like [`accumulate`], seeding the count of rejected requested inputs.
+fn accumulate_after_rejections(
+    applicable: ApplicableOutcomeFacts,
+    rejected_inputs: Option<NonZeroUsize>,
+    documents: Vec<FoldedDocument>,
+    cover_only: bool,
+) -> ExtractionRunOutcome {
+    let mut accumulator = ExtractionRunOutcomeAccumulator::new(applicable, rejected_inputs);
     for document in documents {
         accumulator.fold(&DocumentExtractionFacts::fabricated(
             document.tally,
@@ -133,6 +143,7 @@ fn document_without_output_classifies_as_no_output_for_every_intent_and_failure(
             ExtractionRunOutcome::NoOutput {
                 output_kind,
                 failed_documents,
+                rejected_inputs: None,
             },
             "{case}"
         );
@@ -334,5 +345,57 @@ fn cover_run_with_fallback_images_classifies_as_images() {
         assert!(output.conversion().is_none(), "{case}");
         assert!(output.gif_routing().is_none(), "{case}");
         assert_eq!(outcome.failed_documents(), None, "{case}");
+    }
+}
+
+/// Verifies a seeded rejected-input count reaches every outcome the fold can finish into.
+///
+/// The count is decided before any document is folded, so neither output nor
+/// failure may lose it, and `reported_an_error` must read it as well as the
+/// failure count: either alone is an error the terminal showed (ADR-0028).
+#[test]
+fn seeded_rejected_inputs_survive_every_finish_and_classify_as_an_error() {
+    let rejected = NonZeroUsize::new(2);
+    let cases: Vec<(&str, Vec<FoldedDocument>)> = vec![
+        ("no output", vec![completed(EmittedImageTally::default())]),
+        ("produced output", vec![completed(normal_images(1))]),
+        (
+            "failed document",
+            vec![failed(EmittedImageTally::default())],
+        ),
+    ];
+
+    for (case, documents) in cases {
+        let outcome = accumulate_after_rejections(no_optional_facts(), rejected, documents, false);
+
+        assert_eq!(outcome.rejected_inputs(), rejected, "{case}");
+        assert!(outcome.reported_an_error(), "{case}");
+    }
+}
+
+/// Verifies a run with neither a failure nor a rejection reports no error.
+///
+/// Finding nothing is an answer, not a failure (ADR-0014), whichever empty
+/// outcome says so.
+#[test]
+fn outcomes_without_failures_or_rejections_report_no_error() {
+    let outcomes = [
+        ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None,
+        },
+        accumulate(
+            no_optional_facts(),
+            vec![completed(EmittedImageTally::default())],
+            false,
+        ),
+        accumulate(
+            no_optional_facts(),
+            vec![completed(normal_images(1))],
+            false,
+        ),
+    ];
+
+    for outcome in outcomes {
+        assert!(!outcome.reported_an_error(), "{outcome:?}");
     }
 }

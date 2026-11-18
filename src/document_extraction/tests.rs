@@ -64,6 +64,7 @@ fn select_one_document(input_path: &Path, output_dir: &Path) -> SelectedDocument
         &EpubFileDeclarations,
         &mut observer,
     )
+    .documents
     .into_iter()
     .next()
     .expect("document fixture should be selected")
@@ -733,7 +734,8 @@ fn retained_epub_declarations_are_authoritative_during_extraction() {
         &FilesystemSearchSurface,
         &EpubFileDeclarations,
         &mut observer,
-    );
+    )
+    .documents;
     assert_eq!(selected.len(), 1);
 
     write_epub_with_resources(
@@ -779,7 +781,8 @@ fn selection_declaration_failure_is_retried_without_revising_selected_identity()
         &FilesystemSearchSurface,
         &EpubFileDeclarations,
         &mut observer,
-    );
+    )
+    .documents;
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_display_name(), "sample.epub");
 

@@ -129,6 +129,7 @@ pub struct ProducedOutput {
     conversion: Option<ConversionFacts>,
     gif_routing: Option<GifRoutingFacts>,
     failed_documents: Option<NonZeroUsize>,
+    rejected_inputs: Option<NonZeroUsize>,
 }
 
 impl ProducedOutput {
@@ -159,16 +160,26 @@ impl ProducedOutput {
 }
 
 /// Closed terminal result of one Extraction run.
+///
+/// Every variant carries how many requested inputs Document selection rejected,
+/// when any were: a named path that does not exist, or names neither a supported
+/// document nor a directory. Rejection is decided before any document is selected,
+/// so it can accompany every result, including the one that selected nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractionRunOutcome {
     /// Document selection found no eligible documents.
-    NoDocuments,
+    NoDocuments {
+        /// How many requested inputs selection rejected, when any were.
+        rejected_inputs: Option<NonZeroUsize>,
+    },
     /// Documents were selected, but no image file was emitted.
     NoOutput {
         /// Whether the run sought normal images or required covers.
         output_kind: ExtractionOutputKind,
         /// How many selected documents failed, when any did.
         failed_documents: Option<NonZeroUsize>,
+        /// How many requested inputs selection rejected, when any were.
+        rejected_inputs: Option<NonZeroUsize>,
     },
     /// At least one selected document emitted at least one image file.
     ProducedOutput(ProducedOutput),
@@ -181,12 +192,37 @@ impl ExtractionRunOutcome {
     /// nothing to fail, which the variant states by carrying no count at all.
     pub fn failed_documents(&self) -> Option<NonZeroUsize> {
         match self {
-            Self::NoDocuments => None,
+            Self::NoDocuments { .. } => None,
             Self::NoOutput {
                 failed_documents, ..
             } => *failed_documents,
             Self::ProducedOutput(output) => output.failed_documents,
         }
+    }
+
+    /// Returns how many requested inputs Document selection rejected, when any were.
+    ///
+    /// A rejected input is one the user named that the run could not use at all:
+    /// it does not exist, or it is neither a supported document nor a directory.
+    /// Inputs a directory search turned up are never counted (ADR-0028).
+    pub fn rejected_inputs(&self) -> Option<NonZeroUsize> {
+        match self {
+            Self::NoDocuments { rejected_inputs }
+            | Self::NoOutput {
+                rejected_inputs, ..
+            } => *rejected_inputs,
+            Self::ProducedOutput(output) => output.rejected_inputs,
+        }
+    }
+
+    /// Returns whether the run reported at least one error.
+    ///
+    /// True exactly when a selected document failed or a requested input was
+    /// rejected; both are rendered as error lines, so this is the classification
+    /// the exit status reads (ADR-0014, revised by ADR-0028). Finding no
+    /// documents or no images is not a failure.
+    pub fn reported_an_error(&self) -> bool {
+        self.failed_documents().is_some() || self.rejected_inputs().is_some()
     }
 }
 
@@ -222,6 +258,8 @@ pub(crate) struct ExtractionRunOutcomeAccumulator {
     gif_destination: Option<PathBuf>,
     /// Documents whose extraction failed, counted where the run reports each one.
     failed_documents: usize,
+    /// Requested inputs Document selection rejected before any document was folded.
+    rejected_inputs: Option<NonZeroUsize>,
 }
 
 impl ExtractionRunOutcomeAccumulator {
@@ -231,13 +269,21 @@ impl ExtractionRunOutcomeAccumulator {
     /// Image write policy that owns those facts: naming that policy here would
     /// give this module a second outward edge, to the Image write pipeline,
     /// which is the coupling ADR-0004 exists to keep out.
-    pub(crate) fn new(applicable: ApplicableOutcomeFacts) -> Self {
+    ///
+    /// `rejected_inputs` is the count Document selection returned. It is a seed
+    /// rather than something folded, because selection has finished, and every
+    /// rejection has been reported, before the first document is extracted.
+    pub(crate) fn new(
+        applicable: ApplicableOutcomeFacts,
+        rejected_inputs: Option<NonZeroUsize>,
+    ) -> Self {
         Self {
             tally: EmittedImageTally::default(),
             documents_with_output: 0,
             conversion_applicable: applicable.is_conversion_applicable(),
             gif_destination: applicable.into_gif_destination(),
             failed_documents: 0,
+            rejected_inputs,
         }
     }
 
@@ -294,6 +340,7 @@ impl ExtractionRunOutcomeAccumulator {
             return ExtractionRunOutcome::NoOutput {
                 output_kind,
                 failed_documents,
+                rejected_inputs: self.rejected_inputs,
             };
         };
         let conversion = self
@@ -313,6 +360,7 @@ impl ExtractionRunOutcomeAccumulator {
             conversion,
             gif_routing,
             failed_documents,
+            rejected_inputs: self.rejected_inputs,
         })
     }
 }
@@ -370,7 +418,16 @@ pub enum ExtractionRunObservation {
         unique_remaining: usize,
     },
     /// A requested input path does not exist and was skipped.
+    ///
+    /// The run continues with its other inputs, but the input counts as rejected
+    /// in the outcome, so the run reports an error (ADR-0028).
     MissingInput { path: PathBuf },
+    /// A requested input exists but is neither a supported document nor a directory.
+    ///
+    /// Only an input the user named reaches this variant: an unsupported file a
+    /// directory search turns up is not a document and is passed over in silence.
+    /// Like [`Self::MissingInput`], it counts as rejected in the outcome.
+    UnsupportedInput { path: PathBuf },
     /// A requested input was skipped because only EPUB documents are eligible.
     ///
     /// The fact names what was skipped, never why eligibility was restricted:

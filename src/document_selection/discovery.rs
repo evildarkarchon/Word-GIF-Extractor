@@ -7,7 +7,8 @@ use crate::document_search_surface::{DocumentSearchSurface, InspectedKind};
 use crate::extraction_run_observation::DocumentDiscoveryScope;
 
 use super::{
-    CandidateOrigin, DocumentCandidate, DocumentDiscoveryProgress, DocumentSelectionLifecycle,
+    CandidateOrigin, DocumentCandidate, DocumentDiscoveryProgress, DocumentKind,
+    DocumentSelectionLifecycle,
 };
 
 /// One successfully inspected requested input retained for the Document discovery phase.
@@ -60,6 +61,10 @@ impl RequestedInput {
 ///
 /// Every requested root is classified once before discovery, so root diagnostics
 /// precede the initial snapshot and independently readable inputs still continue.
+/// A root that does not exist, or that is neither a directory nor a file with a
+/// supported extension, is rejected there: the user named it, so passing over it
+/// in silence would read as though it held nothing (ADR-0028). The same unsupported
+/// file found inside a requested directory is not a document and stays silent.
 /// Recursive failures retain their traversal position and nearest available path.
 /// Requested directory links are followed, while nested directory links are not.
 ///
@@ -84,8 +89,12 @@ pub(super) fn discover_documents(
     let mut requested_inputs = Vec::new();
     for input_path in inputs {
         match RequestedInput::classify(input_path, surface) {
+            Ok(Some(RequestedInput::File(path))) if DocumentKind::of_path(&path).is_none() => {
+                lifecycle.unsupported_input(path);
+            }
             Ok(Some(input)) => requested_inputs.push(input),
-            Ok(None) => {}
+            // Neither a file nor a directory, such as a device or a socket.
+            Ok(None) => lifecycle.unsupported_input(input_path.clone()),
             Err(RequestedInputFailure::Missing) => {
                 lifecycle.missing_input(input_path.clone());
             }

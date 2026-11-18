@@ -13,7 +13,7 @@ The ready-to-execute handoff produced by Extraction run intake, containing the r
 _Avoid_: Run options, prepared options, configuration bundle
 
 **Extraction run outcome**:
-The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts. Whenever documents were selected, the outcome also records how many of them failed to extract, if any did; a run that selected no documents had none to fail. The outcome excludes terminal wording and raw cross-module counters.
+The terminal result of an Extraction run, distinguishing no selected documents, no produced output, and produced output. Produced output retains its output-purpose classification and only the applicable conversion and GIF-routing facts. Whenever documents were selected, the outcome also records how many of them failed to extract, if any did; a run that selected no documents had none to fail. Every outcome, including one that selected no documents, records how many requested inputs Document selection rejected, if any were. The run reported an error exactly when either count is present. The outcome excludes terminal wording and raw cross-module counters.
 _Avoid_: Run report, extraction summary, final counters
 
 **Applicable outcome facts**:
@@ -85,7 +85,7 @@ The live, user-observable status of Document selection while it discovers docume
 _Avoid_: Run events, selection UI events, progress callbacks
 
 **Document selection diagnostic**:
-A non-fatal fact explaining why Document selection skipped a requested input or a duplicate EPUB, could not inspect part of its document search, or could not use document metadata. It excludes per-document extraction warnings and terminal wording.
+A non-fatal fact explaining why Document selection skipped a requested input or a duplicate EPUB, could not inspect part of its document search, or could not use document metadata. Non-fatal means selection continues with everything else; it does not mean the run succeeds. A requested input that does not exist, or that is neither a directory nor a file of a supported document kind, is rejected: its diagnostic is an error, and the Extraction run outcome counts it. Only an input the user named is rejected; an unsupported file a directory search turns up is not a document and is passed over without a diagnostic. It excludes per-document extraction warnings and terminal wording.
 _Avoid_: Warning string, selection error, progress message
 
 **Extraction run intake**:

@@ -11,7 +11,9 @@ use crate::document_extraction::{
     ApplicableOutcomeFacts, DocumentExtraction, DocumentExtractionOutcome, EpubCoverPolicy,
 };
 use crate::document_search_surface::{DocumentSearchSurface, FilesystemSearchSurface};
-use crate::document_selection::{self, DocumentSelectionOptions, EpubFilter, SelectedDocument};
+use crate::document_selection::{
+    self, DocumentSelection, DocumentSelectionOptions, EpubFilter, SelectedDocument,
+};
 use crate::epub_declarations::{EpubDeclarationSource, EpubFileDeclarations};
 use crate::extraction_run_observation::{
     ExtractionRunObservation, ExtractionRunObserver, ExtractionRunOutcome,
@@ -163,7 +165,10 @@ fn run_with(
         epub_filter,
         keep_duplicate_epubs,
     } = selection_inputs;
-    let selected_documents = document_selection::select_documents(
+    let DocumentSelection {
+        documents: selected_documents,
+        rejected_inputs,
+    } = document_selection::select_documents(
         DocumentSelectionOptions {
             inputs: &inputs,
             recursive,
@@ -178,7 +183,7 @@ fn run_with(
     );
 
     if selected_documents.is_empty() {
-        let outcome = ExtractionRunOutcome::NoDocuments;
+        let outcome = ExtractionRunOutcome::NoDocuments { rejected_inputs };
         observer.on_observation(ExtractionRunObservation::Terminal(outcome.clone()));
         return outcome;
     }
@@ -187,7 +192,8 @@ fn run_with(
         total: selected_documents.len(),
         cover_only,
     });
-    let mut outcome_accumulator = ExtractionRunOutcomeAccumulator::new(applicable_outcome_facts);
+    let mut outcome_accumulator =
+        ExtractionRunOutcomeAccumulator::new(applicable_outcome_facts, rejected_inputs);
 
     for selected_document in selected_documents {
         // The run retains only observer-facing facts before transferring the
