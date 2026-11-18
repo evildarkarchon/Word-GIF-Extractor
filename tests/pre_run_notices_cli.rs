@@ -8,6 +8,7 @@
 mod support;
 
 use std::fs;
+use std::process::ExitCode;
 
 use support::{run_captured, temp_test_dir, with_current_dir};
 
@@ -26,7 +27,12 @@ fn renders_ordered_pre_run_notices_on_existing_streams() {
         (result, capture, working_directory.to_path_buf())
     });
 
-    result.expect("intake should accept a bare format filter with no input named");
+    // Ignored format tokens are warnings, and an empty working directory finds no
+    // documents. Neither is a failure, so the run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept a bare format filter with no input named"),
+        ExitCode::SUCCESS
+    );
     let stdout = capture.stdout();
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),

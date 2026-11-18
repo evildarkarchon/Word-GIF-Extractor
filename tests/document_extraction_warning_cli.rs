@@ -3,6 +3,7 @@
 mod support;
 
 use std::fs;
+use std::process::ExitCode;
 
 use support::{run_captured, temp_test_dir, write_extension_fallback_docx};
 
@@ -25,15 +26,20 @@ fn renders_document_extraction_warning_with_one_prefix_and_the_document_path() {
         output_dir.to_string_lossy().as_ref(),
     ]);
 
-    result.expect("intake should accept a named input and an output directory");
+    // A warning is not a failure: a run whose only problem was printed as a
+    // warning exits 0 (ADR-0014). This is that rule pinned through a whole run.
+    assert_eq!(
+        result.expect("intake should accept a named input and an output directory"),
+        ExitCode::SUCCESS
+    );
     assert!(output_dir.join("warned.png").exists());
-    // The run summary belongs to the progress display, which is a sink of its own, so
-    // neither text stream carries it and standard output stays empty.
+    // The warning goes to standard error and the summary to standard output, so the
+    // summary is the only line standard output carries.
     let stdout = capture.stdout();
-    assert!(stdout.is_empty(), "unexpected standard output: {stdout}");
-    assert!(
-        !capture.progress_text().is_empty(),
-        "the run summary should have been drawn on the progress display"
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["Extracted 1 image(s) from 1 document(s)"],
+        "unexpected standard output: {stdout}"
     );
 
     let stderr = capture.stderr();

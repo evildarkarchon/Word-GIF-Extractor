@@ -7,6 +7,7 @@
 mod support;
 
 use std::fs;
+use std::process::ExitCode;
 
 use support::{
     has_file_with_extension, run_captured, temp_test_dir, with_current_dir, write_png_docx,
@@ -29,7 +30,12 @@ fn extracts_beside_input_when_output_omitted() {
         run_captured(&[docx_path.to_string_lossy().as_ref(), "--formats", "png"])
     });
 
-    result.expect("intake should accept a named input and a format filter");
+    // Exit 0 means no document failed (ADR-0014). Where the PNG landed is
+    // asserted separately below, because a successful exit says nothing about it.
+    assert_eq!(
+        result.expect("intake should accept a named input and a format filter"),
+        ExitCode::SUCCESS
+    );
     assert!(
         has_file_with_extension(&input_dir, "png"),
         "expected PNG beside input in {}",
@@ -40,12 +46,12 @@ fn extracts_beside_input_when_output_omitted() {
         "did not expect PNG in the working directory {}",
         cwd.display()
     );
-    // A produced outcome ends on the progress display rather than on either text
-    // stream, so a run that says nothing is a run that extracted without complaint.
-    assert_eq!(capture.stdout(), "", "unexpected standard output");
-    assert_eq!(capture.stderr(), "", "unexpected standard error");
-    assert!(
-        !capture.progress_text().is_empty(),
-        "the run summary should have been drawn on the progress display"
+    // A run that extracted without complaint prints its summary and nothing else, and
+    // writes nothing to standard error.
+    assert_eq!(
+        capture.stdout(),
+        "Extracted 1 image(s) from 1 document(s)\n",
+        "unexpected standard output"
     );
+    assert_eq!(capture.stderr(), "", "unexpected standard error");
 }

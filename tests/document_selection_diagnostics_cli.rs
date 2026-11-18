@@ -4,23 +4,22 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::process::ExitCode;
 
 use word_image_extractor::Capture;
 
 use support::{create_directory_link, remove_directory_link, run_captured, temp_test_dir};
 
-/// Asserts the run said nothing but the discovery warning for `path`, and said it once.
+/// Asserts the run warned about `path` once and otherwise printed only `stdout_lines`.
 ///
 /// The detail after the stable prefix is the operating system's, so it is only required
 /// to be present: what these tests own is that exactly one line is written, that it
 /// carries the stable wording, and that it reaches standard error while the summary
-/// reaches standard output.
-fn assert_single_discovery_warning(capture: &Capture, path: &Path) {
+/// reaches standard output. `stdout_lines` is passed in because a recursive run also
+/// prints its discovery conclusion ahead of the summary.
+fn assert_single_discovery_warning(capture: &Capture, path: &Path, stdout_lines: &[&str]) {
     let stdout = capture.stdout();
-    assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        ["No documents found to process."]
-    );
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), stdout_lines);
 
     let stderr = capture.stderr();
     // Progress drawing goes to a sink of its own, so a control sequence reaching here
@@ -57,8 +56,19 @@ fn warns_when_deduplication_uses_filename_after_declaration_failure() {
 
     let (result, capture) = run_captured(&[input_path.to_string_lossy().as_ref()]);
 
-    result.expect("intake should accept a named EPUB input");
+    // The selection warning does not exclude the file: it is still selected, and
+    // extraction then fails to open it. That failure, not the warning, is what makes
+    // the run exit 1, so its `Error processing` line is asserted beside the status.
+    // ADR-0014 ties the two together: non-zero exactly when such a line was printed.
+    assert_eq!(
+        result.expect("intake should accept a named EPUB input"),
+        ExitCode::FAILURE
+    );
     let stderr = capture.stderr();
+    assert!(
+        stderr.contains(&format!("Error processing {}: ", input_path.display())),
+        "the failed extraction should explain the failure status: {stderr}"
+    );
     assert!(
         stderr.contains("during deduplication; using filename fallback"),
         "standard error did not contain the deduplication fallback warning: {stderr}"
@@ -76,8 +86,15 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
 
     let (result, capture) = run_captured(&[broken_link.to_string_lossy().as_ref()]);
 
-    result.expect("intake should accept a named directory input");
-    assert_single_discovery_warning(&capture, &broken_link);
+    // The requested path itself cannot be inspected. That is reported as a warning
+    // and leaves no documents, which ADR-0014 counts as success. Audit finding M4
+    // proposes making an unusable named input an error; if it lands, this is the
+    // status that changes.
+    assert_eq!(
+        result.expect("intake should accept a named directory input"),
+        ExitCode::SUCCESS
+    );
+    assert_single_discovery_warning(&capture, &broken_link, &["No documents found to process."]);
 
     remove_directory_link(&broken_link);
 }
@@ -103,8 +120,14 @@ fn warns_once_for_broken_nested_link_during_non_recursive_discovery() {
 
     let (result, capture) = run_captured(&[requested_directory.to_string_lossy().as_ref()]);
 
-    result.expect("intake should accept a named directory input");
-    assert_single_discovery_warning(&capture, &broken_link);
+    // The broken link is an entry found inside the requested directory, not a named
+    // input, so its warning leaves the exit status at 0 (ADR-0014), and would under
+    // audit finding M4's proposal too.
+    assert_eq!(
+        result.expect("intake should accept a named directory input"),
+        ExitCode::SUCCESS
+    );
+    assert_single_discovery_warning(&capture, &broken_link, &["No documents found to process."]);
     assert_eq!(
         capture.progress_text(),
         "",
@@ -139,8 +162,17 @@ fn warns_once_for_broken_nested_link_during_recursive_discovery() {
         "--recursive",
     ]);
 
-    result.expect("intake should accept a named directory input with --recursive");
-    assert_single_discovery_warning(&capture, &broken_link);
+    // As in the non-recursive case, a broken entry found by the search is a
+    // warning, not a failure, so the run exits 0 (ADR-0014).
+    assert_eq!(
+        result.expect("intake should accept a named directory input with --recursive"),
+        ExitCode::SUCCESS
+    );
+    assert_single_discovery_warning(
+        &capture,
+        &broken_link,
+        &["Found 0 document(s)", "No documents found to process."],
+    );
     let stderr = capture.stderr();
     let warning = stderr
         .lines()

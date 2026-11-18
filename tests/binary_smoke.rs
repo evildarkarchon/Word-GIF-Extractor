@@ -50,6 +50,48 @@ fn compiled_binary_extracts_and_exits_successfully() {
     );
 }
 
+/// Verifies the run summary reaches standard output when standard error is not a terminal.
+///
+/// `output()` pipes both streams, so the binary runs exactly as it does under a
+/// redirect, a scheduled task or CI. The progress library hides its display there, and
+/// a summary drawn onto that display used to vanish, leaving a successful run with no
+/// output at all (audit H3, ADR-0026). This is the one place the real hidden display
+/// can be observed: an in-process capture substitutes its own draw target.
+#[test]
+fn compiled_binary_prints_its_summary_when_stderr_is_not_a_terminal() {
+    let temp_dir = temp_test_dir("binary-smoke", "redirected-summary");
+    let output_dir = temp_dir.join("output");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    let docx_path = temp_dir.join("sample.docx");
+    write_png_docx(&docx_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"))
+        .arg(&docx_path)
+        .arg("--output")
+        .arg(&output_dir)
+        .output()
+        .expect("extractor binary should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "extractor failed\nstderr: {stderr}"
+    );
+    // Standard output carries the summary and nothing else, so a script can read the
+    // result from one place. Comparing lines rather than bytes keeps this independent
+    // of the platform's line ending.
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["Extracted 1 image(s) from 1 document(s)"],
+        "the summary should be the whole of standard output\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stderr, "",
+        "a clean run should write nothing to standard error"
+    );
+}
+
 /// Verifies a run whose document fails to extract exits with the failure status.
 ///
 /// The document is selected by its extension and then cannot be opened as an archive,

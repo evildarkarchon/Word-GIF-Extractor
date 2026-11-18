@@ -9,6 +9,7 @@
 mod support;
 
 use std::fs;
+use std::process::ExitCode;
 
 use support::{run_captured, sorted_file_names, temp_test_dir, write_png_docx};
 
@@ -33,7 +34,12 @@ fn writes_each_image_once_when_a_docx_is_named_and_reached_through_its_directory
         output_dir.to_string_lossy().as_ref(),
     ]);
 
-    result.expect("intake should accept a directory and a file inside it");
+    // Exit 0 means no document failed (ADR-0014). The double write this file pins
+    // never failed a run, so the file listing below is what would catch it.
+    assert_eq!(
+        result.expect("intake should accept a directory and a file inside it"),
+        ExitCode::SUCCESS
+    );
     assert_eq!(
         sorted_file_names(&output_dir),
         ["report.png"],

@@ -74,9 +74,9 @@ fn filtered_only_cover_falls_back_to_jpeg_normal_images() {
             document_path.display()
         )
     );
-    let progress = capture.progress_text();
+    let stdout = capture.stdout();
     assert!(
-        progress.contains("Extracted 2 image(s) from 1 document(s)"),
-        "the summary should report normal images, not covers: {progress}"
+        stdout.contains("Extracted 2 image(s) from 1 document(s)"),
+        "the summary should report normal images, not covers: {stdout}"
     );
 }
