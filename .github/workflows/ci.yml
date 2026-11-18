@@ -54,7 +54,9 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      # --no-fail-fast runs every test binary even after one fails, so a
+      # platform difference shows all its failures in a single run.
+      - run: cargo test --locked --no-fail-fast
 
   # Builds every target on the oldest compiler `Cargo.toml` declares, so the
   # `rust-version` field stays a checked claim rather than a guess.
