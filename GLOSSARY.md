@@ -61,7 +61,7 @@ The part of Document selection that inspects requested files and directories thr
 _Avoid_: File collection, directory scan, input traversal, source discovery
 
 **Document search surface**:
-What Document discovery can observe about the world it searches — what one path is, with and without following links; what one directory directly contains; and what a recursive traversal of one directory yields, in encounter order. Every observation may instead report a failure, and a failure to observe a genuinely absent path is distinguishable from every other failure. A traversal failure knows its position in the traversal even when it does not know the path it belongs to. It excludes document-kind classification, EPUB declarations, and archive payload reads.
+What Document discovery can observe about the world it searches — what one path is, with and without following links; what one directory directly contains; and what a recursive traversal of one directory yields, in encounter order. The filesystem surface lists and traverses each directory in file-name order, ignoring case, so encounter order does not depend on the operating system. Every observation may instead report a failure, and a failure to observe a genuinely absent path is distinguishable from every other failure. A traversal failure knows its position in the traversal even when it does not know the path it belongs to. It excludes document-kind classification, EPUB declarations, and archive payload reads.
 _Avoid_: Filesystem, file system adapter, VFS, path provider
 
 **Selected document**:

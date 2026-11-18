@@ -1,0 +1,86 @@
+# The gate AGENTS.md defines ("done" = tests, clippy and the advisory scan all
+# pass), enforced on every pull request and on main. The matrix covers Linux
+# as well as Windows because the test support carries `#[cfg(unix)]` branches
+# that a Windows-only workflow never compiles.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # New RustSec advisories land without any change here, so a weekly run
+  # catches one against the committed lockfile between pull requests.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request makes the older run moot.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Kept out of the matrix so a formatting slip does not skip clippy and the
+  # tests on both platforms and hide a real failure behind a cosmetic one.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  test:
+    name: clippy and test (${{ matrix.os }})
+    strategy:
+      # One platform failing says nothing about the other; let both finish.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      # --no-fail-fast runs every test binary even after one fails, so a
+      # platform difference shows all its failures in a single run.
+      - run: cargo test --locked --no-fail-fast
+
+  # Builds every target on the oldest compiler `Cargo.toml` declares, so the
+  # `rust-version` field stays a checked claim rather than a guess.
+  msrv:
+    name: build on rust-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Read from Cargo.toml so the declared floor has a single source.
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked
+
+  # The action runs in a Linux container. Advisories describe the lockfile,
+  # not the host, so one Linux job covers both platforms.
+  advisories:
+    name: cargo deny advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

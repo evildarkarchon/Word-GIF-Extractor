@@ -6,6 +6,8 @@
 //! and `std::fs::DirEntry` have no public constructors, so a surface speaking
 //! those types could never be implemented by anything but the real filesystem.
 
+use std::cmp::Ordering;
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -104,6 +106,9 @@ impl TraversalFailure {
 /// abandoned instead of opened a second time.
 pub(crate) trait DocumentSearchTraversal {
     /// Advances the traversal by one entry or failure, in encounter order.
+    ///
+    /// The real traversal encounters each directory's contents in
+    /// [`file_name_order`], after any failure to read one of its entries (ADR-0031).
     fn next_entry(&mut self) -> Option<Result<TraversedEntry, TraversalFailure>>;
 
     /// Abandons the remaining contents of the directory most recently yielded.
@@ -127,10 +132,12 @@ pub(crate) trait DocumentSearchSurface {
     /// target is gone stays distinct from a path that is not there at all.
     fn inspect_without_following(&self, path: &Path) -> io::Result<InspectedKind>;
 
-    /// Lists what one directory directly contains, in the order the world reports.
+    /// Lists what one directory directly contains.
     ///
     /// The outer failure is a failure to open the directory; an inner failure is a
     /// failure to read one of its entries, and the entry it belonged to is unknown.
+    /// The real surface yields entry failures first and then the entries in
+    /// [`file_name_order`], the same order its traversal uses (ADR-0031).
     fn read_directory<'surface>(
         &'surface self,
         path: &Path,
@@ -172,10 +179,23 @@ impl DocumentSearchSurface for FilesystemSearchSurface {
         &'surface self,
         path: &Path,
     ) -> io::Result<Box<dyn Iterator<Item = io::Result<PathBuf>> + 'surface>> {
-        let entries = std::fs::read_dir(path)?;
-        Ok(Box::new(
-            entries.map(|entry| entry.map(|entry| entry.path())),
-        ))
+        // Collected rather than streamed: the operating system's order is not
+        // stable across filesystems, and Image file emission and deduplication
+        // both decide by first come, so an unsorted listing would let the
+        // filesystem pick which document keeps the unsuffixed names (ADR-0031).
+        let mut entries: Vec<io::Result<PathBuf>> = std::fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect();
+        // Failures first, as `walkdir` orders them when it sorts, so the flat
+        // listing and the recursive traversal agree. `sort_by` is stable, so
+        // failures keep their relative order.
+        entries.sort_by(|a, b| match (a, b) {
+            (Ok(a), Ok(b)) => path_name_order(a, b),
+            (Err(_), Err(_)) => Ordering::Equal,
+            (Ok(_), Err(_)) => Ordering::Greater,
+            (Err(_), Ok(_)) => Ordering::Less,
+        });
+        Ok(Box::new(entries.into_iter()))
     }
 
     fn traverse<'surface>(
@@ -183,9 +203,40 @@ impl DocumentSearchSurface for FilesystemSearchSurface {
         root: &Path,
     ) -> Box<dyn DocumentSearchTraversal + 'surface> {
         Box::new(WalkDirTraversal {
-            traversal: WalkDir::new(root).min_depth(1).into_iter(),
+            traversal: WalkDir::new(root)
+                .min_depth(1)
+                .sort_by(|a, b| file_name_order(a.file_name(), b.file_name()))
+                .into_iter(),
         })
     }
+}
+
+/// Orders two file names the way Document discovery encounters them (ADR-0031).
+///
+/// Names compare case-insensitively, by their uppercase form, which is how NTFS
+/// lists a directory, so output on Windows stays where it was. Names that fold
+/// to the same text then compare by their exact bytes, so the order is total and
+/// does not depend on which filesystem produced the listing. A name that is not
+/// valid Unicode folds lossily and is still told apart by the byte comparison.
+fn file_name_order(a: &OsStr, b: &OsStr) -> Ordering {
+    let folded = |name: &OsStr| {
+        name.to_string_lossy()
+            .chars()
+            .flat_map(char::to_uppercase)
+            .collect::<String>()
+    };
+    folded(a).cmp(&folded(b)).then_with(|| a.cmp(b))
+}
+
+/// Orders two entries of one directory by [`file_name_order`].
+///
+/// A path with no final component cannot come out of `read_dir`; if one ever
+/// did, it compares as an empty name rather than panicking.
+fn path_name_order(a: &Path, b: &Path) -> Ordering {
+    file_name_order(
+        a.file_name().unwrap_or_default(),
+        b.file_name().unwrap_or_default(),
+    )
 }
 
 /// The recursive traversal `walkdir` performs, expressed in this crate's vocabulary.

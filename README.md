@@ -13,6 +13,8 @@ A fast CLI tool that extracts images from Microsoft Office, OpenDocument and EPU
 
 ## Installation
 
+Building needs Rust 1.88 or newer.
+
 ```bash
 cargo build --release
 ```
@@ -87,6 +89,8 @@ A cover is looked for in two places, in this order: the cover the EPUB declares,
 ## Duplicate EPUBs
 
 When several EPUBs declare the same book, only the first is extracted, and each one skipped is reported with a warning naming it and the EPUB it duplicates. Two EPUBs are the same book when they declare the same package identifier (the `<dc:identifier>` the package names as unique), creator and title, ignoring case and surrounding spaces. An EPUB with no identifier is compared on its creator and title only when it declares both. An EPUB that declares neither, or that cannot be read, is never treated as a duplicate, so two files are never merged because they share a file name.
+
+The first is the first one found. Inputs named on the command line are taken in the order given, and a searched directory is read in file-name order, ignoring case, on every operating system. The same order decides which of two documents that write to the same output name gets the unnumbered names.
 
 The issues of a periodical share a creator and title but not an identifier, so each issue is extracted. Pass `--keep-duplicates` to extract every EPUB regardless. Skipped duplicates do not change the exit status.
 
