@@ -50,7 +50,7 @@ word-image-extractor book.epub -f png,jpg
 | `-i, --input <PATH>`  | Input .docx/.epub file or directory (also accepts positional arg) |
 | `-o, --output <DIR>`  | Output directory (defaults to each input file's directory)      |
 | `-r, --recursive`     | Recursively search directories for .docx/.epub files              |
-| `-f, --formats <FMT>` | Comma-separated list of formats to extract                        |
+| `-f, --formats <FMT>` | Comma-separated list of formats to extract: `jpg` (or `jpeg`), `png`, `gif`, `bmp`, `tiff` (or `tif`), `svg`, `wmf`, `emf`, `webp`, `ico`. An unrecognized name is an error and nothing runs |
 | `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
 | `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when no cover is written, including when `--formats` filters it out |
 | `--keep-duplicates`   | Extract every EPUB, even when several declare the same book       |

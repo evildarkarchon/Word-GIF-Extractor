@@ -535,9 +535,10 @@ impl ExtractionRunPresentation {
 
     /// Renders the ordered facts intake produced before the run started.
     ///
-    /// The defaulted-input notice is normal output and the ignored-format notice is
-    /// a warning, which is why the two land on different streams. No progress
-    /// display exists yet, so neither write needs suspending.
+    /// The defaulted-input notice is normal output, so it goes to standard output.
+    /// A notice that reported a problem would belong on standard error instead; the
+    /// one that did, an ignored format token, became a parse error (ADR-0027). No
+    /// progress display exists yet, so no write needs suspending.
     pub(crate) fn render_pre_run_notices(&mut self, notices: Vec<PreRunNotice>) {
         for notice in notices {
             match notice {
@@ -545,12 +546,6 @@ impl ExtractionRunPresentation {
                     self.output.print(&format!(
                         "No input path specified, using current directory: {}",
                         path.display()
-                    ));
-                }
-                PreRunNotice::IgnoredFormat { format } => {
-                    self.output.print_error(&format!(
-                        "Warning: Unrecognized format '{}' ignored",
-                        format
                     ));
                 }
             }

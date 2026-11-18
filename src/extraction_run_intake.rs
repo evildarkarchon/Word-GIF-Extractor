@@ -8,11 +8,14 @@
 //! mapping to keep in sync.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::builder::{PossibleValue, TypedValueParser};
+use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::{Arg, Command, Parser, ValueEnum};
 
 use crate::conversion::{
     ConversionPolicy, ConversionPolicyError, ConversionRequest, ConversionTarget,
@@ -45,6 +48,76 @@ impl From<ConversionTargetArg> for ConversionTarget {
             ConversionTargetArg::Png => ConversionTarget::Png,
             ConversionTargetArg::Webp => ConversionTarget::Webp,
         }
+    }
+}
+
+/// Parses one `--formats` token into its canonical Image format.
+///
+/// Spelling belongs to [`ImageFormat::from_user_format`], so the aliases it accepts
+/// (`jpeg`, `tif`, any case, a leading dot) are accepted here too, with no second
+/// list to keep in step. A mirrored [`ValueEnum`], as [`ConversionTargetArg`] uses,
+/// would have to repeat every alias. The canonical extensions are advertised as the
+/// possible values, so `--help` lists them and a rejected token's error does too.
+#[derive(Debug, Clone, Copy)]
+struct ImageFormatArgParser;
+
+impl ImageFormatArgParser {
+    /// Returns the canonical spelling of every Image format, in vocabulary order.
+    fn canonical_names() -> impl Iterator<Item = &'static str> {
+        ImageFormat::all().iter().map(|format| format.extension())
+    }
+}
+
+impl TypedValueParser for ImageFormatArgParser {
+    type Value = ImageFormat;
+
+    /// Accepts a recognized format token and rejects anything else at parse time.
+    ///
+    /// An unrecognized token is an [`ErrorKind::InvalidValue`] error carrying the
+    /// same context `clap` attaches to its own enumerated arguments, so it renders
+    /// as `invalid value 'pgn' for '--formats <FORMATS>'` followed by the possible
+    /// values, and the process exits with the usage status 2. An empty token, as in
+    /// `png,,jpg`, renders as a missing value instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidUtf8`] for a token that is not UTF-8, and
+    /// [`ErrorKind::InvalidValue`] for one that names no Image format.
+    fn parse_ref(
+        &self,
+        cmd: &Command,
+        arg: Option<&Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let Some(token) = value.to_str() else {
+            return Err(clap::Error::new(ErrorKind::InvalidUtf8).with_cmd(cmd));
+        };
+        if let Some(format) = ImageFormat::from_user_format(token) {
+            return Ok(format);
+        }
+
+        let mut error = clap::Error::new(ErrorKind::InvalidValue).with_cmd(cmd);
+        // The rich formatter only renders an InvalidValue error that carries both
+        // the argument and the value; without them it falls back to a bare
+        // "invalid value" line that names neither.
+        error.insert(
+            ContextKind::InvalidArg,
+            ContextValue::String(arg.map_or_else(|| "...".to_owned(), ToString::to_string)),
+        );
+        error.insert(
+            ContextKind::InvalidValue,
+            ContextValue::String(token.to_owned()),
+        );
+        error.insert(
+            ContextKind::ValidValue,
+            ContextValue::Strings(Self::canonical_names().map(str::to_owned).collect()),
+        );
+        Err(error)
+    }
+
+    /// Lists the canonical spellings for help output; aliases stay unadvertised.
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(Self::canonical_names().map(PossibleValue::new)))
     }
 }
 
@@ -84,8 +157,17 @@ pub struct Args {
     // consuming arguments, so `-f png,jpg book.docx` would swallow the document path
     // as a format token and the run would fall back to the current directory.
     // Repeating the flag still accumulates, because `Vec` fields append by default.
-    #[arg(short, long, value_delimiter = ',', num_args = 1, action = clap::ArgAction::Append)]
-    pub(crate) formats: Option<Vec<String>>,
+    // Every token must name a format: a filter that ignored a typo used to widen the
+    // run to every format when nothing else was recognized. See ADR-0027.
+    #[arg(
+        short,
+        long,
+        value_delimiter = ',',
+        num_args = 1,
+        action = clap::ArgAction::Append,
+        value_parser = ImageFormatArgParser
+    )]
+    pub(crate) formats: Option<Vec<ImageFormat>>,
 
     /// Extract only cover image from EPUB files
     #[arg(short = 'c', long)]
@@ -162,8 +244,6 @@ impl std::error::Error for ExtractionRunIntakeError {
 pub enum PreRunNotice {
     /// Intake selected the current directory because no input was requested.
     DefaultedInput { path: PathBuf },
-    /// Intake ignored one unrecognized image-format token.
-    IgnoredFormat { format: String },
 }
 
 /// Intake result containing one executable request and its ordered pre-run notices.
@@ -234,7 +314,7 @@ pub fn prepare(
         None
     };
 
-    let (allowed_formats, ignored_formats) = select_allowed_formats(formats, gif_only);
+    let allowed_formats = select_allowed_formats(formats, gif_only);
     // A run that seeks no covers carries no cover policy: the absence is the
     // request for normal images, so there is no value to hand a document kind
     // that has no covers. See ADR-0010.
@@ -262,48 +342,25 @@ pub fn prepare(
     if let Some(path) = defaulted_input {
         notices.push(PreRunNotice::DefaultedInput { path });
     }
-    notices.extend(
-        ignored_formats
-            .into_iter()
-            .map(|format| PreRunNotice::IgnoredFormat { format }),
-    );
 
     Ok(PreparedExtractionRun { request, notices })
 }
 
 /// Resolves the image formats accepted by one extraction run.
 ///
-/// Unknown user tokens are returned to the adapter for warning output. If the
-/// user supplies no valid formats, the extractor preserves the existing
-/// compatibility behavior of accepting every supported image format.
+/// Every token was already parsed into an Image format, so there is nothing left to
+/// reject here. No `--formats` flag accepts every format, and `--gif-only` replaces
+/// whatever was requested with GIF alone.
 fn select_allowed_formats(
-    formats: Option<Vec<String>>,
+    formats: Option<Vec<ImageFormat>>,
     gif_only: bool,
-) -> (HashSet<ImageFormat>, Vec<String>) {
-    let mut target_formats = HashSet::new();
-    let mut ignored_formats = Vec::new();
-
-    if let Some(formats) = formats {
-        for fmt in formats {
-            let normalized = fmt.trim();
-            if let Some(format) = ImageFormat::from_user_format(normalized) {
-                target_formats.insert(format);
-            } else {
-                ignored_formats.push(normalized.to_string());
-            }
-        }
-    }
-
-    if target_formats.is_empty() {
-        target_formats = ImageFormat::all_set();
-    }
-
+) -> HashSet<ImageFormat> {
     if gif_only {
-        target_formats.clear();
-        target_formats.insert(ImageFormat::Gif);
+        return HashSet::from([ImageFormat::Gif]);
     }
-
-    (target_formats, ignored_formats)
+    formats.map_or_else(ImageFormat::all_set, |formats| {
+        formats.into_iter().collect()
+    })
 }
 
 #[cfg(test)]
