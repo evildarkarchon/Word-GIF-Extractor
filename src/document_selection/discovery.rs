@@ -32,8 +32,8 @@ impl RequestedInput {
     /// inspectable unsupported object returns `None`, and failures distinguish a
     /// genuinely missing path from every other inspection error.
     ///
-    /// ADR-0008 keeps this two-step branch in front of the Document search
-    /// surface rather than on it, so every implementation of the surface is
+    /// This two-step branch sits in front of the Document search surface rather
+    /// than on it, so every implementation of the surface is
     /// exercised by the same classification rather than repeating it.
     fn classify(
         path: &Path,

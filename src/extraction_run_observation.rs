@@ -219,7 +219,7 @@ impl ExtractionRunOutcome {
     ///
     /// True exactly when a selected document failed or a requested input was
     /// rejected; both are rendered as error lines, so this is the classification
-    /// the exit status reads (ADR-0014, revised by ADR-0028). Finding no
+    /// the exit status reads (ADR-0028). Finding no
     /// documents or no images is not a failure.
     pub(crate) fn reported_an_error(&self) -> bool {
         self.failed_documents().is_some() || self.rejected_inputs().is_some()
@@ -241,13 +241,14 @@ impl ExtractionRunOutcome {
 ///
 /// A produced outcome whose documents or whose classified output exceeded its
 /// emitted total would be inconsistent. Neither can happen here, and
-/// nothing is re-tested after the fold, per ADR-0006. Every total this
+/// nothing is re-tested after the fold. Every total this
 /// value reads comes from one Emitted image tally, the sum of the documents'
 /// tallies, and a tally grows only by recording images, each under one purpose
 /// and at most one counted role, so its converted, conversion-skipped and
 /// GIF-routed totals never together exceed its emitted total (ADR-0017). A
 /// document only raises the document count by emitting at least one image.
-/// Restating either check here would put back the assumption ADR-0006 removed.
+/// Restating either check here would treat as possible what construction already
+/// rules out.
 pub(crate) struct ExtractionRunOutcomeAccumulator {
     /// Every folded document's tally added together, not any one document's.
     tally: EmittedImageTally,
@@ -268,7 +269,7 @@ impl ExtractionRunOutcomeAccumulator {
     /// The seed comes from Document extraction's report rather than from the
     /// Image write policy that owns those facts: naming that policy here would
     /// give this module a second outward edge, to the Image write pipeline,
-    /// which is the coupling ADR-0004 exists to keep out.
+    /// which is the edge ADR-0017 keeps out of this module.
     ///
     /// `rejected_inputs` is the count Document selection returned. It is a seed
     /// rather than something folded, because selection has finished, and every

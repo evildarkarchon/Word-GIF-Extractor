@@ -18,8 +18,8 @@ pub(crate) struct EpubDeclarations {
 impl EpubDeclarations {
     /// Acquires all declaration facts needed by Document selection and Document extraction.
     ///
-    /// Resource payloads are not read; ADR-0001 reserves those reads for the
-    /// independently opened EPUB resource archive.
+    /// Resource payloads are not read; those reads belong to the independently
+    /// opened EPUB resource archive, which can read them incrementally.
     pub(crate) fn acquire(path: &Path) -> Result<Self, EpubDeclarationError> {
         let doc = EpubDoc::new(path).map_err(EpubDeclarationError::new)?;
         // The crate resolves the `<dc:identifier>` that the package's
@@ -46,11 +46,12 @@ impl EpubDeclarations {
 
     /// Returns the retained declarations, asking `source` for `path` only when none were retained.
     ///
-    /// This is the single home of ADR-0002's rule: once retained, declarations are the
-    /// authoritative facts for the Extraction run and are never re-read, so a retained
-    /// value is returned without consulting `source`. Taking the source as a parameter
-    /// keeps that rule here while ADR-0008 lets Document selection substitute *how*
-    /// declarations are acquired.
+    /// This is the single home of the declaration retention rule: once retained,
+    /// declarations are the authoritative facts for the Extraction run and are never
+    /// re-read, so a retained value is returned without consulting `source`. One
+    /// snapshot per run keeps selection and extraction agreeing about a book and
+    /// parses it once. Taking the source as a parameter keeps that rule here while
+    /// Document selection substitutes *how* declarations are acquired.
     ///
     /// # Errors
     ///
@@ -117,12 +118,11 @@ impl EpubDeclarations {
 
 /// Where Document selection acquires payload-free EPUB declarations from.
 ///
-/// ADR-0008 makes this its own seam rather than part of the Document search
-/// surface: acquiring declarations is an EPUB parse and not an observation of
-/// the world, and ADR-0001 keeps it separate from payload reads. Substituting it
-/// changes *how* declarations are acquired and never *when* or *how often* —
-/// ADR-0002's retention rule is a property of Document selection, not of the
-/// source it asks.
+/// This is its own seam rather than part of the Document search surface:
+/// acquiring declarations is an EPUB parse and not an observation of the world,
+/// and it stays separate from payload reads. Substituting it changes *how*
+/// declarations are acquired and never *when* or *how often* — the declaration
+/// retention rule is a property of Document selection, not of the source it asks.
 pub(crate) trait EpubDeclarationSource {
     /// Acquires all declaration facts for one EPUB.
     fn acquire(&self, path: &Path) -> Result<EpubDeclarations, EpubDeclarationError>;

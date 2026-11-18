@@ -30,7 +30,7 @@
 //! phase's conclusion, such as "Found 3 matching EPUB(s)", and the terminal summary.
 //! The display is cleared first, and then the line is printed to standard output, on
 //! a terminal or not. Warnings and errors keep going to standard error. ADR-0026
-//! records why; it replaces the summary routing rule ADR-0013 set.
+//! records why.
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -61,7 +61,8 @@ use crate::extraction_run_observation::{
 /// exactly when at least one selected document failed to extract or one requested
 /// input was rejected as missing or unsupported -- the same runs that printed an
 /// error line -- and [`ExitCode::SUCCESS`] otherwise, including when no documents
-/// or no images were found. ADR-0014 records why, as ADR-0028 revises it.
+/// or no images were found: finding nothing is an answer rather than a failure.
+/// ADR-0028 records the rule.
 pub fn run_cli(args: Args, output: TerminalOutput) -> Result<ExitCode> {
     let PreparedExtractionRun { request, notices } =
         crate::extraction_run_intake::prepare(args, std::env::current_dir)
@@ -568,8 +569,8 @@ impl ExtractionRunPresentation {
     /// Ends the run with its summary: clears whatever display is live, then prints.
     ///
     /// The summary is output, not progress, so where it goes depends neither on the
-    /// outcome nor on whether a display is live. It used to finish the live display
-    /// instead. That made it vanish whenever standard error was not a terminal,
+    /// outcome nor on whether a display is live. Finishing the live display with it
+    /// instead would make it vanish whenever standard error is not a terminal,
     /// because the progress library then hides the display (ADR-0026).
     fn finish_run(&mut self, summary: String) {
         if let Some(live) = self.live.take() {
@@ -855,7 +856,7 @@ fn document_warning_line(path: &Path, warning: &DocumentExtractionWarning) -> St
 /// When any selected document failed, `, N document(s) failed` is appended to
 /// whichever template the outcome selects. Without it a run could end
 /// "Extracted 5 image(s) from 2 document(s)" after failing on thirty, with only
-/// the exit status saying otherwise (ADR-0014 left this wording for later).
+/// the exit status saying otherwise.
 fn final_summary_message(outcome: &ExtractionRunOutcome) -> String {
     let summary = output_summary_message(outcome);
     match outcome.failed_documents() {

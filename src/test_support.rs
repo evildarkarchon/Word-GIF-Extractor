@@ -451,9 +451,9 @@ impl DocumentSearchSurface for InMemorySearchSurface {
 
 /// A declaration source that answers from declared facts and records what it was asked.
 ///
-/// The recording is what makes ADR-0002's retention rule assertable: the rule is
-/// that filtering acquires once and deduplication reuses what filtering retained,
-/// and until this existed the reuse was invisible to every test.
+/// The recording is what makes the declaration retention rule assertable: the rule
+/// is that filtering acquires once and deduplication reuses what filtering retained,
+/// and without a record of what was asked the reuse is invisible to a test.
 pub(crate) struct DeclaredEpubDeclarations {
     declarations: BTreeMap<PathBuf, DeclaredEpub>,
     acquisitions: RefCell<Vec<PathBuf>>,

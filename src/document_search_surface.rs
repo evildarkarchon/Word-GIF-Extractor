@@ -1,8 +1,9 @@
 //! The Document search surface — what Document discovery can observe about the world it searches.
 //!
-//! ADR-0008 places this seam between Document discovery and the world. The
-//! vocabulary below is owned by this crate rather than borrowed from `walkdir`
-//! and `std::fs` for a mechanical reason: `walkdir::Error`, `std::fs::Metadata`
+//! This seam sits between Document discovery and the world, so discovery can be
+//! tested against a declared surface with no disk behind it; ADR-0031 keeps the
+//! seam and this vocabulary. The vocabulary below is owned by this crate rather
+//! than borrowed from `walkdir` and `std::fs` for a mechanical reason: `walkdir::Error`, `std::fs::Metadata`
 //! and `std::fs::DirEntry` have no public constructors, so a surface speaking
 //! those types could never be implemented by anything but the real filesystem.
 
@@ -120,8 +121,8 @@ pub(crate) trait DocumentSearchTraversal {
 /// Every observation may instead report a failure, and a failure to observe a
 /// genuinely absent path is distinguishable from every other failure by its
 /// [`io::ErrorKind::NotFound`] kind. Classifying a requested input is *not* on
-/// this surface: ADR-0008 keeps that branch in Document discovery so it stays
-/// testable against every implementation rather than being reimplemented by each.
+/// this surface: that branch stays in Document discovery so it is tested
+/// against every implementation rather than reimplemented by each.
 pub(crate) trait DocumentSearchSurface {
     /// Reports what one path is, following links.
     fn inspect(&self, path: &Path) -> io::Result<InspectedKind>;

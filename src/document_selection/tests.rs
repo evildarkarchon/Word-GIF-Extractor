@@ -1029,9 +1029,9 @@ fn epub_only_selection_drops_a_traversed_docx_in_silence() {
 /// Verifies an EPUB filter alone makes only EPUBs eligible, as `epub_only` does.
 ///
 /// A title or author filter asks for particular books, and an Office document can
-/// never match one, so `--author nobody ./docs` used to extract every DOCX in the
-/// folder (ADR-0033). The named DOCX is diagnosed and the traversed one dropped in
-/// silence, the same split ADR-0011 makes for a cover run. An author-only filter is
+/// never match one, so without this rule `--author nobody ./docs` would extract
+/// every DOCX in the folder (ADR-0033). The named DOCX is diagnosed and the
+/// traversed one dropped in silence, the same split a cover run makes. An author-only filter is
 /// used so the rule is seen not to hang on the title.
 #[test]
 fn an_epub_filter_alone_makes_only_epubs_eligible() {
@@ -1978,7 +1978,7 @@ fn select_documents_uses_declaration_derived_display_name() {
     assert_eq!(selected[0].get_display_name(), "Tester - Magic Test");
 }
 
-/// Verifies ADR-0002's retention rule: what filtering retained is not acquired again.
+/// Verifies the declaration retention rule: what filtering retained is not acquired again.
 #[test]
 fn deduplication_reuses_the_declarations_filtering_retained() {
     let surface = InMemorySearchSurface::new().with_file("book.epub");

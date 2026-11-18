@@ -1,9 +1,9 @@
 //! Extraction run workflow for document selection, sequencing, and observation.
 //!
-//! The run sequences documents and reports them; it no longer keeps counters of
-//! its own. Each document's facts are folded into an
+//! The run sequences documents and reports them, and keeps no counters of its
+//! own. Each document's facts are folded into an
 //! [`ExtractionRunOutcomeAccumulator`], which builds the terminal outcome by
-//! construction — see ADR-0006.
+//! construction, so nothing checks the outcome after the fold (ADR-0017).
 
 use std::path::PathBuf;
 
@@ -115,8 +115,7 @@ pub(crate) fn run(
     );
     // Both facts are read from their single owner here, before the inner
     // function receives anything that can extract, so they are fixed at the
-    // moment the run begins rather than cached in the request (ADR-0006,
-    // ADR-0018).
+    // moment the run begins rather than cached in the request (ADR-0018).
     let cover_only = document_extraction.is_epub_cover_extraction_configured();
     let applicable_outcome_facts = document_extraction.applicable_outcome_facts();
     run_with(
@@ -135,11 +134,12 @@ pub(crate) fn run(
 /// `cover_only` and `applicable_outcome_facts` arrive as values that [`run`]
 /// read from Document extraction, their single owner, before calling this
 /// function. They stay separate parameters because cover intent is
-/// classification input, not an Applicable outcome fact group (ADR-0006).
+/// classification input, not an Applicable outcome fact group (ADR-0018).
 ///
 /// `surface` and `declarations` are passed to Document selection unchanged, as
-/// the two separate seams ADR-0008 chose over a bundle; selection itself stays
-/// real. Every selected document is passed to `extract` exactly once. `extract`
+/// two separate seams rather than a `Dependencies`-shaped bundle (ADR-0018);
+/// selection itself stays real. Every selected document is passed to `extract`
+/// exactly once. `extract`
 /// is `FnMut` because Document extraction outcomes are not `Clone`: a scripted
 /// adapter hands each one out by value, and `Fn` would force interior
 /// mutability on it for no production benefit.
