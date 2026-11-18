@@ -40,7 +40,7 @@ use crate::emitted_image_tally::EmittedImageTally;
 
 /// Scope of the Document discovery phase reported in the observation stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentDiscoveryScope {
+pub(crate) enum DocumentDiscoveryScope {
     /// Requested paths are inspected without recursive directory traversal.
     RequestedInputs,
     /// At least one requested directory is traversed recursively.
@@ -49,7 +49,7 @@ pub enum DocumentDiscoveryScope {
 
 /// Document selection use that could not read EPUB declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EpubDeclarationPurpose {
+pub(crate) enum EpubDeclarationPurpose {
     /// Declarations were needed to apply a requested EPUB filter.
     Filtering,
     /// Declarations were needed to deduplicate EPUBs. Without them the EPUB is never
@@ -59,7 +59,7 @@ pub enum EpubDeclarationPurpose {
 
 /// Semantic classification of output produced or sought by an Extraction run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExtractionOutputKind {
+pub(crate) enum ExtractionOutputKind {
     /// Normal document images, including EPUB normal-image fallback output.
     Images,
     /// Required EPUB covers when no normal-image output was emitted.
@@ -68,14 +68,14 @@ pub enum ExtractionOutputKind {
 
 /// Conversion totals retained only when conversion was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConversionFacts {
+pub(crate) struct ConversionFacts {
     converted_images: usize,
     skipped_conversions: usize,
 }
 
 impl ConversionFacts {
     /// Creates applicable conversion facts, including valid zero totals.
-    pub fn new(converted_images: usize, skipped_conversions: usize) -> Self {
+    pub(crate) fn new(converted_images: usize, skipped_conversions: usize) -> Self {
         Self {
             converted_images,
             skipped_conversions,
@@ -83,26 +83,26 @@ impl ConversionFacts {
     }
 
     /// Returns the number of images converted before emission.
-    pub fn converted_images(&self) -> usize {
+    pub(crate) fn converted_images(&self) -> usize {
         self.converted_images
     }
 
     /// Returns the number of requested conversions that preserved source bytes.
-    pub fn skipped_conversions(&self) -> usize {
+    pub(crate) fn skipped_conversions(&self) -> usize {
         self.skipped_conversions
     }
 }
 
 /// Routed-GIF facts retained together with their required destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GifRoutingFacts {
+pub(crate) struct GifRoutingFacts {
     routed_gifs: NonZeroUsize,
     destination: PathBuf,
 }
 
 impl GifRoutingFacts {
     /// Creates applicable GIF-routing facts with a positive routed count.
-    pub fn new(routed_gifs: NonZeroUsize, destination: PathBuf) -> Self {
+    pub(crate) fn new(routed_gifs: NonZeroUsize, destination: PathBuf) -> Self {
         Self {
             routed_gifs,
             destination,
@@ -110,19 +110,19 @@ impl GifRoutingFacts {
     }
 
     /// Returns the positive number of GIFs routed by the run.
-    pub fn routed_gifs(&self) -> usize {
+    pub(crate) fn routed_gifs(&self) -> usize {
         self.routed_gifs.get()
     }
 
     /// Returns the destination that received the routed GIFs.
-    pub fn destination(&self) -> &Path {
+    pub(crate) fn destination(&self) -> &Path {
         &self.destination
     }
 }
 
 /// State-valid facts for an Extraction run that emitted output.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProducedOutput {
+pub(crate) struct ProducedOutput {
     output_kind: ExtractionOutputKind,
     emitted_images: NonZeroUsize,
     documents_with_output: NonZeroUsize,
@@ -134,27 +134,27 @@ pub struct ProducedOutput {
 
 impl ProducedOutput {
     /// Returns whether the emitted files are normal images or required covers.
-    pub fn output_kind(&self) -> ExtractionOutputKind {
+    pub(crate) fn output_kind(&self) -> ExtractionOutputKind {
         self.output_kind
     }
 
     /// Returns the positive number of emitted image files.
-    pub fn emitted_images(&self) -> usize {
+    pub(crate) fn emitted_images(&self) -> usize {
         self.emitted_images.get()
     }
 
     /// Returns the positive number of documents that emitted output.
-    pub fn documents_with_output(&self) -> usize {
+    pub(crate) fn documents_with_output(&self) -> usize {
         self.documents_with_output.get()
     }
 
     /// Returns conversion facts exactly when conversion was requested.
-    pub fn conversion(&self) -> Option<&ConversionFacts> {
+    pub(crate) fn conversion(&self) -> Option<&ConversionFacts> {
         self.conversion.as_ref()
     }
 
     /// Returns routing facts exactly when at least one GIF was routed.
-    pub fn gif_routing(&self) -> Option<&GifRoutingFacts> {
+    pub(crate) fn gif_routing(&self) -> Option<&GifRoutingFacts> {
         self.gif_routing.as_ref()
     }
 }
@@ -166,7 +166,7 @@ impl ProducedOutput {
 /// document nor a directory. Rejection is decided before any document is selected,
 /// so it can accompany every result, including the one that selected nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExtractionRunOutcome {
+pub(crate) enum ExtractionRunOutcome {
     /// Document selection found no eligible documents.
     NoDocuments {
         /// How many requested inputs selection rejected, when any were.
@@ -190,7 +190,7 @@ impl ExtractionRunOutcome {
     ///
     /// Always `None` for [`Self::NoDocuments`]: a run that selected nothing had
     /// nothing to fail, which the variant states by carrying no count at all.
-    pub fn failed_documents(&self) -> Option<NonZeroUsize> {
+    pub(crate) fn failed_documents(&self) -> Option<NonZeroUsize> {
         match self {
             Self::NoDocuments { .. } => None,
             Self::NoOutput {
@@ -205,7 +205,7 @@ impl ExtractionRunOutcome {
     /// A rejected input is one the user named that the run could not use at all:
     /// it does not exist, or it is neither a supported document nor a directory.
     /// Inputs a directory search turned up are never counted (ADR-0028).
-    pub fn rejected_inputs(&self) -> Option<NonZeroUsize> {
+    pub(crate) fn rejected_inputs(&self) -> Option<NonZeroUsize> {
         match self {
             Self::NoDocuments { rejected_inputs }
             | Self::NoOutput {
@@ -221,7 +221,7 @@ impl ExtractionRunOutcome {
     /// rejected; both are rendered as error lines, so this is the classification
     /// the exit status reads (ADR-0014, revised by ADR-0028). Finding no
     /// documents or no images is not a failure.
-    pub fn reported_an_error(&self) -> bool {
+    pub(crate) fn reported_an_error(&self) -> bool {
         self.failed_documents().is_some() || self.rejected_inputs().is_some()
     }
 }
@@ -375,7 +375,7 @@ impl ExtractionRunOutcomeAccumulator {
 ///
 /// Observations exclude terminal wording and user-interface commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExtractionRunObservation {
+pub(crate) enum ExtractionRunObservation {
     /// Current Document discovery state while inputs are still being inspected.
     DiscoveringDocuments {
         scope: DocumentDiscoveryScope,
@@ -477,7 +477,7 @@ pub enum ExtractionRunObservation {
 ///
 /// Every emitter in the run — Document selection included — reports through this
 /// one seam, and the stream ends with exactly one terminal outcome.
-pub trait ExtractionRunObserver {
+pub(crate) trait ExtractionRunObserver {
     /// Handles one structured observation emitted by the Extraction run.
     fn on_observation(&mut self, observation: ExtractionRunObservation);
 }

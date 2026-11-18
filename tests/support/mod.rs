@@ -48,7 +48,7 @@ use word_image_extractor::{Args, Capture, TerminalOutput, run_cli};
 /// Byte-identical to the crate-private constant of the same name, deliberately, for
 /// the reason the DOCX fallback helper below is: a shared name that meant a subtly
 /// different fixture would be a trap.
-pub const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
+pub(crate) const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1F\x15\xC4\x89";
 
 /// Drives the library entry point once, with a destination that captures everything.
 ///
@@ -65,7 +65,7 @@ pub const MINIMAL_PNG: &[u8] = b"\x89PNG\r\n\x1A\n\x00\x00\x00\rIHDR\x00\x00\x00
 /// every document it opened still returns `Ok`, carrying the exit status the binary
 /// would end with. A test asserting intake wording therefore reads the error; a test
 /// asserting anything else reads the capture and the files on disk.
-pub fn run_captured(arguments: &[&str]) -> (Result<ExitCode>, Capture) {
+pub(crate) fn run_captured(arguments: &[&str]) -> (Result<ExitCode>, Capture) {
     let args = Args::try_parse_from(
         std::iter::once("word-image-extractor").chain(arguments.iter().copied()),
     )
@@ -90,7 +90,7 @@ pub fn run_captured(arguments: &[&str]) -> (Result<ExitCode>, Capture) {
 /// is restored whether `body` returns or unwinds, because a directory cannot be removed
 /// on Windows while it is some process's working directory — and a failing test is
 /// exactly when someone wants to go and look at what it left behind.
-pub fn with_current_dir<T>(directory: &Path, body: impl FnOnce(&Path) -> T) -> T {
+pub(crate) fn with_current_dir<T>(directory: &Path, body: impl FnOnce(&Path) -> T) -> T {
     let _restore = WorkingDirectoryGuard {
         original: std::env::current_dir()
             .expect("the current working directory should be readable"),
@@ -139,7 +139,7 @@ impl Drop for WorkingDirectoryGuard {
 /// this guard first, so the original working directory is restored before the
 /// directory is removed.
 #[derive(Debug)]
-pub struct TempTestPath {
+pub(crate) struct TempTestPath {
     path: PathBuf,
 }
 
@@ -200,7 +200,7 @@ impl Drop for TempTestPath {
 /// what actually keep concurrent tests from colliding. The directory is not created —
 /// callers that need it on disk create it themselves. The returned guard removes it
 /// once a passing test is done with it; see [`TempTestPath`].
-pub fn temp_test_dir(area: &str, test_name: &str) -> TempTestPath {
+pub(crate) fn temp_test_dir(area: &str, test_name: &str) -> TempTestPath {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after Unix epoch")
@@ -234,7 +234,7 @@ fn write_zip_archive(path: &Path, entries: &[(&str, &[u8])]) {
 /// is kept as a separate name for the same reason the crate-private builder is: DOCX
 /// tests read as building a document, and the day a fixture needs real DOCX scaffolding
 /// this is where it goes.
-pub fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
+pub(crate) fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
     write_zip_archive(path, entries);
 }
 
@@ -243,12 +243,12 @@ pub fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
 /// Like [`write_docx`], it is only a ZIP. It exists so a test building a `.pptx` or an
 /// `.odt` does not read as building a Word document; which folder its images sit in is
 /// up to the entries the test passes.
-pub fn write_office_document(path: &Path, entries: &[(&str, &[u8])]) {
+pub(crate) fn write_office_document(path: &Path, entries: &[(&str, &[u8])]) {
     write_zip_archive(path, entries);
 }
 
 /// Writes a DOCX whose single image is a PNG that magic-byte detection identifies.
-pub fn write_png_docx(path: &Path) {
+pub(crate) fn write_png_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.png", MINIMAL_PNG)]);
 }
 
@@ -256,7 +256,7 @@ pub fn write_png_docx(path: &Path) {
 ///
 /// The extension says nothing useful, so anything that extracts this file has
 /// identified it from its magic bytes.
-pub fn write_mislabeled_png_docx(path: &Path) {
+pub(crate) fn write_mislabeled_png_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.bin", MINIMAL_PNG)]);
 }
 
@@ -266,7 +266,7 @@ pub fn write_mislabeled_png_docx(path: &Path) {
 /// name that built a subtly different fixture would be a trap. The entry name is not
 /// what the emitted file is named after — a document with one image is named after the
 /// document — so nothing depends on which of the two a test happens to reach.
-pub fn write_extension_fallback_docx(path: &Path) {
+pub(crate) fn write_extension_fallback_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.png", b"not actually a png")]);
 }
 
@@ -285,7 +285,7 @@ const EPUB_CONTAINER_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 /// payload or a payload whose bytes disagree with its media type. The package declares
 /// no navigation document and an empty spine, the sparser shape the crate-private
 /// builders also write. Output files are named after `title`.
-pub fn write_epub(
+pub(crate) fn write_epub(
     path: &Path,
     title: &str,
     manifest_resources: &[(&str, &str, &str, Option<&str>)],
@@ -330,7 +330,7 @@ pub fn write_epub(
 /// carry: a periodical issue that shares its creator and title with every other issue,
 /// or a book that names its creator and nothing else. An absent identifier leaves the
 /// package with no `unique-identifier` attribute and no `<dc:identifier>` at all.
-pub fn write_declared_epub(
+pub(crate) fn write_declared_epub(
     path: &Path,
     identifier: Option<&str>,
     creator: Option<&str>,
@@ -372,7 +372,7 @@ pub fn write_declared_epub(
 }
 
 /// Encodes a small valid JPEG whose bytes can be compared after extraction.
-pub fn test_jpeg() -> Vec<u8> {
+pub(crate) fn test_jpeg() -> Vec<u8> {
     let mut image = RgbImage::new(8, 8);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
         *pixel = Rgb([(x * 31) as u8, (y * 29) as u8, ((x + y) * 17) as u8]);
@@ -390,7 +390,7 @@ pub fn test_jpeg() -> Vec<u8> {
 /// With one frame it is a still GIF; with two or more conversion keeps it in its
 /// original bytes (ADR-0034). Byte-identical to the crate-private helper of the same
 /// name, for the reason [`MINIMAL_PNG`] is.
-pub fn animated_gif(frames: u8) -> Vec<u8> {
+pub(crate) fn animated_gif(frames: u8) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
@@ -414,7 +414,7 @@ pub fn animated_gif(frames: u8) -> Vec<u8> {
 ///
 /// Panics when the directory or one of its entries cannot be read, which in these
 /// tests means the run did not create the output it was expected to.
-pub fn sorted_file_names(directory: &Path) -> Vec<String> {
+pub(crate) fn sorted_file_names(directory: &Path) -> Vec<String> {
     let mut names = fs::read_dir(directory)
         .expect("directory should exist and be readable")
         .map(|entry| {
@@ -430,7 +430,7 @@ pub fn sorted_file_names(directory: &Path) -> Vec<String> {
 }
 
 /// Reports whether `directory` holds at least one file with the given extension.
-pub fn has_file_with_extension(directory: &Path, extension: &str) -> bool {
+pub(crate) fn has_file_with_extension(directory: &Path, extension: &str) -> bool {
     fs::read_dir(directory)
         .expect("directory should be readable")
         .filter_map(Result::ok)
@@ -451,7 +451,7 @@ pub fn create_directory_link(target: &Path, link: &Path) {
 
 /// Creates a directory link without requiring Windows symbolic-link privileges.
 #[cfg(windows)]
-pub fn create_directory_link(target: &Path, link: &Path) {
+pub(crate) fn create_directory_link(target: &Path, link: &Path) {
     if std::os::windows::fs::symlink_dir(target, link).is_ok() {
         return;
     }
@@ -477,6 +477,6 @@ pub fn remove_directory_link(link: &Path) {
 
 /// Removes a Windows directory symlink or junction without following it.
 #[cfg(windows)]
-pub fn remove_directory_link(link: &Path) {
+pub(crate) fn remove_directory_link(link: &Path) {
     fs::remove_dir(link).expect("test directory link should be removable");
 }

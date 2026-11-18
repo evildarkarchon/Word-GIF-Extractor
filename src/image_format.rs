@@ -22,7 +22,7 @@ const ALL_FORMATS: [ImageFormat; 10] = [
 
 /// Canonical image formats supported by the extractor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ImageFormat {
+pub(crate) enum ImageFormat {
     /// JPEG image data.
     Jpg,
     /// PNG image data.
@@ -47,17 +47,17 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// Returns every extractable image format.
-    pub fn all() -> &'static [ImageFormat] {
+    pub(crate) fn all() -> &'static [ImageFormat] {
         &ALL_FORMATS
     }
 
     /// Returns every extractable image format as a set.
-    pub fn all_set() -> HashSet<ImageFormat> {
+    pub(crate) fn all_set() -> HashSet<ImageFormat> {
         Self::all().iter().copied().collect()
     }
 
     /// Returns the canonical file extension for this image format.
-    pub fn extension(self) -> &'static str {
+    pub(crate) fn extension(self) -> &'static str {
         match self {
             ImageFormat::Jpg => "jpg",
             ImageFormat::Png => "png",
@@ -73,12 +73,12 @@ impl ImageFormat {
     }
 
     /// Parses a user-facing image format token into the canonical format.
-    pub fn from_user_format(input: &str) -> Option<ImageFormat> {
+    pub(crate) fn from_user_format(input: &str) -> Option<ImageFormat> {
         ImageFormat::from_extension(input)
     }
 
     /// Parses a filename extension into the canonical image format.
-    pub fn from_extension(extension: &str) -> Option<ImageFormat> {
+    pub(crate) fn from_extension(extension: &str) -> Option<ImageFormat> {
         let normalized = extension
             .trim()
             .trim_start_matches('.')
@@ -100,7 +100,7 @@ impl ImageFormat {
     }
 
     /// Returns whether this image format can be decoded for conversion.
-    pub fn can_convert(self) -> bool {
+    pub(crate) fn can_convert(self) -> bool {
         matches!(
             self,
             ImageFormat::Jpg

@@ -226,7 +226,7 @@ pub struct Args {
 
 /// Failure while turning parsed user options into a ready Extraction run.
 #[derive(Debug)]
-pub enum ExtractionRunIntakeError {
+pub(crate) enum ExtractionRunIntakeError {
     /// The fallback input directory could not be resolved.
     CurrentDirectory(io::Error),
     /// The requested conversion facts did not form a valid Conversion policy.
@@ -255,13 +255,13 @@ impl std::error::Error for ExtractionRunIntakeError {
 
 /// Structured fact that the terminal adapter renders before an Extraction run.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PreRunNotice {
+pub(crate) enum PreRunNotice {
     /// Intake selected the current directory because no input was requested.
     DefaultedInput { path: PathBuf },
 }
 
 /// Intake result containing one executable request and its ordered pre-run notices.
-pub struct PreparedExtractionRun {
+pub(crate) struct PreparedExtractionRun {
     /// Plain-data request consumed by the Extraction run exactly once.
     pub request: ExtractionRunRequest,
     /// Ordered pre-run facts for adapter rendering.
@@ -286,7 +286,7 @@ pub struct PreparedExtractionRun {
 /// options do not form a valid policy, and
 /// [`ExtractionRunIntakeError::CurrentDirectory`] when the fallback directory was
 /// needed and `current_dir` failed to resolve it.
-pub fn prepare(
+pub(crate) fn prepare(
     args: Args,
     current_dir: impl FnOnce() -> io::Result<PathBuf>,
 ) -> Result<PreparedExtractionRun, ExtractionRunIntakeError> {

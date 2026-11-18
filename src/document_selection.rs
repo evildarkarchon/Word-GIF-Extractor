@@ -19,7 +19,7 @@ use self::phases::{DocumentDiscoveryProgress, DocumentSelectionLifecycle};
 
 /// Filter criteria for selecting EPUB files by title and creator declarations.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct EpubFilter {
+pub(crate) struct EpubFilter {
     /// Case-insensitive title substring required for an EPUB to be selected.
     pub title: Option<String>,
     /// Case-insensitive author substring required for an EPUB to be selected.
@@ -28,7 +28,7 @@ pub struct EpubFilter {
 
 impl EpubFilter {
     /// Returns true if no EPUB declaration filter criteria are set.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.title.is_none() && self.author.is_none()
     }
 }
@@ -147,7 +147,7 @@ pub(crate) struct DocumentSelection {
 }
 
 /// Options used to select documents for one extraction run.
-pub struct DocumentSelectionOptions<'a> {
+pub(crate) struct DocumentSelectionOptions<'a> {
     /// Input files or directories to inspect.
     pub inputs: &'a [PathBuf],
     /// Whether directory inputs should be traversed recursively.
@@ -286,7 +286,7 @@ impl DocumentCandidate {
 /// Substituting `declarations` cannot change ADR-0002's retention rule. This
 /// function decides when a declaration is acquired and when a retained one is
 /// reused; the source only answers.
-pub fn select_documents(
+pub(crate) fn select_documents(
     options: DocumentSelectionOptions<'_>,
     surface: &dyn DocumentSearchSurface,
     declarations: &dyn EpubDeclarationSource,

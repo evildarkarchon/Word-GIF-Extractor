@@ -39,7 +39,7 @@ use crate::extraction_run_observation::{ConversionFacts, ExtractionOutputKind};
 /// requests, so equality is not part of what the request offers its callers.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub struct ExtractionRunRequest {
+pub(crate) struct ExtractionRunRequest {
     selection_inputs: RunSelectionInputs,
     epub_cover_policy: Option<EpubCoverPolicy>,
     image_write_policy: ImageWritePolicy,
@@ -97,7 +97,7 @@ struct RunSelectionInputs {
 /// This entry is the production composition: it unpacks the request, builds
 /// Document extraction from the request's policies, and runs it against the real
 /// filesystem and real EPUB files. The sequencing itself lives in [`run_with`].
-pub fn run(
+pub(crate) fn run(
     request: ExtractionRunRequest,
     observer: &mut impl ExtractionRunObserver,
 ) -> ExtractionRunOutcome {

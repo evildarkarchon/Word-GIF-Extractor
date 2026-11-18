@@ -27,7 +27,7 @@ const DEFAULT_QUALITY: u8 = 85;
 
 /// A format that the conversion module can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConversionTarget {
+pub(crate) enum ConversionTarget {
     /// JPEG output.
     Jpg,
     /// PNG output.
@@ -38,7 +38,7 @@ pub enum ConversionTarget {
 
 /// Raw, CLI-independent facts used to construct a valid Conversion policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConversionRequest {
+pub(crate) struct ConversionRequest {
     /// Requested output target.
     pub target: ConversionTarget,
     /// Explicit JPEG or lossy WebP quality, when supplied.
@@ -49,7 +49,7 @@ pub struct ConversionRequest {
 
 /// Why a raw conversion request cannot become a valid Conversion policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConversionPolicyError {
+pub(crate) enum ConversionPolicyError {
     /// Quality must be within the encoder-supported range.
     QualityOutOfRange { quality: u8 },
     /// PNG has no configurable quality setting.
@@ -107,13 +107,13 @@ enum ConversionMode {
 
 /// A validated target encoding and its matching-source preservation behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConversionPolicy {
+pub(crate) struct ConversionPolicy {
     mode: ConversionMode,
 }
 
 /// Observable result of applying a Conversion policy to one image.
 #[derive(Debug)]
-pub enum ConversionOutcome {
+pub(crate) enum ConversionOutcome {
     /// New bytes were encoded in the requested target format.
     Converted(Vec<u8>, ImageFormat),
     /// Original bytes should be preserved because source and target match and no
@@ -185,7 +185,11 @@ impl ConversionPolicy {
     /// Unsupported and animated sources are returned as normal outcomes. Decoder or
     /// encoder failures are returned as errors for the Image write pipeline to
     /// interpret.
-    pub fn convert(&self, data: &[u8], source_format: ImageFormat) -> Result<ConversionOutcome> {
+    pub(crate) fn convert(
+        &self,
+        data: &[u8],
+        source_format: ImageFormat,
+    ) -> Result<ConversionOutcome> {
         if let Some(outcome) = self.outcome_without_decoding(source_format) {
             return Ok(outcome);
         }
@@ -224,7 +228,7 @@ impl ConversionPolicy {
     /// [`ConversionOutcome::Converted`]. The Image write pipeline asks this first
     /// so that an image whose bytes are kept can be streamed rather than buffered
     /// (ADR-0030); `convert` asks it too, so the two cannot disagree.
-    pub fn outcome_without_decoding(
+    pub(crate) fn outcome_without_decoding(
         &self,
         source_format: ImageFormat,
     ) -> Option<ConversionOutcome> {
