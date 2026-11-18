@@ -697,3 +697,33 @@ fn policy(target: ConversionTarget, quality: Option<u8>, lossless: bool) -> Conv
     })
     .expect("test conversion request should be valid")
 }
+
+/// Verifies flattening onto white rounds each blended channel to the nearest level
+/// rather than truncating it. Every channel value is paired with every alpha, and
+/// each result is checked against the blend computed in `f64` and rounded. Channel
+/// 1 at alpha 128 blends to 127.502, which truncation turned into 127.
+#[test]
+fn composite_on_white_rounds_every_channel_and_alpha_to_nearest() {
+    let mut source = RgbaImage::new(256, 256);
+    for (x, y, pixel) in source.enumerate_pixels_mut() {
+        let (channel, alpha) = (x as u8, y as u8);
+        *pixel = Rgba([channel, channel, 255 - channel, alpha]);
+    }
+
+    let flattened = composite_on_white(&DynamicImage::ImageRgba8(source.clone())).to_rgb8();
+
+    let expected = |channel: u8, alpha: u8| -> u8 {
+        let (channel, alpha) = (f64::from(channel), f64::from(alpha));
+        ((channel * alpha + 255.0 * (255.0 - alpha)) / 255.0).round() as u8
+    };
+    for (x, y, pixel) in flattened.enumerate_pixels() {
+        let Rgba([r, g, b, a]) = *source.get_pixel(x, y);
+        assert_eq!(
+            pixel.0,
+            [expected(r, a), expected(g, a), expected(b, a)],
+            "source {:?}",
+            [r, g, b, a]
+        );
+    }
+    assert_eq!(flattened.get_pixel(1, 128).0[0], 128);
+}
