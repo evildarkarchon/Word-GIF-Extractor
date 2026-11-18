@@ -474,7 +474,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
   <article class="finding med" id="M9">
     <header><span class="id">M9</span><h3>There is no CI, so the gate and the Unix code paths rely on memory</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge fixed">Fixed</span><span class="badge ok">Observed</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/119">PR #119</a></span><span class="badge ok">Observed</span>
       <span class="badge plain">no <code>.github/</code> directory</span>
     </div>
     <p><code>AGENTS.md</code> defines "done" as tests plus clippy passing, and nothing enforces it on a pull request. The test support carries <code>#[cfg(unix)]</code> branches (<code>src/test_support.rs:739-793</code>, <code>tests/support/mod.rs:371-404</code>) that a Windows-only workflow never compiles, and L3 describes behaviour that differs by platform. <code>Cargo.toml</code> declares no <code>rust-version</code> although the source needs a recent compiler (edition 2024, let-chains).</p>
