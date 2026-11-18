@@ -1,4 +1,4 @@
-//! Word Image Extractor - A CLI tool for extracting images from DOCX and EPUB files.
+//! Word Image Extractor - A CLI tool for extracting images from Office documents and EPUB files.
 //!
 //! Everything the tool does — extraction and the terminal presentation of a run —
 //! lives in the `word_image_extractor` library. This binary parses arguments, hands

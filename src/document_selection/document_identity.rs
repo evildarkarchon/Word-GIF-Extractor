@@ -79,7 +79,7 @@ impl EpubFilterTerms {
 }
 
 impl DocumentIdentity {
-    /// Builds the path identity used for every DOCX.
+    /// Builds the path identity used for every Office document.
     ///
     /// The base name is the raw file stem. Unlike an undeclared EPUB's, it is not
     /// sanitized; see [`DocumentIdentity::of_epub`] for why the two differ.
@@ -94,7 +94,7 @@ impl DocumentIdentity {
     ///
     /// A declaration counts only when it is non-blank after trimming; when neither
     /// counts, the identity falls back to the path. That fallback sanitizes the stem,
-    /// which a DOCX's path identity does not do. The difference predates this module
+    /// which an Office document's path identity does not do. The difference predates this module
     /// and is kept so every output name stays byte-for-byte unchanged.
     pub(super) fn of_epub(creator: Option<&str>, title: Option<&str>, path: &Path) -> Self {
         let creator = non_blank(creator);

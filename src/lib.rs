@@ -1,6 +1,7 @@
-//! Word Image Extractor - extraction of images from DOCX and EPUB files.
+//! Word Image Extractor - extraction of images from Office documents and EPUB files.
 //!
-//! This library treats DOCX and EPUB files as ZIP archives and extracts image files
+//! This library treats Office documents (Office Open XML and OpenDocument files) and
+//! EPUB files as ZIP archives and extracts image files
 //! matching specified formats. It owns the whole module tree, including the terminal
 //! presentation of a run; `src/main.rs` links against it and adds nothing but
 //! argument parsing.
@@ -46,6 +47,7 @@ mod extraction_run_observation;
 mod extraction_run_presentation;
 mod image_format;
 mod image_write_pipeline;
+mod office_package;
 mod output_placement;
 #[cfg(test)]
 mod test_support;

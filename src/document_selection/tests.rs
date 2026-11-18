@@ -254,6 +254,85 @@ fn select_documents_accepts_a_named_document_whatever_the_extension_case() {
     assert!(observer.selection_diagnostics().is_empty());
 }
 
+/// Returns the Office package of each selected Office document, in selection order,
+/// and `None` for an EPUB.
+fn selected_packages(selected: &[SelectedDocument]) -> Vec<Option<OfficePackage>> {
+    selected
+        .iter()
+        .map(|document| match document {
+            SelectedDocument::Office(document) => Some(document.package),
+            SelectedDocument::Epub(_) => None,
+        })
+        .collect()
+}
+
+/// Verifies every Office suite is a document kind, and carries its package to extraction.
+///
+/// A directory search turns up each suite in encounter order, which the in-memory
+/// surface makes name order. The flat OpenDocument
+/// and legacy binary files beside them are not archives, so they are passed over in
+/// silence like any other unsupported file a search finds.
+#[test]
+fn select_documents_selects_every_office_suite_with_its_package() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/report.docx")
+        .with_file("root/slides.pptx")
+        .with_file("root/budget.xlsx")
+        .with_file("root/plan.vsdx")
+        .with_file("root/notes.odt")
+        .with_file("root/flat.fodt")
+        .with_file("root/legacy.doc");
+
+    let (selection, observer) = select_counting_rejections(&surface, &["root"]);
+
+    assert_eq!(
+        selected_paths(&selection.documents),
+        vec![
+            Path::new("root/budget.xlsx"),
+            Path::new("root/notes.odt"),
+            Path::new("root/plan.vsdx"),
+            Path::new("root/report.docx"),
+            Path::new("root/slides.pptx"),
+        ]
+    );
+    assert_eq!(
+        selected_packages(&selection.documents),
+        vec![
+            Some(OfficePackage::Excel),
+            Some(OfficePackage::OpenDocument),
+            Some(OfficePackage::Visio),
+            Some(OfficePackage::Word),
+            Some(OfficePackage::PowerPoint),
+        ]
+    );
+    assert_eq!(selection.rejected_inputs, None);
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Verifies a named Office document of any suite is accepted, whatever its case.
+#[test]
+fn select_documents_accepts_a_named_office_document_of_any_suite() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("Slides.PPSX")
+        .with_file("macros.xlsm")
+        .with_file("drawing.odg");
+
+    let (selection, observer) =
+        select_counting_rejections(&surface, &["Slides.PPSX", "macros.xlsm", "drawing.odg"]);
+
+    assert_eq!(
+        selected_packages(&selection.documents),
+        vec![
+            Some(OfficePackage::PowerPoint),
+            Some(OfficePackage::Excel),
+            Some(OfficePackage::OpenDocument),
+        ]
+    );
+    assert_eq!(selection.rejected_inputs, None);
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
 /// Verifies naming an unsupported file rejects it even when a named directory holds it.
 ///
 /// The directory search alone would pass over `notes.txt` in silence; naming it is
@@ -893,6 +972,34 @@ fn epub_only_selection_diagnoses_a_requested_docx() {
         vec![ExtractionRunObservation::SkippedNonEpubInput {
             path: PathBuf::from("doc.docx")
         }]
+    );
+}
+
+/// Every Office suite is ineligible in an EPUB-only run, not only Word documents.
+#[test]
+fn epub_only_selection_diagnoses_a_requested_office_document_of_any_suite() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("slides.pptx")
+        .with_file("notes.odt");
+
+    let (selected, observer) = select_epub_only(
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &["slides.pptx", "notes.odt"],
+        false,
+    );
+
+    assert!(selected.is_empty());
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![
+            ExtractionRunObservation::SkippedNonEpubInput {
+                path: PathBuf::from("slides.pptx")
+            },
+            ExtractionRunObservation::SkippedNonEpubInput {
+                path: PathBuf::from("notes.odt")
+            },
+        ]
     );
 }
 

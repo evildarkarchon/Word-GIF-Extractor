@@ -40,7 +40,7 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
 
     match selected {
         SelectedDocument::Epub(document) => document,
-        SelectedDocument::Docx(_) => panic!("EPUB fixture should retain its selected kind"),
+        SelectedDocument::Office(_) => panic!("EPUB fixture should retain its selected kind"),
     }
 }
 

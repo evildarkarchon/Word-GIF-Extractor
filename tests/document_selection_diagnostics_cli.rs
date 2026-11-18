@@ -139,7 +139,7 @@ fn rejected_named_inputs_fail_the_run_and_the_rest_still_extract() {
                 missing_path.display()
             ),
             format!(
-                "Error: Input is not a .docx or .epub file or a directory: {}",
+                "Error: Input is not a supported document (such as .docx, .pptx, .xlsx, .odt or .epub) or a directory: {}",
                 unsupported_path.display()
             ),
         ]

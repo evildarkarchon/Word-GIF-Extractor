@@ -1,5 +1,11 @@
 # Reject a missing or unsupported named input as an error
 
+> **Wording revised by ADR-0029 (2026-11-17).** ADR-0029 makes every Office suite a
+> supported document kind, so the unsupported-input error below no longer names only
+> `.docx` and `.epub`. It now reads `Error: Input is not a supported document (such as
+> .docx, .pptx, .xlsx, .odt or .epub) or a directory: …`. The decision to reject and
+> exit 1 is unchanged.
+
 The 2026-11-14 audit (M4) showed two command lines that did nothing and still exited 0. `word-image-extractor nope.docx` printed `Warning: Input path does not exist` and then `No documents found to process.` `word-image-extractor notes.txt` printed only the summary. Discovery passed over a named file with an unsupported extension in silence, exactly as it passes over one found inside a directory. So a script that passed a wrong path got success, and a user who passed `report.doc` or `book.mobi` was told, in effect, that the file held no documents.
 
 A requested input is now rejected when it does not exist, or when it is neither a directory nor a file whose extension names a supported document kind. That includes an object that is neither a file nor a directory, such as a device. Requested-input classification decides this before the discovery phase opens, where the missing-input diagnostic was already decided. Each rejection is reported once, in input order: `MissingInput { path }` as before, or the new `UnsupportedInput { path }`. Presentation renders both as `Error:` lines on standard error, `Error: Input path does not exist: …` and `Error: Input is not a .docx or .epub file or a directory: …`. The extension check is the one discovery already applied, now `DocumentKind::of_path`, so `REPORT.DOCX` is still accepted.

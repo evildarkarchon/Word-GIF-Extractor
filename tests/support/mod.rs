@@ -238,6 +238,15 @@ pub fn write_docx(path: &Path, entries: &[(&str, &[u8])]) {
     write_zip_archive(path, entries);
 }
 
+/// Writes an Office document fixture of any suite containing the supplied entries in order.
+///
+/// Like [`write_docx`], it is only a ZIP. It exists so a test building a `.pptx` or an
+/// `.odt` does not read as building a Word document; which folder its images sit in is
+/// up to the entries the test passes.
+pub fn write_office_document(path: &Path, entries: &[(&str, &[u8])]) {
+    write_zip_archive(path, entries);
+}
+
 /// Writes a DOCX whose single image is a PNG that magic-byte detection identifies.
 pub fn write_png_docx(path: &Path) {
     write_docx(path, &[("word/media/image1.png", MINIMAL_PNG)]);

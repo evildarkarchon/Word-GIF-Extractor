@@ -400,7 +400,7 @@ exit=0</pre>
   <article class="finding med" id="M5">
     <header><span class="id">M5</span><h3>The DOCX adapter sniffs every ZIP entry, so preview thumbnails become image 1</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/117">PR #117</a></span><span class="badge ok">Reproduced</span>
       <code>src/document_extraction/docx.rs:32</code>
     </div>
     <p>The adapter visits all entries, not the media folder. Word's optional <code>docProps/thumbnail.*</code> (the file-manager preview) is therefore extracted as a document image. ZIP order puts it first, so it renumbers the real images and turns a single-image document's <code>name.png</code> into <code>name_2.png</code>.</p>
@@ -411,6 +411,7 @@ thumb_2.png      <span class="note">← the document's only image</span></pre>
     <h4>Recommendation</h4>
     <p>Limit the traversal to media parts (<code>word/media/</code>; matching <code>*/media/*</code> would also serve the other Office formats, see Opportunities), or at minimum exclude <code>docProps/</code>.</p>
     <p class="adr"><strong>ADR note:</strong> ADR-0020 (binding) holds that "no name is grounds for a silent skip". It was written about unreadable sources and about names never reaching an output path, and this would be an eligibility rule rather than a guard, but it is close enough to that sentence that it should be decided explicitly.</p>
+  <p class="impl"><strong>Implementation:</strong> Both the fix and the Opportunities item are in, and ADR-0029 records the decision, including why it is an eligibility rule rather than the silent skip ADR-0020 forbids. The extension decides an Office package and the package decides the one media folder that holds document images: <code>word/media/</code>, <code>ppt/media/</code>, <code>xl/media/</code>, <code>visio/media/</code>, or <code>Pictures/</code> for OpenDocument. The Office adapter, renamed from <code>docx.rs</code> to <code>office.rs</code>, skips every entry outside that folder before reading it, so <code>docProps/thumbnail.*</code> and LibreOffice's <code>Thumbnails/thumbnail.png</code> are neither written, numbered nor warned about. An entry whose name cannot be decoded is still offered, because the adapter cannot show it lies outside the folder. Selection now accepts every ZIP-packaged Word, PowerPoint, Excel, Visio and OpenDocument extension, including the macro-enabled, template and show variants and <code>.xlsb</code>, and carries the package on the Selected document. <code>SelectedDocument::Docx</code> became <code>SelectedDocument::Office</code>. The unsupported-input error names one extension per suite. Unit tests cover the extension table and the folder rule in <code>office_package</code>, the thumbnail case and each suite's folder in the adapter, and every suite's package in selection. A mutation that disables the folder check fails all four new adapter tests. <code>tests/office_documents_cli.rs</code> runs the audit's <code>thumb.docx</code> and checks it writes <code>thumb.png</code> alone, then runs a <code>.pptx</code>, <code>.xlsx</code>, <code>.vsdx</code> and <code>.odt</code> with thumbnails through a directory search. The README gains a Supported Documents table and the glossary gains Office document and Office package.</p>
   </article>
 
   <article class="finding med" id="M6">
@@ -647,7 +648,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
         <li><a href="#H3">H3</a> where the summary goes (ADR-0013) <span class="badge fixed">Fixed</span></li>
         <li><a href="#M4">M4</a> exit status for named inputs (ADR-0014)</li>
         <li><a href="#M3">M3</a> unknown formats: error or warn <span class="badge fixed">Fixed</span></li>
-        <li><a href="#M5">M5</a> which DOCX entries are eligible (near ADR-0020)</li>
+        <li><a href="#M5">M5</a> which DOCX entries are eligible (near ADR-0020) <span class="badge fixed">Fixed</span></li>
         <li><a href="#M2">M2</a> cover candidate list (amends ADR-0021/0023)</li>
       </ul>
     </div>
