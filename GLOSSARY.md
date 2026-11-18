@@ -105,7 +105,7 @@ The project policy for turning archive image sources into files on disk, includi
 _Avoid_: Save helper, output utility
 
 **Image file emission**:
-The responsibility within the Image write pipeline for naming, placing and completing every image one pipeline invocation emits under an Output placement: whether names are singular or numbered, each image's ordinal across every image it emits including routed GIFs, the directory its Emitted image role sends it to, and a collision-free name claimed without overwriting existing output. It excludes Archive image discovery, conversion, the Image write purpose, and extraction counts.
+The responsibility within the Image write pipeline for naming, placing and completing every image one pipeline invocation emits under an Output placement: whether names are singular or numbered, each image's ordinal across every image it emits including routed GIFs, the directory its Emitted image role sends it to, and a collision-free name claimed without overwriting existing output, fitted to what the filesystem can create. It excludes Archive image discovery, conversion, the Image write purpose, and extraction counts.
 _Avoid_: Atomic image emission, output writer, naming helper
 
 **Image write policy**:

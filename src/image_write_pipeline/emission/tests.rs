@@ -356,6 +356,38 @@ fn existing_output_is_preserved_and_uses_compatible_collision_suffix() {
     );
 }
 
+/// Verifies a base name past the filesystem's name cap is written, not refused.
+///
+/// The audit (L5) found that one long EPUB title failed the whole document with a
+/// create error. Every image here is written under one shortened stem that keeps
+/// its ordinal and extension. A second run then collides with the first, which
+/// checks that collision suffixes fit too.
+#[test]
+fn overlong_base_name_is_shortened_to_a_name_the_filesystem_creates() {
+    let temp_dir = temp_test_dir("emission", "overlong-base-name");
+    let base = "Author - ".to_string() + &"A Very Long Subtitle ".repeat(15);
+    let placement = OutputPlacement::new(&temp_dir, base.as_str());
+    let images = || {
+        vec![
+            prepared(MINIMAL_PNG, ImageFormat::Png, EmittedImageRole::Preserved),
+            prepared(MINIMAL_PNG, ImageFormat::Png, EmittedImageRole::Preserved),
+        ]
+    };
+
+    emit_all(&placement, images()).expect("an overlong base name should be fitted");
+    emit_all(&placement, images()).expect("colliding overlong names should be fitted");
+
+    let names = file_names_in(&temp_dir);
+    let stem = names[0]
+        .strip_suffix("_1.png")
+        .expect("the first image should keep its ordinal");
+    assert!(base.starts_with(stem), "{stem:?} should begin {base:?}");
+    assert_eq!(
+        names,
+        ["_1.png", "_1_1.png", "_2.png", "_2_1.png"].map(|suffix| format!("{stem}{suffix}"))
+    );
+}
+
 #[test]
 fn write_failure_removes_the_reserved_partial_file() {
     let temp_dir = temp_test_dir("emission", "partial-cleanup");
