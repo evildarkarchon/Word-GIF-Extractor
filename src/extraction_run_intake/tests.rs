@@ -137,33 +137,16 @@ fn named_inputs_never_resolve_the_fallback_directory() {
     assert!(prepared.notices.is_empty());
 }
 
+/// Verifies recognized tokens, aliases included, become exactly the requested formats.
+///
+/// Spelling is [`ImageFormat::from_user_format`]'s subject; this pins only that the
+/// parser hands its answer through, so `jpeg` and `JPG` both mean JPEG and a run
+/// requesting two formats accepts those two and no others.
 #[test]
-fn returns_defaulted_input_before_ignored_format_notices() {
-    let prepared = prepare_from(["test", "--formats", "unknown"]);
+fn parses_requested_formats_including_aliases() {
+    let prepared = prepare_named(["test", "book.epub", "--formats", "png,jpeg,JPG"]);
 
-    assert_eq!(
-        prepared.notices,
-        vec![
-            PreRunNotice::DefaultedInput {
-                path: PathBuf::from(FALLBACK_DIRECTORY)
-            },
-            PreRunNotice::IgnoredFormat {
-                format: "unknown".to_string(),
-            },
-        ]
-    );
-}
-
-#[test]
-fn parses_allowed_formats_and_records_ignored_tokens() {
-    let prepared = prepare_named(["test", "book.epub", "--formats", "png,unknown,jpeg"]);
-
-    assert_eq!(
-        prepared.notices,
-        vec![PreRunNotice::IgnoredFormat {
-            format: "unknown".to_string(),
-        }]
-    );
+    assert!(prepared.notices.is_empty());
     assert_eq!(
         prepared.request,
         expected_for_book(
@@ -174,24 +157,45 @@ fn parses_allowed_formats_and_records_ignored_tokens() {
     );
 }
 
+/// Verifies an unrecognized token is a usage error that names it and lists the formats.
+///
+/// It used to be ignored with a warning, and when nothing else was recognized the
+/// run widened to every format, the opposite of a filter. See ADR-0027.
 #[test]
-fn falls_back_to_all_formats_when_no_valid_formats_are_supplied() {
-    let prepared = prepare_named(["test", "book.epub", "--formats", "unknown"]);
+fn rejects_an_unrecognized_format_at_parse_time() {
+    let error = Args::try_parse_from(["test", "book.epub", "--formats", "pgn"])
+        .expect_err("an unrecognized format should not parse");
 
-    assert_eq!(
-        prepared.notices,
-        vec![PreRunNotice::IgnoredFormat {
-            format: "unknown".to_string(),
-        }]
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    assert_eq!(error.exit_code(), 2);
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("invalid value 'pgn' for '--formats <FORMATS>'"),
+        "the error should name the token and the flag:
+{rendered}"
     );
-    assert_eq!(
-        prepared.request,
-        expected_for_book(
-            EpubFilter::default(),
-            None,
-            accepting_formats(ImageFormat::all_set()),
-        )
+    assert!(
+        rendered.contains("[possible values: jpg, png, gif, bmp, tiff, svg, wmf, emf, webp, ico]"),
+        "the error should list every canonical format name:
+{rendered}"
     );
+}
+
+/// Verifies one bad token rejects the whole flag, even beside recognized ones.
+///
+/// Dropping only the bad token would quietly run a narrower filter than the one
+/// typed, which is still a run the user did not ask for.
+#[test]
+fn rejects_an_unrecognized_format_among_recognized_ones() {
+    for value in ["png,pgn,jpg", "png,"] {
+        let error = Args::try_parse_from(["test", "book.epub", "--formats", value])
+            .expect_err("every format token should have to parse");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::InvalidValue,
+            "--formats {value} should be an invalid value"
+        );
+    }
 }
 
 #[test]
@@ -441,7 +445,7 @@ fn formats_before_the_input_leaves_the_input_positional() {
         let args = Args::try_parse_from(["test", flag, "png,jpg", "file.docx"]).unwrap();
         assert_eq!(
             args.formats,
-            Some(vec!["png".to_string(), "jpg".to_string()]),
+            Some(vec![ImageFormat::Png, ImageFormat::Jpg]),
             "{flag} should take exactly one comma-separated value"
         );
         assert_eq!(args.inputs, vec![PathBuf::from("file.docx")]);
@@ -455,19 +459,19 @@ fn repeated_formats_flags_accumulate() {
         Args::try_parse_from(["test", "-f", "png", "--formats", "jpg,gif", "book.epub"]).unwrap();
     assert_eq!(
         args.formats,
-        Some(vec![
-            "png".to_string(),
-            "jpg".to_string(),
-            "gif".to_string()
-        ])
+        Some(vec![ImageFormat::Png, ImageFormat::Jpg, ImageFormat::Gif])
     );
     assert_eq!(args.inputs, vec![PathBuf::from("book.epub")]);
 }
 
 /// Verifies `--formats` with no value is a parse error rather than an empty filter.
+///
+/// An empty argument counts as no value too: a filter accepting nothing would write
+/// nothing, and one accepting everything would ignore the flag.
 #[test]
 fn formats_requires_a_value() {
     assert!(Args::try_parse_from(["test", "--formats"]).is_err());
+    assert!(Args::try_parse_from(["test", "--formats", ""]).is_err());
 }
 
 #[test]

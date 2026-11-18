@@ -363,7 +363,7 @@ exit=0                                 <span class="note"># no file, no warning,
   <article class="finding med" id="M3">
     <header><span class="id">M3</span><h3>A typo in <code>--formats</code> widens the run to every format</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge ok">Reproduced</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed</span><span class="badge ok">Reproduced</span>
       <code>src/extraction_run_intake.rs:287-289</code>
     </div>
     <p>If no token is recognized, the allowed set silently becomes all ten formats. A filter flag that fails open does the opposite of what was asked, with exit 0.</p>
@@ -373,6 +373,7 @@ $ ls out/B
 thumb_1.jpg  thumb_2.png</pre>
     <h4>Recommendation</h4>
     <p>Reject unknown tokens at parse time with a clap <code>value_parser</code> (exit 2, listing the valid names). If compatibility matters more, at least fail when <em>every</em> token was rejected. The comment at line 266 calls the current behaviour "existing compatibility behavior"; this is a deliberate change to it.</p>
+  <p class="impl"><strong>Implementation:</strong> The first recommendation is in, and ADR-0027 records the decision. <code>Args::formats</code> is now <code>Option&lt;Vec&lt;ImageFormat&gt;&gt;</code>. A private <code>TypedValueParser</code> in intake hands each token to <code>ImageFormat::from_user_format</code>, so <code>jpeg</code>, <code>tif</code> and any case still parse, and every other token is a clap invalid-value error: <code>invalid value 'pgn' for '--formats &lt;FORMATS&gt;'</code> followed by the ten canonical names, exit 2, nothing searched or written. One bad token rejects the whole flag, even beside valid ones, and an empty token (<code>png,,jpg</code>, <code>-f ""</code>) is reported as a missing value. <code>--help</code> now lists the possible values. <code>PreRunNotice::IgnoredFormat</code> and its warning are gone, and with them the all-formats fallback. Intake unit tests cover aliases, a lone typo, a typo among valid tokens and the empty cases. <code>tests/binary_smoke.rs</code> runs the compiled binary with <code>-f pgn</code> and checks the exit status, the message and the missing output directory. <code>tests/pre_run_notices_cli.rs</code> now pins only the defaulted-input notice, and the README's <code>--formats</code> row lists the names.</p>
   </article>
 
   <article class="finding med" id="M4">
@@ -644,7 +645,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
         <li><a href="#H2">H2</a> deduplication key, reporting, opt-out</li>
         <li><a href="#H3">H3</a> where the summary goes (ADR-0013) <span class="badge fixed">Fixed</span></li>
         <li><a href="#M4">M4</a> exit status for named inputs (ADR-0014)</li>
-        <li><a href="#M3">M3</a> unknown formats: error or warn</li>
+        <li><a href="#M3">M3</a> unknown formats: error or warn <span class="badge fixed">Fixed</span></li>
         <li><a href="#M5">M5</a> which DOCX entries are eligible (near ADR-0020)</li>
         <li><a href="#M2">M2</a> cover candidate list (amends ADR-0021/0023)</li>
       </ul>

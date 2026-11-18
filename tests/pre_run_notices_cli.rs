@@ -12,23 +12,25 @@ use std::process::ExitCode;
 
 use support::{run_captured, temp_test_dir, with_current_dir};
 
-/// Verifies pre-run notices retain their exact wording, order, and output streams.
+/// Verifies the defaulted-input notice keeps its exact wording and its stream.
 ///
-/// The two notices are the reason the destination keeps standard output and standard
-/// error apart: defaulting the input is normal output, and ignoring a format token is a
-/// warning, so a single merged stream would hide the difference.
+/// Defaulting the input is normal output, so it lands on standard output ahead of the
+/// run's own lines, and a run that has nothing to warn about leaves standard error
+/// empty. The ignored-format warning that once shared this test is gone: an
+/// unrecognized `--formats` token is now a parse error (ADR-0027), pinned by
+/// `binary_smoke.rs` because only the process exit path shows it.
 #[test]
-fn renders_ordered_pre_run_notices_on_existing_streams() {
+fn renders_the_defaulted_input_notice_on_standard_output() {
     let temp_dir = temp_test_dir("pre-run-notice", "ordered-streams");
     fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
 
     let (result, capture, working_directory) = with_current_dir(&temp_dir, |working_directory| {
-        let (result, capture) = run_captured(&["--formats", "first,png,second"]);
+        let (result, capture) = run_captured(&["--formats", "png"]);
         (result, capture, working_directory.to_path_buf())
     });
 
-    // Ignored format tokens are warnings, and an empty working directory finds no
-    // documents. Neither is a failure, so the run exits 0 (ADR-0014).
+    // An empty working directory finds no documents, which is not a failure, so the
+    // run exits 0 (ADR-0014).
     assert_eq!(
         result.expect("intake should accept a bare format filter with no input named"),
         ExitCode::SUCCESS
@@ -44,12 +46,5 @@ fn renders_ordered_pre_run_notices_on_existing_streams() {
             "No documents found to process.".to_string(),
         ]
     );
-    let stderr = capture.stderr();
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        vec![
-            "Warning: Unrecognized format 'first' ignored",
-            "Warning: Unrecognized format 'second' ignored",
-        ]
-    );
+    assert_eq!(capture.stderr(), "");
 }

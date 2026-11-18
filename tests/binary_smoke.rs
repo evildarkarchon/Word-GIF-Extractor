@@ -123,3 +123,50 @@ fn compiled_binary_exits_with_failure_when_a_document_fails() {
         "a run with a failed document should exit with status 1\nstderr: {stderr}"
     );
 }
+
+/// Verifies an unrecognized `--formats` token stops the binary before any extraction.
+///
+/// A typo such as `pgn` used to be ignored with a warning, and when it was the only
+/// token the filter widened to every format and the run exited 0 (audit M3,
+/// ADR-0027). It is now a usage error, so this pins the three things only the process
+/// shows: the usage exit status 2, the message on standard error naming the token
+/// and the valid names, and no output directory, because nothing ran.
+#[test]
+fn compiled_binary_rejects_an_unrecognized_format() {
+    let temp_dir = temp_test_dir("binary-smoke", "unrecognized-format");
+    let output_dir = temp_dir.join("output");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    let docx_path = temp_dir.join("sample.docx");
+    write_png_docx(&docx_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_word-image-extractor"))
+        .arg(&docx_path)
+        .arg("--formats")
+        .arg("pgn")
+        .arg("--output")
+        .arg(&output_dir)
+        .output()
+        .expect("extractor binary should run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an unrecognized format should be a usage error
+stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("invalid value 'pgn' for '--formats <FORMATS>'"),
+        "the error should name the rejected token: {stderr}"
+    );
+    assert!(
+        stderr.contains("[possible values: jpg, png, gif,"),
+        "the error should list the valid format names: {stderr}"
+    );
+    assert_eq!(stdout, "", "a rejected invocation should print no output");
+    assert!(
+        !output_dir.exists(),
+        "a rejected invocation should create no output directory"
+    );
+}

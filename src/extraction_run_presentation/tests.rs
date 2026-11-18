@@ -1067,20 +1067,15 @@ fn run_cli_prints_the_summary_to_standard_output_without_a_terminal() {
     assert_eq!(capture.stderr(), "");
 }
 
-/// Verifies the two pre-run notices keep their existing wording and streams.
+/// Verifies the defaulted-input notice keeps its wording and lands on standard output.
 #[test]
 fn pre_run_notices_keep_their_wording_and_streams() {
     let (output, capture) = TerminalOutput::captured();
     let mut presentation = ExtractionRunPresentation::new(output);
 
-    presentation.render_pre_run_notices(vec![
-        PreRunNotice::DefaultedInput {
-            path: PathBuf::from("/tmp/documents"),
-        },
-        PreRunNotice::IgnoredFormat {
-            format: "tiffff".to_string(),
-        },
-    ]);
+    presentation.render_pre_run_notices(vec![PreRunNotice::DefaultedInput {
+        path: PathBuf::from("/tmp/documents"),
+    }]);
 
     assert_eq!(
         capture.stdout(),
@@ -1089,10 +1084,7 @@ fn pre_run_notices_keep_their_wording_and_streams() {
             PathBuf::from("/tmp/documents").display()
         )
     );
-    assert_eq!(
-        capture.stderr(),
-        "Warning: Unrecognized format 'tiffff' ignored\n"
-    );
+    assert_eq!(capture.stderr(), "");
 }
 
 /// Verifies the published entry point renders a whole run into a supplied destination.
