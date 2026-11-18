@@ -52,6 +52,18 @@ fn select_with(
     inputs: &[&str],
     policy: SelectionPolicy<'_>,
 ) -> (Vec<SelectedDocument>, RecordingRunObserver) {
+    let (selection, observer) = select_whole(surface, declarations, inputs, policy);
+    (selection.documents, observer)
+}
+
+/// Selects like [`select_with`] but returns the whole [`DocumentSelection`],
+/// for the tests that assert the rejected-input count beside the documents.
+fn select_whole(
+    surface: &InMemorySearchSurface,
+    declarations: &DeclaredEpubDeclarations,
+    inputs: &[&str],
+    policy: SelectionPolicy<'_>,
+) -> (DocumentSelection, RecordingRunObserver) {
     let inputs: Vec<PathBuf> = inputs.iter().map(PathBuf::from).collect();
     let no_filter = EpubFilter::default();
     let mut observer = RecordingRunObserver::default();
@@ -69,6 +81,19 @@ fn select_with(
         &mut observer,
     );
     (selected, observer)
+}
+
+/// Selects with default options and returns the whole selection, rejected inputs included.
+fn select_counting_rejections(
+    surface: &InMemorySearchSurface,
+    inputs: &[&str],
+) -> (DocumentSelection, RecordingRunObserver) {
+    select_whole(
+        surface,
+        &DeclaredEpubDeclarations::new(),
+        inputs,
+        SelectionPolicy::default(),
+    )
 }
 
 /// Selects against a declared surface and declaration source under one filter.
@@ -166,15 +191,125 @@ fn select_documents_reports_scanning_through_its_public_interface() {
 fn select_documents_reports_missing_input_as_a_structured_diagnostic() {
     let surface = InMemorySearchSurface::new();
 
-    let (selected, observer) = select_against(&surface, &["missing.docx"], false);
+    let (selection, observer) = select_counting_rejections(&surface, &["missing.docx"]);
 
-    assert!(selected.is_empty());
+    assert!(selection.documents.is_empty());
+    assert_eq!(selection.rejected_inputs, NonZeroUsize::new(1));
     assert_eq!(
         observer.selection_diagnostics(),
         vec![ExtractionRunObservation::MissingInput {
             path: PathBuf::from("missing.docx")
         }]
     );
+}
+
+/// Verifies a named file without a supported extension is rejected, not passed over.
+///
+/// Audit finding M4: `report.doc` or `book.mobi` used to vanish without a word,
+/// leaving only a summary that read as though the file held nothing.
+#[test]
+fn select_documents_rejects_a_named_file_of_an_unsupported_kind() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("report.doc")
+        .with_file("book.mobi")
+        .with_file("readable.docx");
+
+    let (selection, observer) =
+        select_counting_rejections(&surface, &["report.doc", "book.mobi", "readable.docx"]);
+
+    assert_eq!(
+        selected_paths(&selection.documents),
+        vec![Path::new("readable.docx")]
+    );
+    assert_eq!(selection.rejected_inputs, NonZeroUsize::new(2));
+    // Both are root diagnostics, so they precede the discovery phase in input order.
+    assert_eq!(
+        observer.observations[..2],
+        [
+            ExtractionRunObservation::UnsupportedInput {
+                path: PathBuf::from("report.doc")
+            },
+            ExtractionRunObservation::UnsupportedInput {
+                path: PathBuf::from("book.mobi")
+            },
+        ]
+    );
+}
+
+/// Verifies the extension check is the same case-insensitive one discovery applies.
+///
+/// Both fixtures are DOCX: an EPUB would add an unreadable-declarations diagnostic
+/// under the default declaration source, which is not what this test is about.
+#[test]
+fn select_documents_accepts_a_named_document_whatever_the_extension_case() {
+    let surface = InMemorySearchSurface::new()
+        .with_file("REPORT.DOCX")
+        .with_file("Notes.Docx");
+
+    let (selection, observer) =
+        select_counting_rejections(&surface, &["REPORT.DOCX", "Notes.Docx"]);
+
+    assert_eq!(selection.documents.len(), 2);
+    assert_eq!(selection.rejected_inputs, None);
+    assert!(observer.selection_diagnostics().is_empty());
+}
+
+/// Verifies naming an unsupported file rejects it even when a named directory holds it.
+///
+/// The directory search alone would pass over `notes.txt` in silence; naming it is
+/// what makes it an error, and naming it once rejects it once.
+#[test]
+fn select_documents_rejects_a_named_unsupported_file_inside_a_named_directory() {
+    let surface = InMemorySearchSurface::new()
+        .with_directory("root")
+        .with_file("root/notes.txt")
+        .with_file("root/book.docx");
+
+    let (selection, observer) = select_counting_rejections(&surface, &["root", "root/notes.txt"]);
+
+    assert_eq!(
+        selected_paths(&selection.documents),
+        vec![Path::new("root/book.docx")]
+    );
+    assert_eq!(selection.rejected_inputs, NonZeroUsize::new(1));
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::UnsupportedInput {
+            path: PathBuf::from("root/notes.txt")
+        }]
+    );
+}
+
+/// Verifies the diagnostics that are not rejections leave the count empty.
+///
+/// An uninspectable named input and a named DOCX in an EPUB-only run are both
+/// reported, but neither is counted: ADR-0028 counts only an input that is missing
+/// or of an unsupported kind.
+#[test]
+fn select_documents_counts_no_rejection_for_other_selection_diagnostics() {
+    let surface = InMemorySearchSurface::new()
+        .with_link("broken-link", None)
+        .with_file("report.docx");
+
+    let (selection, observer) = select_whole(
+        &surface,
+        &DeclaredEpubDeclarations::new(),
+        &["broken-link", "report.docx"],
+        SelectionPolicy {
+            epub_only: true,
+            ..SelectionPolicy::default()
+        },
+    );
+
+    assert!(selection.documents.is_empty());
+    assert_eq!(selection.rejected_inputs, None);
+    assert!(matches!(
+        observer.selection_diagnostics().as_slice(),
+        [
+            ExtractionRunObservation::DocumentDiscoveryFailed { .. },
+            ExtractionRunObservation::SkippedNonEpubInput { .. },
+        ]
+    ));
 }
 
 #[test]
@@ -193,31 +328,44 @@ fn select_documents_reports_broken_requested_link_and_continues_to_supported_sib
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].get_path(), Path::new("readable.docx"));
     // A link whose target is gone is an inspection failure, never a missing input:
-    // the path is there, and only its target is not.
+    // the path is there, and only its target is not. The named `notes.txt` is
+    // rejected as unsupported, also before the phase opens (ADR-0028).
     assert!(matches!(
         observer.observations.as_slice(),
         [
             ExtractionRunObservation::DocumentDiscoveryFailed { path, detail },
+            ExtractionRunObservation::UnsupportedInput { path: unsupported },
             ExtractionRunObservation::DiscoveringDocuments { discovered: 0, .. },
             ExtractionRunObservation::DiscoveringDocuments { discovered: 1, .. },
             ExtractionRunObservation::DocumentDiscoveryFinished { discovered: 1, .. },
-        ] if path == Path::new("broken-link") && !detail.is_empty()
+        ] if path == Path::new("broken-link")
+            && !detail.is_empty()
+            && unsupported == Path::new("notes.txt")
     ));
 }
 
 #[test]
-fn select_documents_skips_an_inspectable_unsupported_object() {
+fn select_documents_rejects_an_inspectable_object_that_is_neither_file_nor_directory() {
     let surface = InMemorySearchSurface::new()
         .with_other("device")
         .with_file("readable.docx");
 
-    let (selected, observer) = select_against(&surface, &["device", "readable.docx"], false);
+    let (selection, observer) = select_counting_rejections(&surface, &["device", "readable.docx"]);
 
-    // An object that is neither a file nor a directory is skipped in silence;
-    // it is not a failure to inspect and not a missing input.
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].get_path(), Path::new("readable.docx"));
-    assert!(observer.selection_diagnostics().is_empty());
+    // An object that is neither a file nor a directory is not a failure to inspect
+    // and not a missing input, but the user named it and nothing can be done with
+    // it, so it is rejected like an unsupported file (ADR-0028).
+    assert_eq!(
+        selected_paths(&selection.documents),
+        vec![Path::new("readable.docx")]
+    );
+    assert_eq!(selection.rejected_inputs, NonZeroUsize::new(1));
+    assert_eq!(
+        observer.selection_diagnostics(),
+        vec![ExtractionRunObservation::UnsupportedInput {
+            path: PathBuf::from("device")
+        }]
+    );
 }
 
 /// Verifies that a nested inspection failure stays ordered inside active scanning.

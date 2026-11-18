@@ -8,7 +8,10 @@ use std::process::ExitCode;
 
 use word_image_extractor::Capture;
 
-use support::{create_directory_link, remove_directory_link, run_captured, temp_test_dir};
+use support::{
+    create_directory_link, remove_directory_link, run_captured, sorted_file_names, temp_test_dir,
+    write_png_docx,
+};
 
 /// Asserts the run warned about `path` once and otherwise printed only `stdout_lines`.
 ///
@@ -88,8 +91,8 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
 
     // The requested path itself cannot be inspected. That is reported as a warning
     // and leaves no documents, which ADR-0014 counts as success. Audit finding M4
-    // proposes making an unusable named input an error; if it lands, this is the
-    // status that changes.
+    // made a missing or unsupported named input an error; ADR-0028 left an
+    // uninspectable one a warning, so this status did not change with it.
     assert_eq!(
         result.expect("intake should accept a named directory input"),
         ExitCode::SUCCESS
@@ -97,6 +100,55 @@ fn warns_for_broken_requested_link_before_no_documents_summary() {
     assert_single_discovery_warning(&capture, &broken_link, &["No documents found to process."]);
 
     remove_directory_link(&broken_link);
+}
+
+/// Verifies rejected named inputs fail the run without stopping the inputs beside them.
+///
+/// Audit finding M4. Like a failed document, a rejected input is partial failure: the
+/// readable document is still extracted and the summary still printed, and then the
+/// run exits 1 because two error lines were printed (ADR-0028).
+#[test]
+fn rejected_named_inputs_fail_the_run_and_the_rest_still_extract() {
+    let temp_dir = temp_test_dir("selection-diagnostic", "rejected-named-inputs");
+    let output_dir = temp_dir.join("output");
+    let missing_path = temp_dir.join("nope.docx");
+    let unsupported_path = temp_dir.join("report.doc");
+    let document_path = temp_dir.join("sample.docx");
+    fs::create_dir_all(&temp_dir).expect("temporary test directory should be creatable");
+    fs::write(&unsupported_path, b"legacy Word binary")
+        .expect("unsupported file should be writable");
+    write_png_docx(&document_path);
+
+    let (result, capture) = run_captured(&[
+        missing_path.to_string_lossy().as_ref(),
+        unsupported_path.to_string_lossy().as_ref(),
+        document_path.to_string_lossy().as_ref(),
+        "--output",
+        output_dir.to_string_lossy().as_ref(),
+    ]);
+
+    assert_eq!(
+        result.expect("intake should accept named inputs whatever they are"),
+        ExitCode::FAILURE
+    );
+    assert_eq!(
+        capture.stderr().lines().collect::<Vec<_>>(),
+        [
+            format!(
+                "Error: Input path does not exist: {}",
+                missing_path.display()
+            ),
+            format!(
+                "Error: Input is not a .docx or .epub file or a directory: {}",
+                unsupported_path.display()
+            ),
+        ]
+    );
+    assert_eq!(
+        capture.stdout(),
+        "Extracted 1 image(s) from 1 document(s)\n"
+    );
+    assert_eq!(sorted_file_names(&output_dir), ["sample.png"]);
 }
 
 /// Verifies a nested non-recursive inspection failure renders once before normal completion.

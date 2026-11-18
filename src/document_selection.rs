@@ -5,6 +5,7 @@ mod document_identity;
 mod phases;
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use crate::document_search_surface::DocumentSearchSurface;
@@ -120,6 +121,21 @@ impl SelectedEpub {
     }
 }
 
+/// What Document selection hands the Extraction run: the Selected documents and
+/// how many requested inputs it rejected.
+///
+/// The count travels beside the documents rather than only as observations, so
+/// the run can put it in its outcome without reading its own observation stream
+/// back (ADR-0028). Rejected inputs never become documents, so the two parts are
+/// independent: a run can reject an input and still select others.
+#[derive(Debug)]
+pub(crate) struct DocumentSelection {
+    /// The eligible documents, in the order ADR-0019 fixes.
+    pub(crate) documents: Vec<SelectedDocument>,
+    /// How many requested inputs were missing or unsupported, when any were.
+    pub(crate) rejected_inputs: Option<NonZeroUsize>,
+}
+
 /// Options used to select documents for one extraction run.
 pub struct DocumentSelectionOptions<'a> {
     /// Input files or directories to inspect.
@@ -199,21 +215,30 @@ struct EpubCandidate {
     epub_declarations: Option<EpubDeclarations>,
 }
 
-impl DocumentCandidate {
-    /// Classifies a supported path into a candidate of its document kind.
+impl DocumentKind {
+    /// Classifies a path by its extension, case-insensitively.
     ///
     /// Returns `None` for a path whose extension names no supported document kind.
-    fn from_path(path: PathBuf, origin: CandidateOrigin) -> Option<Self> {
-        let kind = match path
+    fn of_path(path: &Path) -> Option<Self> {
+        match path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_lowercase)
             .as_deref()
         {
-            Some("docx") => DocumentKind::Docx,
-            Some("epub") => DocumentKind::Epub,
-            _ => return None,
-        };
+            Some("docx") => Some(Self::Docx),
+            Some("epub") => Some(Self::Epub),
+            _ => None,
+        }
+    }
+}
+
+impl DocumentCandidate {
+    /// Classifies a supported path into a candidate of its document kind.
+    ///
+    /// Returns `None` for a path whose extension names no supported document kind.
+    fn from_path(path: PathBuf, origin: CandidateOrigin) -> Option<Self> {
+        let kind = DocumentKind::of_path(&path)?;
         Some(Self { kind, path, origin })
     }
 }
@@ -223,7 +248,10 @@ impl DocumentCandidate {
 /// Selection owns document discovery, EPUB declaration filtering, EPUB dedupe,
 /// Document identity, and per-document output placement. Returned documents are
 /// already eligible for extraction; adapters should not re-check selection
-/// filters. Missing inputs, requested-root inspection failures, named inputs
+/// filters. A requested input that is missing, or that names neither a supported
+/// document nor a directory, is rejected: it is reported and counted in the
+/// returned [`DocumentSelection`], and selection continues with the other inputs.
+/// Requested-root inspection failures, named inputs
 /// skipped because only EPUBs are eligible
 /// ([`SkippedNonEpubInput`](crate::extraction_run_observation::ExtractionRunObservation::SkippedNonEpubInput)),
 /// EPUBs skipped as duplicates of an earlier EPUB
@@ -250,7 +278,7 @@ pub fn select_documents(
     surface: &dyn DocumentSearchSurface,
     declarations: &dyn EpubDeclarationSource,
     observer: &mut impl ExtractionRunObserver,
-) -> Vec<SelectedDocument> {
+) -> DocumentSelection {
     let mut lifecycle = DocumentSelectionLifecycle::new(observer);
 
     let candidates =
@@ -276,7 +304,7 @@ pub fn select_documents(
     // served, so extraction order decides which of two documents sharing an Output
     // placement gets the unsuffixed names; a DOCX and an undeclared EPUB with the
     // same stem in one directory share one. Changing it would move output names.
-    deduplicated
+    let documents = deduplicated
         .into_iter()
         .map(|epub| selected_epub_from_candidate(epub, options.output))
         .chain(
@@ -284,7 +312,12 @@ pub fn select_documents(
                 .into_iter()
                 .map(|candidate| selected_docx_from_candidate(candidate, options.output)),
         )
-        .collect()
+        .collect();
+
+    DocumentSelection {
+        documents,
+        rejected_inputs: lifecycle.rejected_inputs(),
+    }
 }
 
 /// Drops every candidate whose path equals an earlier candidate's, for every document kind.

@@ -76,10 +76,13 @@ fn produced_outcome(
         }
     }
 
-    let mut accumulator = ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(
-        conversion.is_some(),
-        gif_routing.map(|(_, destination)| destination),
-    ));
+    let mut accumulator = ExtractionRunOutcomeAccumulator::new(
+        ApplicableOutcomeFacts::fabricated(
+            conversion.is_some(),
+            gif_routing.map(|(_, destination)| destination),
+        ),
+        None,
+    );
     for tally in tallies {
         accumulator.fold(&DocumentExtractionFacts::fabricated(tally, Vec::new()));
     }
@@ -104,7 +107,7 @@ fn assert_terminal_observation_clears_then_prints_the_summary(outcome: Extractio
     let (output, capture) = TerminalOutput::captured();
     let mut presentation = ExtractionRunPresentation::new(output);
     let cover_only = match &outcome {
-        ExtractionRunOutcome::NoDocuments => false,
+        ExtractionRunOutcome::NoDocuments { .. } => false,
         ExtractionRunOutcome::NoOutput { output_kind, .. } => {
             *output_kind == ExtractionOutputKind::Covers
         }
@@ -310,7 +313,9 @@ fn epub_cover_fallback_summary_reports_normal_images() {
 #[test]
 fn no_documents_summary_preserves_existing_wording() {
     assert_eq!(
-        final_summary_message(&ExtractionRunOutcome::NoDocuments),
+        final_summary_message(&ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None
+        }),
         "No documents found to process."
     );
 }
@@ -344,7 +349,9 @@ fn recursive_discovery_diagnostic_suspends_active_scan_spinner() {
             scope,
             discovered: 0,
         },
-        ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoDocuments),
+        ExtractionRunObservation::Terminal(ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None,
+        }),
     ] {
         presentation.on_observation(observation);
     }
@@ -513,7 +520,7 @@ fn document_warning_presentation_adds_prefix_and_path_and_suspends_extraction_pr
 /// `failed` failed documents, through the accumulator as production does.
 fn outcome_with_failures(documents_with_output: usize, failed: usize) -> ExtractionRunOutcome {
     let mut accumulator =
-        ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(false, None));
+        ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(false, None), None);
     for _ in 0..documents_with_output {
         let mut tally = EmittedImageTally::default();
         tally.record_normal_image(TallyRole::Preserved);
@@ -546,6 +553,7 @@ fn no_output_summary_appends_failed_documents() {
         final_summary_message(&ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Covers,
             failed_documents: NonZeroUsize::new(1),
+            rejected_inputs: None,
         }),
         "No cover images found, 1 document(s) failed"
     );
@@ -555,10 +563,10 @@ fn no_output_summary_appends_failed_documents() {
 /// GIF routing included, rather than one of them.
 #[test]
 fn conversion_and_gif_summary_appends_failed_documents() {
-    let mut accumulator = ExtractionRunOutcomeAccumulator::new(ApplicableOutcomeFacts::fabricated(
-        true,
-        Some(PathBuf::from("gifs")),
-    ));
+    let mut accumulator = ExtractionRunOutcomeAccumulator::new(
+        ApplicableOutcomeFacts::fabricated(true, Some(PathBuf::from("gifs"))),
+        None,
+    );
     let mut tally = EmittedImageTally::default();
     tally.record_normal_image(TallyRole::Converted);
     tally.record_normal_image(TallyRole::RoutedGif);
@@ -579,7 +587,8 @@ fn image_no_output_summary_preserves_existing_wording() {
     assert_eq!(
         final_summary_message(&ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: None,
         }),
         "No images found"
     );
@@ -590,7 +599,8 @@ fn cover_no_output_summary_preserves_existing_wording() {
     assert_eq!(
         final_summary_message(&ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Covers,
-            failed_documents: None
+            failed_documents: None,
+            rejected_inputs: None,
         }),
         "No cover images found"
     );
@@ -644,10 +654,12 @@ fn terminal_observer_prints_every_nonempty_outcome_after_clearing_the_display() 
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Images,
             failed_documents: None,
+            rejected_inputs: None,
         },
         ExtractionRunOutcome::NoOutput {
             output_kind: ExtractionOutputKind::Covers,
             failed_documents: None,
+            rejected_inputs: None,
         },
         produced_outcome(ExtractionOutputKind::Images, 3, 2, None, None),
         produced_outcome(
@@ -728,7 +740,9 @@ fn no_documents_terminal_outcome_is_printed_rather_than_drawn() {
     let mut presentation = ExtractionRunPresentation::new(output);
 
     presentation.on_observation(ExtractionRunObservation::Terminal(
-        ExtractionRunOutcome::NoDocuments,
+        ExtractionRunOutcome::NoDocuments {
+            rejected_inputs: None,
+        },
     ));
 
     // The whole transcript is one line on standard output: nothing was cleared or
@@ -1065,6 +1079,94 @@ fn run_cli_prints_the_summary_to_standard_output_without_a_terminal() {
         "Extracted 1 image(s) from 1 document(s)\n"
     );
     assert_eq!(capture.stderr(), "");
+}
+
+/// Verifies both rejected-input diagnostics render as error lines on standard error.
+///
+/// They are errors rather than warnings because the run exits 1 for them; the prefix
+/// is what lets a reader of the terminal predict the status (ADR-0028).
+#[test]
+fn rejected_inputs_render_as_error_lines() {
+    let (output, capture) = TerminalOutput::captured();
+    let mut presentation = ExtractionRunPresentation::new(output);
+
+    presentation.on_observation(ExtractionRunObservation::MissingInput {
+        path: PathBuf::from("nope.docx"),
+    });
+    presentation.on_observation(ExtractionRunObservation::UnsupportedInput {
+        path: PathBuf::from("notes.txt"),
+    });
+
+    assert_eq!(
+        capture.stderr().lines().collect::<Vec<_>>(),
+        [
+            "Error: Input path does not exist: nope.docx",
+            "Error: Input is not a .docx or .epub file or a directory: notes.txt",
+        ]
+    );
+    assert_eq!(capture.stdout(), "");
+}
+
+/// Verifies the published entry point exits 1 when a named input is missing or unsupported.
+///
+/// This is audit finding M4's reproduction: both commands used to exit 0, the
+/// second without a word. The summary is unchanged; the error lines above it
+/// already say why nothing was found.
+#[test]
+fn run_cli_exits_with_failure_for_a_missing_or_unsupported_named_input() {
+    let temp_dir = temp_test_dir("presentation", "run-cli-rejected-inputs");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    let missing_path = temp_dir.join("nope.docx");
+    let unsupported_path = temp_dir.join("notes.txt");
+    fs::write(&unsupported_path, b"plain text").expect("text file should be writable");
+
+    for (input, expected_error) in [
+        (
+            &missing_path,
+            format!(
+                "Error: Input path does not exist: {}",
+                missing_path.display()
+            ),
+        ),
+        (
+            &unsupported_path,
+            format!(
+                "Error: Input is not a .docx or .epub file or a directory: {}",
+                unsupported_path.display()
+            ),
+        ),
+    ] {
+        let args = Args::try_parse_from(["test", input.to_string_lossy().as_ref()])
+            .expect("entry point arguments should parse");
+        let (output, capture) = TerminalOutput::captured_without_terminal();
+
+        let exit = run_cli(args, output).expect("a rejected input is not an intake failure");
+
+        assert_eq!(exit, ExitCode::FAILURE, "{expected_error}");
+        assert_eq!(capture.stderr(), format!("{expected_error}\n"));
+        assert_eq!(capture.stdout(), "No documents found to process.\n");
+    }
+}
+
+/// Verifies a named directory that holds no document still exits 0.
+///
+/// The contrast case for the test above: the directory itself is usable, and an
+/// empty search is an answer rather than a failure (ADR-0014). An unsupported
+/// file the search turns up is not reported either.
+#[test]
+fn run_cli_exits_successfully_for_a_directory_without_documents() {
+    let temp_dir = temp_test_dir("presentation", "run-cli-empty-directory");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    fs::write(temp_dir.join("notes.txt"), b"plain text").expect("text file should be writable");
+    let args = Args::try_parse_from(["test", temp_dir.to_string_lossy().as_ref()])
+        .expect("entry point arguments should parse");
+    let (output, capture) = TerminalOutput::captured_without_terminal();
+
+    let exit = run_cli(args, output).expect("a readable directory is not an intake failure");
+
+    assert_eq!(exit, ExitCode::SUCCESS);
+    assert_eq!(capture.stderr(), "");
+    assert_eq!(capture.stdout(), "No documents found to process.\n");
 }
 
 /// Verifies the defaulted-input notice keeps its wording and lands on standard output.

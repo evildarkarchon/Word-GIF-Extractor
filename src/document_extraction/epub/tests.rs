@@ -33,6 +33,7 @@ fn select_epub(input_path: &Path, output_dir: &Path) -> SelectedEpub {
         &EpubFileDeclarations,
         &mut observer,
     )
+    .documents
     .into_iter()
     .next()
     .expect("EPUB fixture should be selected");

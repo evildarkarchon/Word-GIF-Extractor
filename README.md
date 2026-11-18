@@ -107,7 +107,9 @@ goes to a terminal, so a script or a redirect can read it from the last line of
 standard output. Some earlier steps also print a line there, ahead of the summary:
 `--recursive` prints how many documents it found, `--title` or `--author` prints how
 many EPUBs matched, and skipping duplicate EPUBs prints how many were removed.
-Warnings and `Error processing ...` lines go to standard error.
+Warnings and errors go to standard error. A named path that does not exist, or that
+is not a `.docx` or `.epub` file or a directory, is reported as an `Error:` line;
+an unsupported file found inside a directory is passed over silently.
 
 The progress bar is drawn on standard error and only when that is a terminal. It is
 cleared before each line above is printed, so it never stays on screen under the
@@ -115,12 +117,15 @@ result.
 
 ## Exit Status
 
-- `0`: the run completed and no document failed. This includes runs that found no
-  documents or no images, and runs whose only problems were printed as warnings.
-- `1`: at least one document failed to extract (each is printed as an
-  `Error processing ...` line, and the run still processes the rest), or the
+- `0`: the run completed, no document failed and every named input was usable.
+  This includes runs that found no documents or no images, such as a named
+  directory holding none, and runs whose only problems were printed as warnings.
+- `1`: at least one document failed to extract (printed as an
+  `Error processing ...` line), at least one named input does not exist or is not
+  a `.docx` or `.epub` file or a directory (printed as an `Error:` line), or the
   options were valid to parse but could not be combined, such as `--quality` with
-  `--convert png`.
+  `--convert png`. A failed document or rejected input does not stop the run: the
+  other inputs are still processed and the summary is still printed.
 - `2`: the command line could not be parsed.
 
 ## License
