@@ -273,7 +273,12 @@ fn xhtml_page_with_inline_svg_completes_silently() {
         ArchiveImageSource::named("OEBPS/titlepage.xhtml").with_mime("application/xhtml+xml");
     let mut reader = Cursor::new(CALIBRE_TITLE_PAGE.to_vec());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &ImageFormat::all_set(),
+        ImageSizeLimit::DEFAULT,
+    );
 
     assert_eq!(discovered, completed_silently());
 }
@@ -345,7 +350,12 @@ fn magic_evidence_outranks_a_conflicting_extension_and_mime() {
     let source = ArchiveImageSource::named("word/media/image.jpg").with_mime("image/gif");
     let mut reader = Cursor::new(MINIMAL_PNG.to_vec());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &ImageFormat::all_set(),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // The empty warning list is half the point: the fallback warning belongs to
     // extension evidence alone, and a normal source's `.jpg` name never got to speak.
@@ -365,7 +375,12 @@ fn path_extension_outranks_mime_and_emits_the_fallback_warning() {
     let payload = b"not actually a png".to_vec();
     let mut reader = Cursor::new(payload.clone());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &ImageFormat::all_set(),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // The warning carries the source name and the format it fell back to, which
     // is what makes it Archive image discovery's warning rather than any Image
@@ -390,7 +405,12 @@ fn declared_mime_identifies_only_after_magic_and_extension_evidence_fail() {
     let payload = b"unknown bytes".to_vec();
     let mut reader = Cursor::new(payload.clone());
 
-    let discovered = discover_image(&source, &mut reader, &ImageFormat::all_set());
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &ImageFormat::all_set(),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // `.bin` is not an image extension, so the extension rung is skipped rather
     // than failed — and MIME evidence emits no fallback warning of its own.
@@ -405,7 +425,12 @@ fn unidentified_normal_source_completes_silently_after_the_bounded_read() {
     let source = ArchiveImageSource::named("word/media/image.bin");
     let mut reader = Cursor::new(vec![0; 4096]);
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     assert_eq!(discovered, completed_silently());
     assert_eq!(reader.position(), 1027);
@@ -418,7 +443,12 @@ fn filtered_source_consumes_the_whole_evidence_window() {
     payload[..6].copy_from_slice(b"GIF89a");
     let mut reader = Cursor::new(payload);
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // The format is identifiable from byte 0, so the read boundary is not
     // coupled to how early identification succeeds: the window is consumed
@@ -439,7 +469,12 @@ fn accepted_source_retains_its_evidence_prefix_and_appends_the_remainder() {
     }
     let mut reader = Cursor::new(original.clone());
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     assert_eq!(
         discovered,
@@ -459,7 +494,12 @@ fn bom_prefixed_svg_ending_inside_the_window_is_accepted() {
     assert_eq!(svg.len(), 1027);
     let mut reader = Cursor::new(svg.clone());
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Svg]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Svg]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     assert_eq!(
         discovered,
@@ -478,7 +518,12 @@ fn bom_prefixed_svg_beyond_the_window_completes_at_the_read_boundary() {
     svg.extend_from_slice(b"<svg>");
     let mut reader = Cursor::new(svg);
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Svg]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Svg]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     assert_eq!(discovered, completed_silently());
     assert_eq!(reader.position(), 1027);
@@ -491,7 +536,12 @@ fn required_cover_with_unidentified_evidence_continues_as_jpeg() {
     let original = vec![0x5a; 4096];
     let mut reader = Cursor::new(original.clone());
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Jpg]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Jpg]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // The `.png` in the name is diagnostic identity, not evidence: a required
     // cover carries no path evidence, so unknown MIME leaves it unidentified.
@@ -516,7 +566,12 @@ fn required_cover_whose_format_is_filtered_completes_with_a_warning() {
     payload[..3].copy_from_slice(b"\xFF\xD8\xFF");
     let mut reader = Cursor::new(payload);
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Png]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // Where a filtered normal image completes silently, a filtered cover says
     // why it produced nothing — the same outcome, a different warning list.
@@ -539,7 +594,12 @@ fn required_cover_failing_mid_payload_returns_ordered_acquisition_facts() {
     // defaulting decision is already recorded when acquisition gives out.
     let mut reader = FailAfterReader::new(vec![0; 2048], 1100);
 
-    let discovered = discover_image(&source, &mut reader, &HashSet::from([ImageFormat::Jpg]));
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Jpg]),
+        ImageSizeLimit::DEFAULT,
+    );
 
     // Warning order is a property of this outcome, not of the fold that the
     // pipeline later performs over it, so it is asserted as a sequence here.
@@ -558,4 +618,315 @@ fn required_cover_failing_mid_payload_returns_ordered_acquisition_facts() {
             ],
         }
     );
+}
+
+/// Parses a test's Image size limit from its command-line spelling.
+fn limit_of(text: &str) -> ImageSizeLimit {
+    text.parse().expect("test size limit should parse")
+}
+
+/// Returns a PNG-identified payload of exactly `len` bytes with a varying tail.
+fn png_payload(len: usize) -> Vec<u8> {
+    let mut payload = vec![0; len];
+    payload[..MINIMAL_PNG.len()].copy_from_slice(MINIMAL_PNG);
+    for (index, byte) in payload[MINIMAL_PNG.len()..].iter_mut().enumerate() {
+        *byte = (index % 251) as u8;
+    }
+    payload
+}
+
+/// Identifies `reader` as a normal PNG source and returns its pending payload.
+fn pending_png<'reader>(
+    reader: &'reader mut dyn Read,
+    limit: ImageSizeLimit,
+) -> AcceptedPayload<'reader> {
+    let source = ArchiveImageSource::named("word/media/image.png");
+    let discovered = identify_image(&source, reader, &HashSet::from([ImageFormat::Png]), limit);
+    match discovered.outcome {
+        ArchiveImageDiscoveryOutcome::Accepted(pending) => pending.payload,
+        _ => panic!("a PNG source should be accepted"),
+    }
+}
+
+/// A writer that fails every write, standing in for a full disk.
+struct FailingWriter;
+
+impl Write for FailingWriter {
+    /// Rejects every write with an injected failure.
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("injected output failure"))
+    }
+
+    /// Has nothing to flush.
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn payload_of_exactly_the_limit_is_accepted() {
+    let source = ArchiveImageSource::named("word/media/image.png");
+    let payload = png_payload(2048);
+    let mut reader = Cursor::new(payload.clone());
+
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        limit_of("2K"),
+    );
+
+    assert_eq!(
+        discovered,
+        accepted("word/media/image.png", payload, ImageFormat::Png)
+    );
+}
+
+#[test]
+fn payload_past_the_limit_warns_and_reads_one_byte_beyond_it() {
+    let source = ArchiveImageSource::named("word/media/image.png");
+    let mut reader = Cursor::new(png_payload(8192));
+
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        limit_of("2K"),
+    );
+
+    assert_eq!(
+        discovered,
+        DiscoveredImage {
+            outcome: ArchiveImageDiscoveryOutcome::ExceededSizeLimit,
+            warnings: vec![ImageWriteWarning::ImageSizeLimitExceeded {
+                source_name: "word/media/image.png".to_string(),
+                limit: limit_of("2K"),
+            }],
+        }
+    );
+    // One byte past 2,048 is enough to know the limit was exceeded, so the rest of
+    // the payload is never read into memory.
+    assert_eq!(reader.position(), 2049);
+}
+
+/// A limit smaller than the evidence window still lets identification run, and
+/// then rejects the payload before reading any further.
+#[test]
+fn limit_inside_the_evidence_window_is_exceeded_after_identification() {
+    let source = ArchiveImageSource::named("word/media/image.png");
+    let mut reader = Cursor::new(png_payload(4096));
+
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Png]),
+        limit_of("100"),
+    );
+
+    assert_eq!(
+        discovered.outcome,
+        ArchiveImageDiscoveryOutcome::ExceededSizeLimit
+    );
+    assert_eq!(reader.position(), 1027);
+}
+
+/// Pins that a cover past the limit ends like an unreadable one, warning after
+/// whatever identification already said.
+#[test]
+fn required_cover_past_the_limit_warns_after_its_identification_facts() {
+    let source = ArchiveImageSource::required_cover("OPS/cover.bin", "application/octet-stream");
+    let mut reader = Cursor::new(vec![0x5a; 4096]);
+
+    let discovered = discover_image(
+        &source,
+        &mut reader,
+        &HashSet::from([ImageFormat::Jpg]),
+        limit_of("2K"),
+    );
+
+    assert_eq!(
+        discovered,
+        DiscoveredImage {
+            outcome: ArchiveImageDiscoveryOutcome::ExceededSizeLimit,
+            warnings: vec![
+                ImageWriteWarning::CoverDefaultToJpeg {
+                    mime: "application/octet-stream".to_string(),
+                },
+                ImageWriteWarning::ImageSizeLimitExceeded {
+                    source_name: "OPS/cover.bin".to_string(),
+                    limit: limit_of("2K"),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn identification_leaves_an_accepted_payload_unread_past_its_prefix() {
+    let payload = png_payload(200_000);
+    let mut reader = Cursor::new(payload.clone());
+
+    let pending = pending_png(&mut reader, ImageSizeLimit::DEFAULT);
+
+    assert_eq!(pending.prefix, payload[..1027]);
+    drop(pending);
+    assert_eq!(reader.position(), 1027);
+}
+
+/// The chunk loop has to rebuild the payload from the prefix and every chunk in
+/// order, so the payload is more than three chunks long.
+#[test]
+fn streamed_payload_is_copied_whole_across_chunks() {
+    let payload = png_payload(200_000);
+    let mut reader = Cursor::new(payload.clone());
+    let mut output = Vec::new();
+
+    pending_png(&mut reader, ImageSizeLimit::DEFAULT)
+        .copy_into(&mut output)
+        .expect("a readable payload within the limit should copy");
+
+    assert_eq!(output, payload);
+}
+
+#[test]
+fn streamed_payload_of_exactly_the_limit_is_copied() {
+    let payload = png_payload(100_000);
+    let mut reader = Cursor::new(payload.clone());
+    let mut output = Vec::new();
+
+    pending_png(&mut reader, limit_of("100000"))
+        .copy_into(&mut output)
+        .expect("a payload of exactly the limit should copy");
+
+    assert_eq!(output, payload);
+}
+
+#[test]
+fn streamed_payload_past_the_limit_stops_without_writing_the_excess_chunk() {
+    let mut reader = Cursor::new(png_payload(200_000));
+    let mut output = Vec::new();
+
+    let error = pending_png(&mut reader, limit_of("100000"))
+        .copy_into(&mut output)
+        .expect_err("a payload past the limit should stop");
+
+    assert!(matches!(
+        error,
+        PayloadCopyError::Source(PayloadShortfall::ExceedsLimit(limit))
+            if limit == limit_of("100000")
+    ));
+    assert!(
+        output.len() <= 100_000,
+        "nothing past the limit should be written, wrote {}",
+        output.len()
+    );
+}
+
+#[test]
+fn streamed_read_failure_is_a_source_shortfall() {
+    let mut reader = FailAfterReader::new(png_payload(200_000), 70_000);
+    let mut output = Vec::new();
+
+    let error = pending_png(&mut reader, ImageSizeLimit::DEFAULT)
+        .copy_into(&mut output)
+        .expect_err("a reader that fails should stop the copy");
+
+    assert!(matches!(
+        &error,
+        PayloadCopyError::Source(PayloadShortfall::Unreadable(detail))
+            if detail.to_string() == "injected archive resource failure"
+    ));
+}
+
+#[test]
+fn streamed_output_failure_is_an_output_error_not_a_shortfall() {
+    let mut reader = Cursor::new(png_payload(4096));
+
+    let error = pending_png(&mut reader, ImageSizeLimit::DEFAULT)
+        .copy_into(&mut FailingWriter)
+        .expect_err("an output that fails should stop the copy");
+
+    assert!(matches!(
+        &error,
+        PayloadCopyError::Output(detail) if detail.to_string() == "injected output failure"
+    ));
+}
+
+#[test]
+fn shortfalls_become_the_warning_naming_their_source() {
+    assert_eq!(
+        PayloadShortfall::ExceedsLimit(limit_of("2K")).into_warning("word/media/big.png"),
+        ImageWriteWarning::ImageSizeLimitExceeded {
+            source_name: "word/media/big.png".to_string(),
+            limit: limit_of("2K"),
+        }
+    );
+    assert_eq!(
+        PayloadShortfall::Unreadable(io::Error::other("broken")).into_warning("word/media/x.png"),
+        ImageWriteWarning::ArchiveImageAcquisitionFailed {
+            source_name: "word/media/x.png".to_string(),
+            detail: "broken".to_string(),
+        }
+    );
+}
+
+/// A reader that reports every other read as interrupted, as a signal can.
+struct InterruptingReader {
+    cursor: Cursor<Vec<u8>>,
+    interrupt_next: bool,
+}
+
+impl Read for InterruptingReader {
+    /// Alternates an `Interrupted` error with a real read of at most 1,000 bytes.
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.interrupt_next = !self.interrupt_next;
+        if !self.interrupt_next {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        let len = buffer.len().min(1_000);
+        self.cursor.read(&mut buffer[..len])
+    }
+}
+
+/// The buffer grows in capped doublings and probes before each one, so a payload
+/// that ends exactly where a doubling would start is the edge worth pinning, beside
+/// one byte either side of it and a limit equal to the payload.
+#[test]
+fn buffered_payloads_are_whole_at_every_growth_boundary() {
+    for len in [1_027, 1_028, 131_071, 131_072, 131_073, 262_144, 300_000] {
+        let payload = png_payload(len);
+        for limit in [ImageSizeLimit::DEFAULT, limit_of(&len.to_string())] {
+            let mut reader = Cursor::new(payload.clone());
+            let buffered = pending_png(&mut reader, limit)
+                .buffer()
+                .unwrap_or_else(|_| panic!("a {len}-byte payload should buffer"));
+            assert!(buffered == payload, "a {len}-byte payload under {limit}");
+        }
+    }
+}
+
+/// Both ways of consuming a payload retry an interrupted read instead of treating
+/// it as a failed source.
+#[test]
+fn interrupted_reads_are_retried_whether_buffered_or_streamed() {
+    let payload = png_payload(200_000);
+
+    let mut reader = InterruptingReader {
+        cursor: Cursor::new(payload.clone()),
+        interrupt_next: false,
+    };
+    let buffered = pending_png(&mut reader, ImageSizeLimit::DEFAULT)
+        .buffer()
+        .expect("an interrupted read should be retried while buffering");
+    assert!(buffered == payload);
+
+    let mut reader = InterruptingReader {
+        cursor: Cursor::new(payload.clone()),
+        interrupt_next: false,
+    };
+    let mut streamed = Vec::new();
+    pending_png(&mut reader, ImageSizeLimit::DEFAULT)
+        .copy_into(&mut streamed)
+        .expect("an interrupted read should be retried while streaming");
+    assert!(streamed == payload);
 }

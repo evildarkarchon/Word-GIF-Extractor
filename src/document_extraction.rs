@@ -206,6 +206,9 @@ impl DocumentExtractionWarning {
                 "Cover image format '{}' not in allowed formats, skipping.",
                 format.extension()
             ),
+            ImageWriteWarning::ImageSizeLimitExceeded { source_name, limit } => format!(
+                "Skipping {source_name}: larger than the {limit} image size limit (raise it with --max-image-size)"
+            ),
             ImageWriteWarning::ConversionSkipped {
                 source_name,
                 format,

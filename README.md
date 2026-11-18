@@ -59,6 +59,7 @@ word-image-extractor book.epub -f png,jpg
 | `--cover-only`        | Extract EPUB cover images only; non-EPUB inputs are skipped       |
 | `--cover-fallback`    | With `--cover-only`, extract an EPUB's images when no cover is written, including when `--formats` filters it out |
 | `--keep-duplicates`   | Extract every EPUB, even when several declare the same book       |
+| `--max-image-size <SIZE>` | Skip, with a warning, any image larger than `SIZE` (default `256M`). See [Image Size Limit](#image-size-limit) |
 
 ## Supported Documents
 
@@ -96,6 +97,23 @@ Use `--convert jpg`, `--convert png`, or `--convert webp` to encode extracted im
 When an image already matches the conversion target, its original bytes are preserved unless an encoding setting was explicit. JPEG and WebP are re-encoded when `--quality` is supplied, WebP is re-encoded when `--lossless` is supplied, and matching PNG files are always preserved.
 
 An image that cannot be converted, because its format is not supported for conversion (such as SVG) or its data cannot be decoded, is kept in its original format, with a warning naming the image. The same applies to an EPUB cover with `--cover-only`: a cover that cannot be converted is kept in its original format, still counts as the cover, and is counted among the summary's skipped conversions.
+
+## Image Size Limit
+
+Every image is held to a size limit, 256 MiB by default, so one malformed archive
+entry cannot make a run write or hold an arbitrarily large file. An image larger than
+the limit is skipped with a warning naming it, and the document's other images are
+still extracted and numbered as if it were not there; an EPUB cover larger than the
+limit counts as no cover, so the next candidate is tried. `--max-image-size` sets the
+limit as a byte count or with a `K`, `M` or `G` suffix in binary units (`1M` is
+1,048,576 bytes; `KiB`, `MiB` and `GiB` work too). Zero and decimal units such as `MB`
+are rejected.
+
+The limit is checked against the bytes actually read, not the size the archive
+declares. An image written in its original bytes is copied to its file as it is read,
+so it takes almost no memory however large it is, apart from a document's first
+image, which is held until the next one shows whether to number it. An image being
+converted is read whole first, because it has to be decoded.
 
 ## Output Naming
 

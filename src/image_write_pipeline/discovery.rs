@@ -1,15 +1,20 @@
 //! Incremental Archive image discovery inside the Image write pipeline.
 
 use std::collections::HashSet;
-use std::io::Read;
+use std::fmt;
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use crate::image_format::ImageFormat;
+use crate::image_size_limit::ImageSizeLimit;
 
 use super::{AcceptedImage, ImageWriteWarning};
 
 // SVG inspection searches 1,024 bytes after an optional three-byte UTF-8 BOM.
 pub(super) const FORMAT_EVIDENCE_LIMIT: u64 = 1027;
+// One read per chunk while a payload is streamed to its file. Large enough that a
+// big image costs few reads, small enough that streaming holds next to nothing.
+const STREAM_CHUNK_SIZE: usize = 64 * 1024;
 
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1A\n";
 const JPG_MAGIC: &[u8] = b"\xFF\xD8\xFF";
@@ -147,17 +152,21 @@ struct IdentifiedImage {
 }
 
 /// One source's typed discovery outcome and phase-ordered warning facts.
+///
+/// `T` is what an accepted source carries: by default the [`AcceptedImage`] whose
+/// whole payload [`discover_image`] buffered, or the [`PendingImage`] that
+/// [`identify_image`] hands on with its payload still to read.
 #[derive(Debug, PartialEq)]
-pub(super) struct DiscoveredImage {
-    pub(super) outcome: ArchiveImageDiscoveryOutcome,
+pub(super) struct DiscoveredImage<T = AcceptedImage> {
+    pub(super) outcome: ArchiveImageDiscoveryOutcome<T>,
     pub(super) warnings: Vec<ImageWriteWarning>,
 }
 
 /// Purpose-independent completion state from one archive source discovery attempt.
 #[derive(Debug, PartialEq)]
-pub(super) enum ArchiveImageDiscoveryOutcome {
-    /// The complete payload was acquired and accepted by Image write policy.
-    Accepted(AcceptedImage),
+pub(super) enum ArchiveImageDiscoveryOutcome<T = AcceptedImage> {
+    /// Image write policy accepted the source; `T` carries its payload.
+    Accepted(T),
     /// Evidence decided the source is not emitted: an unidentified normal image or
     /// a format outside the requested set. Nothing is written for it, so a required
     /// cover ending here hands over to the next cover candidate (ADR-0023).
@@ -166,9 +175,259 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
     /// apart from `Completed` because Archive image discovery reports the two
     /// differently, though either one writes no cover and so hands over.
     AcquisitionFailed,
+    /// The payload ran past the Image size limit, recorded as a size-limit warning
+    /// fact. Nothing is written for it, so a required cover ending here hands over
+    /// exactly as after a read failure (ADR-0030).
+    ExceededSizeLimit,
 }
 
-/// Acquires and identifies one source under the Image write purpose it carries.
+/// One accepted source whose payload has been read only as far as its evidence prefix.
+///
+/// The visitor decides from `format` whether the payload is buffered for conversion
+/// or streamed to its file, and keeps `source_name` to word a warning if the payload
+/// then runs short.
+pub(super) struct PendingImage<'reader> {
+    pub(super) source_name: String,
+    pub(super) format: ImageFormat,
+    pub(super) payload: AcceptedPayload<'reader>,
+}
+
+/// The payload of one accepted source: the evidence prefix already read, and the
+/// rest still in its reader, held to the Image size limit however it is consumed.
+///
+/// Archive image discovery owns acquisition, so the limit and the distinction
+/// between a source that ran short and an output that failed live here. Image file
+/// emission only says where the bytes go (ADR-0030). The reader is borrowed, so a
+/// payload cannot outlive the archive entry it reads from.
+pub(super) struct AcceptedPayload<'reader> {
+    prefix: Vec<u8>,
+    rest: &'reader mut dyn Read,
+    limit: ImageSizeLimit,
+}
+
+impl AcceptedPayload<'_> {
+    /// Reads the whole payload into memory.
+    ///
+    /// At most one byte past the limit is read, which is all it takes to know the
+    /// limit was exceeded, so the buffer never holds more than `limit + 1` bytes.
+    /// The buffer doubles as it fills, as a `Vec` would, but its growth is capped at
+    /// `limit + 1`. Growing copies the buffer, so the old and new allocations are
+    /// briefly both live: uncapped doubling near the limit would peak at twice the
+    /// limit, and capped it peaks at one and a half times.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadShortfall::Unreadable`] when the reader fails and
+    /// [`PayloadShortfall::ExceedsLimit`] when the payload is larger than the limit.
+    pub(super) fn buffer(self) -> Result<Vec<u8>, PayloadShortfall> {
+        let Self {
+            prefix: mut data,
+            rest,
+            limit,
+        } = self;
+        let ceiling = limit.bytes().saturating_add(1);
+        loop {
+            let held = data.len() as u64;
+            if held >= ceiling {
+                break;
+            }
+            if data.len() == data.capacity() {
+                // Probe one byte before growing, so a payload that ends exactly at
+                // the capacity is never copied into a larger buffer it does not need.
+                let mut probe = [0; 1];
+                if read_retrying(rest, &mut probe).map_err(PayloadShortfall::Unreadable)? == 0 {
+                    break;
+                }
+                let target = (held.max(STREAM_CHUNK_SIZE as u64) * 2).min(ceiling);
+                data.reserve_exact(usize::try_from(target - held).unwrap_or(usize::MAX));
+                data.push(probe[0]);
+                continue;
+            }
+            // Read no more than the capacity already there, so `read_to_end` never
+            // grows the buffer itself; it returns once that capacity is full, or
+            // early at the end of the payload.
+            let room = ((data.capacity() - data.len()) as u64).min(ceiling - held);
+            let read = Read::take(&mut *rest, room)
+                .read_to_end(&mut data)
+                .map_err(PayloadShortfall::Unreadable)?;
+            if (read as u64) < room {
+                break;
+            }
+        }
+        if !limit.admits(data.len() as u64) {
+            return Err(PayloadShortfall::ExceedsLimit(limit));
+        }
+        Ok(data)
+    }
+
+    /// Copies the whole payload into `output` one chunk at a time.
+    ///
+    /// Holds no more than one chunk beyond the prefix. A chunk that would take the
+    /// payload past the limit is not written. Whatever was written before a failure
+    /// stays in `output`, so a caller that claimed a file for it removes the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PayloadCopyError::Source`] when the reader fails or the payload
+    /// runs past the limit, and [`PayloadCopyError::Output`] when `output` fails.
+    pub(super) fn copy_into(self, output: &mut dyn Write) -> Result<(), PayloadCopyError> {
+        let Self {
+            prefix,
+            rest,
+            limit,
+        } = self;
+        let mut copied = prefix.len() as u64;
+        if !limit.admits(copied) {
+            return Err(PayloadCopyError::Source(PayloadShortfall::ExceedsLimit(
+                limit,
+            )));
+        }
+        output
+            .write_all(&prefix)
+            .map_err(PayloadCopyError::Output)?;
+
+        let mut chunk = vec![0; STREAM_CHUNK_SIZE];
+        loop {
+            let read = match rest.read(&mut chunk) {
+                Ok(0) => return Ok(()),
+                Ok(read) => read,
+                // `Interrupted` asks for the read to be retried; `read_to_end` does
+                // the same, so a buffered payload and a streamed one agree.
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return Err(PayloadCopyError::Source(PayloadShortfall::Unreadable(
+                        error,
+                    )));
+                }
+            };
+            copied += read as u64;
+            if !limit.admits(copied) {
+                return Err(PayloadCopyError::Source(PayloadShortfall::ExceedsLimit(
+                    limit,
+                )));
+            }
+            output
+                .write_all(&chunk[..read])
+                .map_err(PayloadCopyError::Output)?;
+        }
+    }
+}
+
+/// Reads once into `buffer`, retrying a read the reader reports as interrupted.
+///
+/// `Interrupted` asks for the read to be retried, as `read_to_end` does, so a byte
+/// probed here is treated exactly like one read in bulk.
+fn read_retrying(reader: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match reader.read(buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+/// Why an accepted payload could not be acquired whole.
+///
+/// Either way nothing is written for the source and it warns: the document keeps
+/// its other images.
+#[derive(Debug)]
+pub(super) enum PayloadShortfall {
+    /// The archive reader failed partway through the payload.
+    Unreadable(io::Error),
+    /// The payload is larger than the Image size limit.
+    ExceedsLimit(ImageSizeLimit),
+}
+
+impl PayloadShortfall {
+    /// Words this shortfall as the warning fact for the source named `source_name`.
+    pub(super) fn into_warning(self, source_name: &str) -> ImageWriteWarning {
+        match self {
+            Self::Unreadable(error) => {
+                ImageWriteWarning::archive_image_acquisition_failed(source_name, error)
+            }
+            Self::ExceedsLimit(limit) => ImageWriteWarning::ImageSizeLimitExceeded {
+                source_name: source_name.to_string(),
+                limit,
+            },
+        }
+    }
+
+    /// Returns the discovery outcome a buffered source ends in after this shortfall.
+    fn outcome<T>(&self) -> ArchiveImageDiscoveryOutcome<T> {
+        match self {
+            Self::Unreadable(_) => ArchiveImageDiscoveryOutcome::AcquisitionFailed,
+            Self::ExceedsLimit(_) => ArchiveImageDiscoveryOutcome::ExceededSizeLimit,
+        }
+    }
+}
+
+impl fmt::Display for PayloadShortfall {
+    /// Describes the shortfall for error context, such as a failed partial-file removal.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable(error) => write!(formatter, "the source could not be read: {error}"),
+            Self::ExceedsLimit(limit) => {
+                write!(
+                    formatter,
+                    "the source is larger than the {limit} image size limit"
+                )
+            }
+        }
+    }
+}
+
+/// Why copying an accepted payload into its output stopped.
+#[derive(Debug)]
+pub(super) enum PayloadCopyError {
+    /// The source ran short; a warning, not a document failure.
+    Source(PayloadShortfall),
+    /// Writing the output failed; this fails the document, as any output failure does.
+    Output(io::Error),
+}
+
+/// Acquires, identifies and buffers one source under the Image write purpose it carries.
+///
+/// Runs [`identify_image`] and then reads an accepted source's whole payload into
+/// memory, held to `limit`. Required covers come through here, as does every
+/// image that has to be converted. A read failure returns `AcquisitionFailed`, and
+/// a payload past the limit returns `ExceededSizeLimit`, each after the warning
+/// facts identification already recorded and with one warning of its own.
+pub(super) fn discover_image(
+    source: &ArchiveImageSource,
+    reader: &mut dyn Read,
+    allowed_formats: &HashSet<ImageFormat>,
+    limit: ImageSizeLimit,
+) -> DiscoveredImage {
+    let DiscoveredImage {
+        outcome,
+        mut warnings,
+    } = identify_image(source, reader, allowed_formats, limit);
+    let outcome = match outcome {
+        ArchiveImageDiscoveryOutcome::Accepted(pending) => match pending.payload.buffer() {
+            Ok(data) => ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage {
+                source_name: pending.source_name,
+                data,
+                format: pending.format,
+            }),
+            Err(shortfall) => {
+                let outcome = shortfall.outcome();
+                warnings.push(shortfall.into_warning(&pending.source_name));
+                outcome
+            }
+        },
+        ArchiveImageDiscoveryOutcome::Completed => ArchiveImageDiscoveryOutcome::Completed,
+        ArchiveImageDiscoveryOutcome::AcquisitionFailed => {
+            ArchiveImageDiscoveryOutcome::AcquisitionFailed
+        }
+        ArchiveImageDiscoveryOutcome::ExceededSizeLimit => {
+            ArchiveImageDiscoveryOutcome::ExceededSizeLimit
+        }
+    };
+    DiscoveredImage { outcome, warnings }
+}
+
+/// Acquires and identifies one source under the Image write purpose it carries,
+/// leaving an accepted source's payload unread past its evidence prefix.
 ///
 /// Identification checks magic bytes, a normal source's path extension, then
 /// declared MIME. The two decisions that differ by purpose are made here by
@@ -176,14 +435,15 @@ pub(super) enum ArchiveImageDiscoveryOutcome {
 /// silently but continues a required cover as JPEG with a warning, and a
 /// filtered format completes either one, warning only for a required cover.
 /// Every source is read; unidentified or filtered sources consume at most 1,027
-/// evidence bytes, and accepted sources retain that prefix and append the
-/// remaining payload. Any read failure returns `AcquisitionFailed` with the
-/// existing warning facts.
-pub(super) fn discover_image(
+/// evidence bytes, and an accepted source's [`AcceptedPayload`] keeps that prefix
+/// and the reader, held to `limit`, for the caller to buffer or stream. A failure
+/// reading the prefix returns `AcquisitionFailed` with the existing warning facts.
+pub(super) fn identify_image<'reader>(
     source: &ArchiveImageSource,
-    reader: &mut dyn Read,
+    reader: &'reader mut dyn Read,
     allowed_formats: &HashSet<ImageFormat>,
-) -> DiscoveredImage {
+    limit: ImageSizeLimit,
+) -> DiscoveredImage<PendingImage<'reader>> {
     let mut warnings = Vec::new();
     let mut data = Vec::new();
     if let Err(error) = reader.take(FORMAT_EVIDENCE_LIMIT).read_to_end(&mut data) {
@@ -243,22 +503,15 @@ pub(super) fn discover_image(
         };
     }
 
-    if let Err(error) = reader.read_to_end(&mut data) {
-        warnings.push(ImageWriteWarning::archive_image_acquisition_failed(
-            source.diagnostic_name(),
-            error,
-        ));
-        return DiscoveredImage {
-            outcome: ArchiveImageDiscoveryOutcome::AcquisitionFailed,
-            warnings,
-        };
-    }
-
     DiscoveredImage {
-        outcome: ArchiveImageDiscoveryOutcome::Accepted(AcceptedImage {
+        outcome: ArchiveImageDiscoveryOutcome::Accepted(PendingImage {
             source_name: source.diagnostic_name().to_string(),
-            data,
             format,
+            payload: AcceptedPayload {
+                prefix: data,
+                rest: reader,
+                limit,
+            },
         }),
         warnings,
     }

@@ -305,6 +305,64 @@ fn gif_output_reaches_the_image_write_policy() {
 }
 
 #[test]
+fn max_image_size_reaches_the_image_write_policy() {
+    let prepared = prepare_named(["test", "book.epub", "--max-image-size", "64M"]);
+
+    assert_eq!(
+        prepared.request,
+        expected_for_book(
+            EpubFilter::default(),
+            None,
+            ImageWritePolicy::new(ImageFormat::all_set(), None, None)
+                .with_image_size_limit("67108864".parse().expect("test limit should parse")),
+        )
+    );
+}
+
+/// Verifies an unset flag leaves the policy at the 256 MiB default, and that
+/// `--help` prints that default from the same value.
+#[test]
+fn max_image_size_defaults_to_256_mebibytes() {
+    use clap::CommandFactory;
+
+    let prepared = prepare_named(["test", "book.epub"]);
+    let explicit = prepare_named(["test", "book.epub", "--max-image-size", "256M"]);
+
+    assert_eq!(prepared.request, explicit.request);
+    let help = Args::command().render_long_help().to_string();
+    assert!(
+        help.contains("[default: 256M]"),
+        "--help should print the default limit:\n{help}"
+    );
+}
+
+/// Verifies a limit that cannot be one is a usage error before anything runs.
+///
+/// Zero would skip every image, `MB` would be read as binary when it says decimal,
+/// and an overflow names no size at all; each is refused at parse time, as an
+/// unrecognized format name is (ADR-0027).
+#[test]
+fn rejects_an_unusable_max_image_size_at_parse_time() {
+    for value in ["0", "256MB", "1.5G", "big", "99999999999G"] {
+        let error = Args::try_parse_from(["test", "book.epub", "--max-image-size", value])
+            .expect_err("an unusable size limit should not parse");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ValueValidation,
+            "--max-image-size {value} should be a validation error"
+        );
+        assert_eq!(error.exit_code(), 2);
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains(&format!(
+                "invalid value '{value}' for '--max-image-size <SIZE>'"
+            )),
+            "the error should name the value and the flag:\n{rendered}"
+        );
+    }
+}
+
+#[test]
 fn returns_typed_conversion_policy_error() {
     let args = Args::try_parse_from(["test", "book.epub", "--convert", "png", "--quality", "90"])
         .expect("CLI syntax should parse before semantic validation");

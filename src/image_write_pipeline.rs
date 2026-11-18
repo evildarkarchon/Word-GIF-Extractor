@@ -12,11 +12,14 @@ use std::path::{Path, PathBuf};
 use crate::conversion::{ConversionOutcome, ConversionPolicy};
 use crate::emitted_image_tally::{EmittedImageTally, TallyRole};
 use crate::image_format::ImageFormat;
+use crate::image_size_limit::ImageSizeLimit;
 use crate::output_placement::OutputPlacement;
 
 pub(crate) use self::discovery::ArchiveImageSource;
-use self::discovery::{ArchiveImageDiscoveryOutcome, discover_image};
-use self::emission::ImageFileEmission;
+use self::discovery::{
+    AcceptedPayload, ArchiveImageDiscoveryOutcome, PendingImage, discover_image, identify_image,
+};
+use self::emission::{ImageFileEmission, StreamStaging};
 
 /// Valid per-run choices interpreted by the Image write pipeline.
 ///
@@ -29,10 +32,16 @@ pub(crate) struct ImageWritePolicy {
     allowed_formats: HashSet<ImageFormat>,
     conversion: Option<ConversionPolicy>,
     gif_output: Option<PathBuf>,
+    image_size_limit: ImageSizeLimit,
 }
 
 impl ImageWritePolicy {
     /// Creates the immutable Image write policy for one Extraction run.
+    ///
+    /// The policy starts with [`ImageSizeLimit::DEFAULT`];
+    /// [`Self::with_image_size_limit`] replaces it. The limit is a builder step
+    /// rather than a fourth argument because nearly every caller wants the default,
+    /// and intake, the one that does not, names the limit where it sets it.
     pub(crate) fn new(
         allowed_formats: HashSet<ImageFormat>,
         conversion: Option<ConversionPolicy>,
@@ -42,7 +51,15 @@ impl ImageWritePolicy {
             allowed_formats,
             conversion,
             gif_output,
+            image_size_limit: ImageSizeLimit::DEFAULT,
         }
+    }
+
+    /// Replaces the Image size limit every archive image source is held to.
+    #[must_use]
+    pub(crate) fn with_image_size_limit(mut self, limit: ImageSizeLimit) -> Self {
+        self.image_size_limit = limit;
+        self
     }
 
     /// Returns whether the policy carries a Conversion policy.
@@ -72,6 +89,13 @@ pub(crate) enum ImageWriteWarning {
     },
     UnsupportedCoverFormat {
         format: ImageFormat,
+    },
+    /// A source's payload ran past the Image size limit, so nothing was written
+    /// for it, whatever its Image write purpose (ADR-0030). `source_name` is the
+    /// source's diagnostic name.
+    ImageSizeLimitExceeded {
+        source_name: String,
+        limit: ImageSizeLimit,
     },
     /// An image's conversion was unsupported, whatever its Image write purpose.
     /// `source_name` is the source's diagnostic name, so two skipped images in one
@@ -202,10 +226,37 @@ enum EmittedImageRole<'policy> {
     Preserved,
 }
 
+/// One image ready to emit, its bytes in memory.
 struct PreparedImage<'policy> {
     data: Vec<u8>,
     format: ImageFormat,
     role: EmittedImageRole<'policy>,
+}
+
+/// One image ready to emit in its original bytes, which are still in its reader.
+///
+/// Only an image whose bytes preparation keeps unchanged becomes one, so nothing
+/// needs the payload whole and Image file emission can copy it straight to its
+/// file (ADR-0030). It borrows the reader, so it cannot be held across sources.
+struct StreamedImage<'policy, 'reader> {
+    payload: AcceptedPayload<'reader>,
+    format: ImageFormat,
+    role: EmittedImageRole<'policy>,
+}
+
+/// How preparation treats one accepted image, decided from its Image format alone.
+///
+/// Deciding before the payload is read is what lets the normal-image visitor stream
+/// every image whose bytes are kept, and buffer only those it must convert.
+enum PreparationPlan<'policy> {
+    /// The original bytes are emitted unchanged in `role`, beside the warning that
+    /// explains a conversion fallback, when there is one.
+    Original {
+        role: EmittedImageRole<'policy>,
+        conversion_warning: Option<ImageWriteWarning>,
+    },
+    /// The bytes have to be decoded and re-encoded, so the whole payload is needed.
+    Convert(&'policy ConversionPolicy),
 }
 
 /// Purpose-free result of applying Image write policy to one accepted image.
@@ -341,15 +392,23 @@ impl ImageWritePipeline {
         reader: &mut dyn Read,
     ) -> ImageWriteOutcome {
         let source = ArchiveImageSource::required_cover(manifest_path, mime);
-        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
+        // A cover is always buffered: the attempt stages one image and finishes, so
+        // emission would hold it back in memory anyway (ADR-0030).
+        let discovered = discover_image(
+            &source,
+            reader,
+            &self.policy.allowed_formats,
+            self.policy.image_size_limit,
+        );
         let mut result = ImageWriteResult::default();
         result.warnings.extend(discovered.warnings);
         let image = match discovered.outcome {
             ArchiveImageDiscoveryOutcome::Accepted(image) => image,
-            // Neither writes a cover, and the tally says so: the warnings discovery
-            // recorded are the attempt's only facts.
+            // None of these writes a cover, and the tally says so: the warnings
+            // discovery recorded are the attempt's only facts.
             ArchiveImageDiscoveryOutcome::Completed
-            | ArchiveImageDiscoveryOutcome::AcquisitionFailed => return Ok(result),
+            | ArchiveImageDiscoveryOutcome::AcquisitionFailed
+            | ArchiveImageDiscoveryOutcome::ExceededSizeLimit => return Ok(result),
         };
 
         let prepared = prepare_image_for_write(image, &self.policy);
@@ -523,36 +582,95 @@ impl<'policy, 'placement> ArchiveImageVisitor<'policy, 'placement> {
         }
     }
 
-    /// Discovers and prepares one source before releasing its borrowed reader.
+    /// Discovers, prepares and stages one source before releasing its borrowed reader.
     ///
-    /// Source read failures become warning facts and return `Ok(())`. Output
+    /// An image whose original bytes are kept is streamed from the reader to its
+    /// file; one that has to be converted is buffered first (ADR-0030). Either way
+    /// the payload is held to the Image size limit. Source read failures and
+    /// payloads past the limit become warning facts and return `Ok(())`. Output
     /// emission failures remain fatal and are returned to the traversal.
     pub(crate) fn visit(
         &mut self,
         source: ArchiveImageSource,
         reader: &mut dyn Read,
     ) -> Result<()> {
-        let discovered = discover_image(&source, reader, &self.policy.allowed_formats);
+        let discovered = identify_image(
+            &source,
+            reader,
+            &self.policy.allowed_formats,
+            self.policy.image_size_limit,
+        );
         self.facts.discovery_warnings.extend(discovered.warnings);
 
-        let ArchiveImageDiscoveryOutcome::Accepted(image) = discovered.outcome else {
+        let ArchiveImageDiscoveryOutcome::Accepted(pending) = discovered.outcome else {
             return Ok(());
         };
-        let prepared = prepare_image_for_write(image, self.policy);
-        // A conversion fallback's warning goes to the conversion phase, so every
-        // discovery warning in the traversal still precedes it. It names the
-        // source image, not the Output placement, so two fallbacks in one document
-        // stay distinguishable.
-        self.facts
-            .conversion_warnings
-            .extend(prepared.conversion_warning);
+        let PendingImage {
+            source_name,
+            format,
+            payload,
+        } = pending;
 
         // This visitor is bound to the normal-images purpose, so it records
         // normal images; the role-mapping function supplies only the role. The
         // binding holds because only this pipeline can build a required-cover
         // source, and it never hands one to a visitor.
-        self.emission
-            .stage(prepared.image, normal_image_recorder(&mut self.facts.tally))
+        match plan_preparation(&source_name, format, self.policy) {
+            PreparationPlan::Original {
+                role,
+                conversion_warning,
+            } => {
+                let staged = self.emission.stage_streamed(
+                    StreamedImage {
+                        payload,
+                        format,
+                        role,
+                    },
+                    normal_image_recorder(&mut self.facts.tally),
+                )?;
+                match staged {
+                    // The fallback warning waits until the source is read through,
+                    // so a source that runs short warns once, for running short,
+                    // as it did when every source was buffered before preparing.
+                    StreamStaging::Staged => {
+                        self.facts.conversion_warnings.extend(conversion_warning);
+                    }
+                    StreamStaging::SourceFellShort(shortfall) => self
+                        .facts
+                        .discovery_warnings
+                        .push(shortfall.into_warning(&source_name)),
+                }
+                Ok(())
+            }
+            PreparationPlan::Convert(conversion) => {
+                let data = match payload.buffer() {
+                    Ok(data) => data,
+                    Err(shortfall) => {
+                        self.facts
+                            .discovery_warnings
+                            .push(shortfall.into_warning(&source_name));
+                        return Ok(());
+                    }
+                };
+                let prepared = convert_accepted(
+                    AcceptedImage {
+                        source_name,
+                        data,
+                        format,
+                    },
+                    conversion,
+                );
+                // A conversion fallback's warning goes to the conversion phase, so
+                // every discovery warning in the traversal still precedes it. It
+                // names the source image, not the Output placement, so two
+                // fallbacks in one document stay distinguishable.
+                self.facts
+                    .conversion_warnings
+                    .extend(prepared.conversion_warning);
+                self.emission
+                    .stage(prepared.image, normal_image_recorder(&mut self.facts.tally))
+            }
+        }
     }
 
     /// Records a source that the document adapter could not open.
@@ -638,66 +756,110 @@ fn prepare_image_for_write(
     image: AcceptedImage,
     policy: &ImageWritePolicy,
 ) -> ImagePreparation<'_> {
-    // Routing is decided together with the destination it needs, so emission
-    // never has to ask the policy a second question it could answer differently.
-    let routed_destination = if image.format == ImageFormat::Gif {
-        policy.gif_destination()
-    } else {
-        None
-    };
-
-    if let Some(conversion) = &policy.conversion {
-        if let Some(destination) = routed_destination {
-            return ImagePreparation::ready(PreparedImage {
+    match plan_preparation(&image.source_name, image.format, policy) {
+        PreparationPlan::Original {
+            role,
+            conversion_warning,
+        } => ImagePreparation {
+            image: PreparedImage {
                 data: image.data,
                 format: image.format,
-                role: EmittedImageRole::RoutedGif(destination),
-            });
-        }
+                role,
+            },
+            conversion_warning,
+        },
+        PreparationPlan::Convert(conversion) => convert_accepted(image, conversion),
+    }
+}
 
-        match conversion.convert(&image.data, image.format) {
-            Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
-                ImagePreparation::ready(PreparedImage {
-                    data: converted_bytes,
-                    format,
-                    role: EmittedImageRole::Converted,
-                })
-            }
-            Ok(ConversionOutcome::PreservedMatchingSource) => {
-                ImagePreparation::ready(PreparedImage {
-                    data: image.data,
-                    format: image.format,
-                    role: EmittedImageRole::Preserved,
-                })
-            }
-            Ok(ConversionOutcome::UnsupportedSource(original_format)) => {
-                ImagePreparation::fell_back(
-                    image.data,
-                    original_format,
-                    ImageWriteWarning::ConversionSkipped {
-                        source_name: image.source_name,
-                        format: original_format,
-                    },
-                )
-            }
-            Err(error) => ImagePreparation::fell_back(
-                image.data,
-                image.format,
-                ImageWriteWarning::ConversionFailed {
-                    source_name: image.source_name,
-                    detail: error.to_string(),
-                },
-            ),
+/// Decides from an accepted image's Image format alone how preparation treats it.
+///
+/// GIF routing comes first and keeps the original bytes whether or not conversion
+/// is configured. Without a Conversion policy every other image is preserved. With
+/// one, a source the policy keeps without decoding is preserved, or emitted
+/// conversion-skipped beside a warning naming `source_name` when its format cannot
+/// be converted, and anything else has to be converted. This is the whole of the
+/// format-only half of preparation, shared by the buffered and streamed paths, so
+/// the two cannot decide an image differently.
+fn plan_preparation<'policy>(
+    source_name: &str,
+    format: ImageFormat,
+    policy: &'policy ImageWritePolicy,
+) -> PreparationPlan<'policy> {
+    // Routing is decided together with the destination it needs, so emission
+    // never has to ask the policy a second question it could answer differently.
+    if format == ImageFormat::Gif
+        && let Some(destination) = policy.gif_destination()
+    {
+        return PreparationPlan::Original {
+            role: EmittedImageRole::RoutedGif(destination),
+            conversion_warning: None,
+        };
+    }
+
+    let Some(conversion) = &policy.conversion else {
+        return PreparationPlan::Original {
+            role: EmittedImageRole::Preserved,
+            conversion_warning: None,
+        };
+    };
+
+    match conversion.outcome_without_decoding(format) {
+        Some(ConversionOutcome::PreservedMatchingSource) => PreparationPlan::Original {
+            role: EmittedImageRole::Preserved,
+            conversion_warning: None,
+        },
+        Some(ConversionOutcome::UnsupportedSource(original_format)) => PreparationPlan::Original {
+            role: EmittedImageRole::ConversionSkipped,
+            conversion_warning: Some(ImageWriteWarning::ConversionSkipped {
+                source_name: source_name.to_string(),
+                format: original_format,
+            }),
+        },
+        // `outcome_without_decoding` never converts; this arm only keeps the match
+        // exhaustive, and treating it as "needs decoding" is the safe reading.
+        Some(ConversionOutcome::Converted(..)) | None => PreparationPlan::Convert(conversion),
+    }
+}
+
+/// Converts one buffered image, falling back to its original bytes when conversion
+/// cannot produce the requested ones (ADR-0023).
+///
+/// The fallback is emitted under the original Image format in the conversion-skipped
+/// role, beside one warning naming the source image.
+fn convert_accepted<'policy>(
+    image: AcceptedImage,
+    conversion: &ConversionPolicy,
+) -> ImagePreparation<'policy> {
+    match conversion.convert(&image.data, image.format) {
+        Ok(ConversionOutcome::Converted(converted_bytes, format)) => {
+            ImagePreparation::ready(PreparedImage {
+                data: converted_bytes,
+                format,
+                role: EmittedImageRole::Converted,
+            })
         }
-    } else {
-        ImagePreparation::ready(PreparedImage {
+        Ok(ConversionOutcome::PreservedMatchingSource) => ImagePreparation::ready(PreparedImage {
             data: image.data,
             format: image.format,
-            role: match routed_destination {
-                Some(destination) => EmittedImageRole::RoutedGif(destination),
-                None => EmittedImageRole::Preserved,
+            role: EmittedImageRole::Preserved,
+        }),
+        Ok(ConversionOutcome::UnsupportedSource(original_format)) => ImagePreparation::fell_back(
+            image.data,
+            original_format,
+            ImageWriteWarning::ConversionSkipped {
+                source_name: image.source_name,
+                format: original_format,
             },
-        })
+        ),
+        Err(error) => ImagePreparation::fell_back(
+            image.data,
+            image.format,
+            ImageWriteWarning::ConversionFailed {
+                source_name: image.source_name,
+                detail: error.to_string(),
+            },
+        ),
     }
 }
 
