@@ -13,8 +13,8 @@ use crate::image_write_pipeline::{ImageWritePipeline, ImageWriteResult, ImageWri
 /// The per-run choice to extract a required EPUB cover, and its fallback.
 ///
 /// There is no variant for "extract normal images": that is the absence of a
-/// cover policy, so a run seeking no covers carries no value here at all. See
-/// ADR-0010 — the alternative three-way enum is what let cover intent reach a
+/// cover policy, so a run seeking no covers carries no value here at all. A
+/// three-way enum with a normal-images variant would let cover intent reach a
 /// document kind that has no covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EpubCoverPolicy {

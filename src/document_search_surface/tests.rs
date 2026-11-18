@@ -3,8 +3,8 @@
 //! Their subject is that [`FilesystemSearchSurface`] reports what `std::fs` and
 //! `walkdir` report, not that Document selection selects correctly — selection's
 //! own behaviour is asserted against a declared surface with no disk behind it.
-//! ADR-0008 keeps exactly the cases only an operating system can settle here:
-//! the two link kinds, the two link positions, and the absent path. ADR-0031
+//! Only the cases an operating system alone can settle are kept here: the two
+//! link kinds, the two link positions, and the absent path. ADR-0031
 //! adds one more: the file-name order the surface puts on both of its listings,
 //! which only means something against a filesystem that lists in another order.
 //!

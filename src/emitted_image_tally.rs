@@ -10,7 +10,8 @@ use std::ops::AddAssign;
 ///
 /// This mirrors the Image write pipeline's Emitted image role without the routed
 /// GIF destination: the pipeline keeps that destination bound to its routing
-/// decision (ADR-0007), and the tally needs only to know that the image was routed.
+/// decision, so a routed image cannot exist without one, and the tally needs only
+/// to know that the image was routed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TallyRole {
     /// A GIF the Image write policy sent to its own destination, unconverted.

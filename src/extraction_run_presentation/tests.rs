@@ -1151,7 +1151,7 @@ fn run_cli_exits_with_failure_for_a_missing_or_unsupported_named_input() {
 /// Verifies a named directory that holds no document still exits 0.
 ///
 /// The contrast case for the test above: the directory itself is usable, and an
-/// empty search is an answer rather than a failure (ADR-0014). An unsupported
+/// empty search is an answer rather than a failure. An unsupported
 /// file the search turns up is not reported either.
 #[test]
 fn run_cli_exits_successfully_for_a_directory_without_documents() {

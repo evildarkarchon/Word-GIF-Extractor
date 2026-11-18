@@ -7,9 +7,10 @@
 //! the sequence produces. Fallback runs the sibling normal-image traversal, so cover
 //! extraction never calls its parent.
 //!
-//! ADR-0021 records why this is no longer generic over the Archive resource identity
-//! behind an injected attempt seam, as ADR-0005 had it. ADR-0023 records why a
-//! usable cover means a written cover.
+//! It is concrete rather than generic over the Archive resource identity behind an
+//! injected attempt seam, because every decision it makes can be tested through the
+//! real collaborators; ADR-0021 records why. ADR-0023 records why a usable cover
+//! means a written cover.
 
 use std::collections::HashSet;
 use std::path::Path;

@@ -6,7 +6,7 @@
 //! (ADR-0032):
 //!
 //! - **Length.** NTFS, ext4, APFS and exFAT cap one path component at 255 units, so
-//!   a long EPUB title used to fail its whole document with a create error. The cap
+//!   a long EPUB title would otherwise fail its whole document with a create error. The cap
 //!   is on one name, not the whole path. Rust's standard library already gives a
 //!   Windows path past `MAX_PATH` the `\\?\` form, and neither `LongPathsEnabled`
 //!   nor a `longPathAware` manifest raises the per-name cap. Long-path support would

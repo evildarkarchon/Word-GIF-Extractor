@@ -1,11 +1,10 @@
 //! Document identity: the one place Document selection decides who a document is.
 //!
 //! Duplicate recognition, output base name, display name and EPUB filter matching all
-//! read the same creator and title declarations. They used to read them separately,
-//! with three different answers to "was anything declared?": dedupe keyed on presence
-//! alone, while display and naming required a non-blank value. The `epub` crate
-//! reports an empty `<dc:title/>` as a present, empty value, so those answers
-//! disagreed on real books. This module normalizes the declarations once, at
+//! read the same creator and title declarations, and all of them need one answer to
+//! "was anything declared?". The `epub` crate reports an empty `<dc:title/>` as a
+//! present, empty value, so a reader keyed on presence alone and one requiring a
+//! non-blank value would disagree on real books. This module normalizes the declarations once, at
 //! construction, and every question is then asked of the normalized value.
 //!
 //! The identity is built on demand from whatever declarations a candidate holds at the

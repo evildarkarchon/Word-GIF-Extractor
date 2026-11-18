@@ -160,9 +160,8 @@ pub(crate) struct DocumentSelectionOptions<'a> {
     ///
     /// Selection is told that eligibility is restricted, not why: the reason is
     /// Document extraction's business, and a plain flag keeps selection's imports
-    /// answering what it depends on — the same rule ADR-0005 applies one level down.
-    /// A non-empty [`Self::epub_filter`] restricts eligibility as well, whatever this
-    /// says. That reason is selection's own, so it is not passed in (ADR-0033).
+    /// answering what it depends on. A non-empty [`Self::epub_filter`] restricts
+    /// eligibility as well, whatever this says. That reason is selection's own, so it is not passed in (ADR-0033).
     pub epub_only: bool,
     /// Whether EPUBs that declare the same book are all kept rather than deduplicated.
     pub keep_duplicate_epubs: bool,
@@ -210,7 +209,7 @@ struct DocumentCandidate {
 /// Private pre-eligibility Office document, as the EPUB-only restriction and the join see it.
 ///
 /// It keeps its [`CandidateOrigin`] because the EPUB-only restriction diagnoses
-/// only an Office document the user named (ADR-0011).
+/// only an Office document the user named (ADR-0033).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OfficeCandidate {
     path: PathBuf,
@@ -278,12 +277,12 @@ impl DocumentCandidate {
 /// documents are returned.
 ///
 /// Every observation of the world is made through `surface` and every EPUB
-/// declaration through `declarations`. ADR-0008 keeps both as separate
+/// declaration through `declarations`. Both stay separate
 /// parameters rather than fields on [`DocumentSelectionOptions`]: those are the
 /// per-run policy choices, and neither a way of seeing the world nor a way of
 /// reading declarations is one of them.
 ///
-/// Substituting `declarations` cannot change ADR-0002's retention rule. This
+/// Substituting `declarations` cannot change the declaration retention rule. This
 /// function decides when a declaration is acquired and when a retained one is
 /// reused; the source only answers.
 pub(crate) fn select_documents(
@@ -300,7 +299,7 @@ pub(crate) fn select_documents(
     let (epubs, office_documents) = split_by_kind(candidates);
 
     // The EPUB-only restriction runs before filtering opens, so its diagnostics
-    // precede every EPUB phase observation, as ADR-0011 places it. A title or author
+    // precede every EPUB phase observation. A title or author
     // filter asks for particular books, which no Office document can be, so an
     // active filter restricts eligibility the same way a cover run does (ADR-0033).
     let epub_only = options.epub_only || !options.epub_filter.is_empty();
@@ -343,18 +342,18 @@ pub(crate) fn select_documents(
 /// twice. ADR-0019 makes a path one candidate. "Equal" is Rust's `Path` equality,
 /// component by component as discovery spelled the paths, with no canonicalisation:
 /// Document identity's path key would collapse `a/report.docx` and `b/report.docx`,
-/// and canonicalising would need a new Document search surface operation (ADR-0008).
+/// and canonicalising would need a new Document search surface operation (ADR-0019).
 /// So `./dir/x.docx` and `dir/x.docx` deliberately stay two candidates.
 ///
 /// The earlier sighting keeps its position, and it becomes requested if a dropped
-/// sighting was requested. That origin merge is what keeps ADR-0011's diagnostic
+/// sighting was requested. That origin merge is what keeps the diagnostic
 /// for a named DOCX in an EPUB-only run when the directory above it was listed first
 /// and so sighted it first through a directory search.
 ///
 /// The collapse is silent: it reports no observation and no Document selection
 /// diagnostic, and it is not a progress phase. Discovery's count has already been
-/// reported and still counts every sighting, which keeps it a fact about the search
-/// (ADR-0011). Spelling the same request twice says something about the command
+/// reported and still counts every sighting, which keeps it a fact about the search.
+/// Spelling the same request twice says something about the command
 /// line, not about the user's documents, so it earns no warning.
 ///
 /// It runs before every eligibility stage so that none of them has to recognise a

@@ -176,7 +176,7 @@ fn extension_fallback(source_name: &str) -> ImageWriteWarning {
 /// Fabricates Document extraction facts from a tally and Image write warnings.
 ///
 /// Each warning goes through Document extraction's warning entry point, so its
-/// wording is translated exactly as a real one's is (ADR-0016). The tally needs
+/// wording is translated exactly as a real one's is. The tally needs
 /// no translation: Document extraction hands it over as it is (ADR-0017).
 fn facts(tally: EmittedImageTally, warnings: Vec<ImageWriteWarning>) -> DocumentExtractionFacts {
     DocumentExtractionFacts::fabricated(
@@ -686,12 +686,10 @@ fn cover_only_run_skips_requested_docx_and_diagnoses_it() {
     assert_eq!(output.output_kind(), ExtractionOutputKind::Covers);
     assert_eq!(output.emitted_images(), 1);
     assert_eq!(output.documents_with_output(), 1);
-    // Deliberate departure from ADR-0016's "assertions unchanged": this test
-    // used to assert that `Test Creator - Covered.jpg` existed and `sample.png`
-    // did not. With extraction scripted, no file is written, so the run-level
-    // half of that claim is asserted instead — the EPUB is the only document
-    // handed to extraction, under its Document identity. The written cover name
-    // stays checked on disk by
+    // Extraction is scripted, so no file is written and the cover's file name
+    // cannot be checked here. The run-level fact is asserted instead: the EPUB
+    // is the only document handed to extraction, under its Document identity.
+    // The written cover name is checked on disk by
     // `epub_identity_is_consistent_across_normal_and_cover_runs`.
     assert_eq!(
         observer
@@ -865,14 +863,12 @@ fn run_retains_partial_facts_and_continues_after_document_failure() {
     assert!(output.conversion().is_none());
     assert!(output.gif_routing().is_none());
     assert_eq!(outcome.failed_documents(), NonZeroUsize::new(1));
-    // Deliberate departure from ADR-0016's "assertions unchanged", as in
-    // `cover_only_run_skips_requested_docx_and_diagnoses_it`: this test used to
-    // assert that `failing_1.png`, `failing_2.png` and `succeeding.png` existed,
-    // and that the error contained "Failed to create output directory". Scripted
-    // extraction writes no files, and that wording belongs to the Image write
-    // pipeline. The run-level half stays — emitted images and documents with
-    // output above, and the error carrying the scripted cause below. Partial
-    // output on disk and the wording stay checked in place by
+    // Scripted extraction writes no files, and the "Failed to create output
+    // directory" wording belongs to the Image write pipeline, so neither is
+    // asserted here, as in `cover_only_run_skips_requested_docx_and_diagnoses_it`.
+    // The run-level half is — emitted images and documents with output above,
+    // and the error carrying the scripted cause below. Partial output on disk
+    // and the wording are checked in place by
     // `document_extraction::tests::failed_extraction_retains_document_extraction_facts`,
     // and a completed DOCX's output on disk by `tests/binary_smoke.rs`.
 

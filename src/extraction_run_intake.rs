@@ -158,7 +158,7 @@ pub struct Args {
     // consuming arguments, so `-f png,jpg book.docx` would swallow the document path
     // as a format token and the run would fall back to the current directory.
     // Repeating the flag still accumulates, because `Vec` fields append by default.
-    // Every token must name a format: a filter that ignored a typo used to widen the
+    // Every token must name a format: a filter that ignored a typo would widen the
     // run to every format when nothing else was recognized. See ADR-0027.
     #[arg(
         short,
@@ -203,8 +203,8 @@ pub struct Args {
     pub(crate) lossless: bool,
 
     /// Extract only GIF files (skip all other image formats)
-    // `--formats` conflicts rather than being overridden: `-g -f png` used to drop the
-    // format list without a word and run GIF-only, which wrote nothing. `-f gif` says
+    // `--formats` conflicts rather than being overridden: `-g -f png` would drop the
+    // format list without a word and run GIF-only, which writes nothing. `-f gif` says
     // the same thing as `-g`, so refusing the pair loses no run worth asking for.
     // See ADR-0033.
     #[arg(short = 'g', long, conflicts_with_all = ["convert", "formats"])]
@@ -332,7 +332,7 @@ pub(crate) fn prepare(
     let allowed_formats = select_allowed_formats(formats, gif_only);
     // A run that seeks no covers carries no cover policy: the absence is the
     // request for normal images, so there is no value to hand a document kind
-    // that has no covers. See ADR-0010.
+    // that has no covers.
     let epub_cover_policy = match (cover_only, cover_fallback) {
         (false, _) => None,
         (true, false) => Some(EpubCoverPolicy::CoverOnly),

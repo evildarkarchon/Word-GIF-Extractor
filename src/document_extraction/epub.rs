@@ -33,16 +33,19 @@ pub(super) fn extract(
     pipeline: &ImageWritePipeline,
 ) -> ImageWriteOutcome {
     let (input_path, placement, retained_declarations) = document.into_extraction_parts();
-    // ADR-0008 leaves this reacquisition on the real file reader: extraction opens
-    // the archive for payloads under ADR-0001 regardless, so a substitute buys nothing.
+    // This reacquisition stays on the real file reader rather than a substitutable
+    // declaration source: extraction opens the archive for its payloads regardless,
+    // so a substitute would isolate nothing.
     let declarations = EpubDeclarations::retained_or_acquire(
         retained_declarations,
         &input_path,
         &EpubFileDeclarations,
     )
     .map_err(anyhow::Error::new)?;
-    // ADR-0001 keeps payload acquisition on an independent direct ZIP handle,
-    // even when declaration facts were retained earlier by Document selection.
+    // Payloads are read through an independent direct ZIP handle, even when
+    // declaration facts were retained earlier by Document selection: `EpubDoc`
+    // buffers each resource whole, while this handle lets Archive image discovery
+    // inspect bounded evidence and fully load only accepted resources.
     EpubResourceArchive::open(
         &input_path,
         declarations.resources(),

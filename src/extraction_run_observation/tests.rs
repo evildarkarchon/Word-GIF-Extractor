@@ -375,7 +375,7 @@ fn seeded_rejected_inputs_survive_every_finish_and_classify_as_an_error() {
 
 /// Verifies a run with neither a failure nor a rejection reports no error.
 ///
-/// Finding nothing is an answer, not a failure (ADR-0014), whichever empty
+/// Finding nothing is an answer, not a failure, whichever empty
 /// outcome says so.
 #[test]
 fn outcomes_without_failures_or_rejections_report_no_error() {

@@ -15,9 +15,7 @@ use image::codecs::gif::GifDecoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::webp::WebPEncoder;
-use image::{
-    AnimationDecoder, DynamicImage, ImageDecoder, ImageError, Limits, Rgb, RgbImage, Rgba,
-};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageError, Limits, RgbImage};
 use std::fmt;
 use std::io::Cursor;
 
@@ -347,26 +345,35 @@ fn is_animated_gif(data: &[u8]) -> bool {
 /// Composites an RGBA image onto a white background, producing an RGB image.
 ///
 /// For each pixel, blends the source color against white (255, 255, 255)
-/// using the alpha channel value. Fully transparent pixels become white.
+/// using the alpha channel value, rounding each channel to the nearest level.
+/// Fully transparent pixels become white and opaque pixels keep their color.
 fn composite_on_white(img: &DynamicImage) -> DynamicImage {
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
     let mut rgb = RgbImage::new(width, height);
 
-    for (x, y, pixel) in rgba.enumerate_pixels() {
-        let Rgba([r, g, b, a]) = *pixel;
-        let alpha = a as f32 / 255.0;
-        let inv_alpha = 1.0 - alpha;
-
-        // Blend against white (255, 255, 255)
-        let out_r = (r as f32 * alpha + 255.0 * inv_alpha) as u8;
-        let out_g = (g as f32 * alpha + 255.0 * inv_alpha) as u8;
-        let out_b = (b as f32 * alpha + 255.0 * inv_alpha) as u8;
-
-        rgb.put_pixel(x, y, Rgb([out_r, out_g, out_b]));
+    // Walks both raw buffers in step rather than through `put_pixel`, which
+    // bounds-checks every coordinate. Both buffers hold exactly `width * height`
+    // pixels, so neither has a remainder to ignore.
+    let (out_pixels, _) = rgb.as_chunks_mut::<3>();
+    let (source_pixels, _) = rgba.as_chunks::<4>();
+    for (out, &[r, g, b, a]) in out_pixels.iter_mut().zip(source_pixels) {
+        let alpha = u16::from(a);
+        *out = [r, g, b].map(|channel| blend_on_white(u16::from(channel), alpha));
     }
 
     DynamicImage::ImageRgb8(rgb)
+}
+
+/// Blends one channel value over white at `alpha`, rounded to the nearest level.
+///
+/// Integer arithmetic keeps the result exact: the `+ 127` turns the division's
+/// floor into rounding, and no tie can occur because the true blend is a whole
+/// number divided by 255, which never ends in exactly one half. The numerator is
+/// at most `255 * 255 + 127`, so it fits in a `u16`, and the quotient is at most
+/// 255, so the narrowing cast cannot truncate.
+fn blend_on_white(channel: u16, alpha: u16) -> u8 {
+    ((channel * alpha + 255 * (255 - alpha) + 127) / 255) as u8
 }
 
 /// Encodes a DynamicImage as JPEG with the specified quality.

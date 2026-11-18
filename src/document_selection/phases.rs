@@ -16,8 +16,8 @@
 //! It defines no observation types; the Extraction run observation module owns
 //! every type a fact is carried in. It does name each fact it emits, one method
 //! per fact rather than one method taking any observation, so that a
-//! non-diagnostic cannot reach the stream from here (ADR-0009, superseding ADR-0004's deliberate ignorance of which
-//! diagnostic was being emitted). Each EPUB phase writes its declaration
+//! non-diagnostic cannot reach the stream from here and no caller can state the
+//! wrong declaration purpose. Each EPUB phase writes its declaration
 //! purpose as a literal at its single emission site. The tests that pin each
 //! phase's purpose keep that literal right, not the type system (ADR-0024).
 
@@ -85,7 +85,7 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// Eligibility is decided after discovery has closed and before filtering
     /// opens, so like the two facts around it this one belongs to no phase. It is
     /// the only diagnostic in this module that reports a decision
-    /// rather than a failure to observe; see ADR-0011.
+    /// rather than a failure to observe (ADR-0033).
     pub(super) fn skipped_non_epub_input(&mut self, path: PathBuf) {
         self.observer
             .on_observation(ExtractionRunObservation::SkippedNonEpubInput { path });
@@ -108,7 +108,7 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// normally returning body always emits one initial and one final
     /// observation; panic unwinding intentionally emits no synthetic final
     /// observation. The body takes a progress reporter rather than items because
-    /// discovery has no known total (ADR-0012, kept by ADR-0024).
+    /// discovery has no known total (ADR-0024).
     pub(super) fn discovering<R>(
         &mut self,
         scope: DocumentDiscoveryScope,
@@ -148,7 +148,8 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     ///
     /// Every EPUB's declarations are acquired from `declarations`, and the EPUB is kept
     /// only when its Document identity matches the filter terms. A kept EPUB retains
-    /// the declarations it was matched with, for deduplication to reuse (ADR-0002).
+    /// the declarations it was matched with, so deduplication reuses them rather
+    /// than parsing the EPUB again.
     /// `filter` is taken raw rather than as terms, because the running observation
     /// reports the user's spelling, not the case-folded terms.
     ///
@@ -226,8 +227,8 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
     /// emits nothing. It runs under `keep_duplicates` too, because it is where an EPUB
     /// no filter read gets the declarations its Document identity is built from.
     /// Declarations retained by filtering are reused, and only an EPUB without them is
-    /// acquired from `declarations` (ADR-0002); an EPUB whose declarations cannot be
-    /// read has no key and is kept.
+    /// acquired from `declarations`, so no EPUB is parsed twice; an EPUB whose
+    /// declarations cannot be read has no key and is kept.
     ///
     /// An active phase emits one initial running observation, one running observation
     /// after each EPUB, and one finished observation. An EPUB's unreadable-declarations
@@ -266,8 +267,8 @@ impl<'observer> DocumentSelectionLifecycle<'observer> {
             },
         ) in epubs.into_iter().enumerate()
         {
-            // ADR-0002: declarations retained by filtering are authoritative for the
-            // run, so deduplication asks the source only when it has none. From here
+            // Declarations retained by filtering are authoritative for the run, so
+            // deduplication asks the source only when it has none. From here
             // on, `None` means selection could not read the declarations.
             let epub_declarations =
                 match EpubDeclarations::retained_or_acquire(epub_declarations, &path, declarations)
