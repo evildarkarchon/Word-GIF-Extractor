@@ -1,7 +1,7 @@
 [package]
+edition = "2024"
 name = "word-image-extractor"
 version = "0.3.0"
-edition = "2024"
 # The oldest compiler that builds every target, checked by the `msrv` CI job.
 # Edition 2024 needs 1.85 and let-chains need 1.88; `zip` 9.6 and `image`
 # 0.25.10 also declare 1.88. Raise it when a dependency upgrade does.
@@ -13,27 +13,30 @@ rust-version = "1.88"
 # PPMd, xz, zstd and `time`. The major version and features match what `epub`
 # asks of `zip`, so the two resolve to one copy and each EPUB's central
 # directory is parsed by one implementation.
-zip = { version = "9.6.0", default-features = false, features = ["deflate"] }
-clap = { version = "4.5.4", features = ["derive"] }
 anyhow = "1.0.82"
-walkdir = "2.5.0"
+clap = {version = "4.6.8", features = ["derive"]}
 epub = "2.1.4"
-percent-encoding = "2.3"
+image = {version = "0.25", default-features = false, features = [
+  "jpeg",
+  "png",
+  "gif",
+  "bmp",
+  "tiff",
+  "webp",
+  "ico",
+]}
 indicatif = "0.18.3"
-image = { version = "0.25", default-features = false, features = [
-    "jpeg",
-    "png",
-    "gif",
-    "bmp",
-    "tiff",
-    "webp",
-    "ico",
-] }
+percent-encoding = "2.3"
+walkdir = "2.5.0"
 webp = "0.3"
+zip = {version = "9.6.0", default-features = false, features = ["deflate"]}
 
 [profile.release]
-opt-level = 3
-lto = true
 codegen-units = 1
-strip = true
+lto = true
+opt-level = 3
 panic = "abort"
+strip = true
+
+[lints.rust]
+unreachable_pub = "warn"
