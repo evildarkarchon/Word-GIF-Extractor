@@ -417,7 +417,7 @@ thumb_2.png      <span class="note">← the document's only image</span></pre>
   <article class="finding med" id="M6">
     <header><span class="id">M6</span><h3>Accepted entries are buffered whole with no size limit</h3></header>
     <div class="meta">
-      <span class="badge med">Medium</span><span class="badge ok">Output reproduced</span><span class="badge plain">Memory: from code</span>
+      <span class="badge med">Medium</span><span class="badge fixed">Fixed · <a href="https://github.com/evildarkarchon/Word-GIF-Extractor/pull/118">PR #118</a></span><span class="badge ok">Output reproduced</span><span class="badge plain">Memory: from code</span>
       <code>src/image_write_pipeline/discovery.rs:241</code>
     </div>
     <p>Identification is bounded to 1,027 bytes, but an accepted entry is then read to the end into a <code>Vec</code> before anything is written, and conversion decodes a second copy. Nothing checks the entry's declared or actual size. A 522 KB document built for this audit inflated to a 512 MiB output file:</p>
@@ -427,6 +427,7 @@ $ word-image-extractor fixtures/big/big.docx -o out/big ; ls -l out/big
     <p>For a local tool run on one's own library this is a robustness concern more than a security one, but a batch over downloaded books is exactly where a malformed archive turns up, and with <code>panic = "abort"</code> an allocation failure ends the whole run.</p>
     <h4>Recommendation</h4>
     <p>Set a per-entry ceiling (configurable, generous by default) and turn an oversize entry into a Document extraction warning. When no conversion is requested, stream the remainder of the reader into the reserved file instead of buffering; the naming lookahead only needs to hold back the first image.</p>
+  <p class="impl"><strong>Implementation:</strong> Both recommendations are in, and ADR-0030 records the decision. It amends ADR-0022, which stays binding. Every archive image source is held to an Image size limit, 256 MiB unless <code>--max-image-size</code> sets another. The flag takes a byte count or a <code>K</code>, <code>M</code> or <code>G</code> binary suffix, and rejects zero, decimal units such as <code>MB</code> and overflow at parse time. The limit is checked against the bytes read, never the size the ZIP header declares. An entry past it writes nothing and warns <code>Skipping &lt;entry&gt;: larger than the 256 MiB image size limit (raise it with --max-image-size)</code>. An oversize EPUB cover writes no cover, so the next candidate is tried. One difference from the recommendation: streaming covers every image whose bytes are kept, not only runs without conversion. That includes a routed GIF, a source already in the conversion target, and a format that cannot be converted, such as EMF, WMF or SVG. The conversion policy now answers those cases from the format before anything is decoded. Images that are converted, and each document's first image, which the naming lookahead holds back, are still buffered, up to the limit, with growth capped so the buffer never doubles past it. A streamed image that arrives while the first is held back is written before it. If the arrival's source runs short, its partial file is removed and the first image keeps the singular name. Measured on Windows with this audit's 512 MiB fixture, peak working set fell from 1,030 MiB to 262 MiB when the entry is a document's only image, now skipped with a warning, and to 5.3 MiB when it follows another image and is written. Unit tests cover the limit's spelling, both ways of consuming a payload, the arrival-first order, and a streamed file filling while its source is still being read. Mutations that buffer the stream or write the held-back image first each fail them. <code>tests/image_size_limit_cli.rs</code> runs an oversize second image and two 1.5 MB images through a real ZIP. The README gains an <em>Image Size Limit</em> section, and the glossary gains Image size limit.</p>
   </article>
 
   <article class="finding med" id="M7">
@@ -657,7 +658,7 @@ Warning: Conversion failed for word/media/image2.png: WebP encoder creation fail
       <ul>
         <li><a href="#L10">L10</a> realistic fixture corpus, with a regression test for each reproduced finding</li>
         <li><a href="#M9">M9</a> CI on Windows and Linux</li>
-        <li><a href="#M6">M6</a> entry size ceiling and streaming writes</li>
+        <li><a href="#M6">M6</a> entry size ceiling and streaming writes <span class="badge fixed">Fixed</span></li>
         <li><a href="#M8">M8</a> step 2: <code>zip</code> upgrade <span class="badge fixed">Fixed</span></li>
         <li><a href="#M8">M8</a> step 3: replace <code>epub</code> (ADR-0001)</li>
       </ul>

@@ -2,9 +2,9 @@
 //!
 //! Intake owns the command-line argument structure it consumes. That keeps the
 //! module graph acyclic — nothing here reaches back up to the crate root, which in
-//! turn reaches back down for the module tree — and it keeps the fifteen flags
+//! turn reaches back down for the module tree — and it keeps the sixteen flags
 //! defined in exactly one place. `clap` in the library interface is the accepted
-//! cost of that: the alternative is a fifteen-field parallel structure with a
+//! cost of that: the alternative is a sixteen-field parallel structure with a
 //! mapping to keep in sync.
 
 use std::collections::HashSet;
@@ -24,6 +24,7 @@ use crate::document_extraction::EpubCoverPolicy;
 use crate::document_selection::EpubFilter;
 use crate::extraction_run::ExtractionRunRequest;
 use crate::image_format::ImageFormat;
+use crate::image_size_limit::ImageSizeLimit;
 use crate::image_write_pipeline::ImageWritePolicy;
 
 /// Conversion target spelling accepted by the CLI adapter.
@@ -208,6 +209,15 @@ pub struct Args {
     /// Separate output directory for GIF files
     #[arg(short = 'G', long)]
     pub(crate) gif_output: Option<PathBuf>,
+
+    /// Skip any image larger than SIZE, with a warning (bytes, or K, M, G binary suffix)
+    // The default is the type's own spelling of its default, which a test pins to
+    // parse to that value, so `--help` and the policy cannot disagree. Parsing goes
+    // through the type's `FromStr`, so a zero, a decimal unit such as `MB` or an
+    // overflow is a usage error before anything runs, as ADR-0027 does for format
+    // names.
+    #[arg(long, value_name = "SIZE", default_value = ImageSizeLimit::DEFAULT_SPELLING)]
+    pub(crate) max_image_size: ImageSizeLimit,
 }
 
 /// Failure while turning parsed user options into a ready Extraction run.
@@ -292,6 +302,7 @@ pub fn prepare(
         lossless,
         gif_only,
         gif_output,
+        max_image_size,
     } = args;
 
     let conversion = convert
@@ -324,10 +335,11 @@ pub fn prepare(
         (true, true) => Some(EpubCoverPolicy::CoverThenNormalImages),
     };
 
-    // Intake selects all three Image write policy ingredients, so it assembles the
+    // Intake selects all four Image write policy ingredients, so it assembles the
     // policy here and hands the finished value over. The request keeps it as a
     // value; the Extraction run builds the Image write pipeline from it.
-    let image_write_policy = ImageWritePolicy::new(allowed_formats, conversion, gif_output);
+    let image_write_policy = ImageWritePolicy::new(allowed_formats, conversion, gif_output)
+        .with_image_size_limit(max_image_size);
 
     let request = ExtractionRunRequest::new(
         all_inputs,

@@ -101,7 +101,7 @@ The project policy for turning parsed user options into one ready-to-run extract
 _Avoid_: Argument normalization, options builder
 
 **Image write pipeline**:
-The project policy for turning buffered archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, the Emitted image tally, and special GIF routing. A conversion that cannot produce the requested bytes falls back the same way whatever the Image write purpose: the original bytes are emitted under their original Image format, as a conversion-skipped image.
+The project policy for turning archive image sources into files on disk, including Archive image discovery, output naming, conversion outcomes, warning facts, the Emitted image tally, and special GIF routing. A conversion that cannot produce the requested bytes falls back the same way whatever the Image write purpose: the original bytes are emitted under their original Image format, as a conversion-skipped image.
 _Avoid_: Save helper, output utility
 
 **Image file emission**:
@@ -109,8 +109,12 @@ The responsibility within the Image write pipeline for naming, placing and compl
 _Avoid_: Atomic image emission, output writer, naming helper
 
 **Image write policy**:
-The valid per-run choices that govern how the Image write pipeline accepts and emits images, including requested Image formats, an optional Conversion policy, and GIF destination.
+The valid per-run choices that govern how the Image write pipeline accepts and emits images, including requested Image formats, an optional Conversion policy, GIF destination, and the Image size limit.
 _Avoid_: Extraction config, writer options
+
+**Image size limit**:
+The per-run ceiling on how many bytes one archive image source may hold, 256 MiB unless the run sets another. It is checked against the bytes actually read, never against the size an archive declares. A source that runs past it is a Document extraction warning and writes nothing, and a required EPUB cover that runs past it writes no cover, so EPUB cover extraction moves on to the next candidate. It bounds the payload read, not what conversion decodes from it.
+_Avoid_: Max entry size, size cap, file size limit
 
 **Image write purpose**:
 The role an archive image source is created with in the Image write pipeline: a normal image or a required EPUB cover. Every source in one set shares it. Apart from deciding which side of the Emitted image tally an image is entered under, it changes behaviour only in Archive image discovery — what an unidentified Image format means, and whether a filtered one warns — and never conversion or Image file emission.
@@ -133,7 +137,7 @@ One declared manifest resource considered for cover use by EPUB cover extraction
 _Avoid_: Cover match, cover entry, candidate path
 
 **Archive image discovery**:
-The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including Image format identification, requested format filtering, and non-fatal acquisition or fallback warning facts.
+The per-resource policy within the Image write pipeline for acquiring archive sources and deciding which may be emitted, including Image format identification, requested format filtering, enforcing the Image size limit on every payload it hands on, whether that payload is buffered or streamed to its file, and non-fatal acquisition, size-limit or fallback warning facts.
 _Avoid_: Candidate normalization, resource filter
 
 **Archive resource identity**:

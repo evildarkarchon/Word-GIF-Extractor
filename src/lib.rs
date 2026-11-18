@@ -25,7 +25,7 @@
 //!
 //! [`Args`] is re-exported from Extraction run intake rather than defined here. Intake
 //! owns the type it takes as input, so no production module imports the crate root and
-//! the fifteen flags are declared once. Its fields are crate-visible: outside the crate
+//! the sixteen flags are declared once. Its fields are crate-visible: outside the crate
 //! it can only be parsed and handed to [`run_cli`].
 //!
 //! Nothing here should be widened to let a test reach in — in-crate tests stay in-crate
@@ -46,6 +46,7 @@ mod extraction_run_intake;
 mod extraction_run_observation;
 mod extraction_run_presentation;
 mod image_format;
+mod image_size_limit;
 mod image_write_pipeline;
 mod office_package;
 mod output_placement;

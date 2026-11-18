@@ -175,12 +175,8 @@ impl ConversionPolicy {
     /// Unsupported sources are returned as a normal outcome. Decoder or encoder
     /// failures are returned as errors for the Image write pipeline to interpret.
     pub fn convert(&self, data: &[u8], source_format: ImageFormat) -> Result<ConversionOutcome> {
-        if source_format == self.target_format() && self.preserves_matching_source() {
-            return Ok(ConversionOutcome::PreservedMatchingSource);
-        }
-
-        if !source_format.can_convert() {
-            return Ok(ConversionOutcome::UnsupportedSource(source_format));
+        if let Some(outcome) = self.outcome_without_decoding(source_format) {
+            return Ok(outcome);
         }
 
         let (format, quality, lossless) = match self.mode {
@@ -197,6 +193,32 @@ impl ConversionPolicy {
             )),
             None => Ok(ConversionOutcome::UnsupportedSource(source_format)),
         }
+    }
+
+    /// Decides from the source Image format alone whether this policy keeps the
+    /// original bytes, before any byte is decoded.
+    ///
+    /// Returns [`ConversionOutcome::PreservedMatchingSource`] for a source that
+    /// already matches the target and should be preserved, and
+    /// [`ConversionOutcome::UnsupportedSource`] for a format no decoder takes, in
+    /// that order of precedence. Returns `None` when the outcome depends on the
+    /// bytes, which is the only case [`Self::convert`] decodes. Never returns
+    /// [`ConversionOutcome::Converted`]. The Image write pipeline asks this first
+    /// so that an image whose bytes are kept can be streamed rather than buffered
+    /// (ADR-0030); `convert` asks it too, so the two cannot disagree.
+    pub fn outcome_without_decoding(
+        &self,
+        source_format: ImageFormat,
+    ) -> Option<ConversionOutcome> {
+        if source_format == self.target_format() && self.preserves_matching_source() {
+            return Some(ConversionOutcome::PreservedMatchingSource);
+        }
+
+        if !source_format.can_convert() {
+            return Some(ConversionOutcome::UnsupportedSource(source_format));
+        }
+
+        None
     }
 
     /// Returns the canonical Image format produced by this policy.

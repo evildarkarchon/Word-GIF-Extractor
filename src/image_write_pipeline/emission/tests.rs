@@ -1,10 +1,14 @@
 //! Tests for collision-safe Image file emission.
 
+use std::io::{Cursor, Read};
+
 use super::*;
 use crate::emitted_image_tally::EmittedImageTally;
 use crate::image_format::ImageFormat;
-use crate::image_write_pipeline::{ImageWriteResult, normal_image_recorder};
-use crate::test_support::{MINIMAL_PNG, temp_test_dir};
+use crate::image_size_limit::ImageSizeLimit;
+use crate::image_write_pipeline::discovery::{ArchiveImageDiscoveryOutcome, identify_image};
+use crate::image_write_pipeline::{ArchiveImageSource, ImageWriteResult, normal_image_recorder};
+use crate::test_support::{FailAfterReader, MINIMAL_PNG, file_names_in, temp_test_dir};
 
 /// Builds one prepared image by hand, as preparation would have handed it over.
 fn prepared<'policy>(
@@ -363,7 +367,7 @@ fn write_failure_removes_the_reserved_partial_file() {
         .open(&output_path)
         .expect("test output should be reservable");
 
-    let result = complete_reserved_file(&output_path, file, |mut file| {
+    let result = complete_reserved_file::<()>(&output_path, file, |mut file| {
         file.write_all(b"partial")
             .expect("partial test bytes should be writable");
         Err(FileCompletionError::write(io::Error::other(
@@ -387,7 +391,7 @@ fn cleanup_failure_is_reported_with_the_original_write_failure() {
         .expect("test output should be reservable");
     let replacement_path = output_path.clone();
 
-    let error = complete_reserved_file(&output_path, file, move |mut file| {
+    let error = complete_reserved_file::<()>(&output_path, file, move |mut file| {
         file.write_all(b"partial")
             .expect("partial test bytes should be writable");
         drop(file);
@@ -406,4 +410,420 @@ fn cleanup_failure_is_reported_with_the_original_write_failure() {
     assert!(error_report.contains("injected write failure"));
     assert!(error_report.contains("failed to remove partial output file"));
     assert!(error_report.contains(&output_path.display().to_string()));
+}
+
+/// Returns a PNG-identified payload of `len` bytes whose tail varies with `seed`,
+/// so two payloads written under swapped names cannot compare equal by accident.
+fn png_payload(len: usize, seed: u8) -> Vec<u8> {
+    let mut payload = vec![0; len];
+    payload[..MINIMAL_PNG.len()].copy_from_slice(MINIMAL_PNG);
+    for (index, byte) in payload[MINIMAL_PNG.len()..].iter_mut().enumerate() {
+        *byte = ((index % 251) as u8).wrapping_add(seed);
+    }
+    payload
+}
+
+/// Identifies `reader` through Archive image discovery and returns it ready to stream.
+///
+/// The payload can only be built by discovery, so the test goes through it exactly
+/// as the normal-image visitor does, with `limit` as the Image size limit.
+fn streamed<'policy, 'reader>(
+    reader: &'reader mut dyn Read,
+    role: EmittedImageRole<'policy>,
+    limit: ImageSizeLimit,
+) -> StreamedImage<'policy, 'reader> {
+    let source = ArchiveImageSource::named("word/media/streamed.bin");
+    let discovered = identify_image(&source, reader, &ImageFormat::all_set(), limit);
+    let ArchiveImageDiscoveryOutcome::Accepted(pending) = discovered.outcome else {
+        panic!("a streamed test source should be accepted");
+    };
+    StreamedImage {
+        payload: pending.payload,
+        format: pending.format,
+        role,
+    }
+}
+
+/// Records the largest size `watched` reached on disk while this reader still had
+/// bytes left to give.
+///
+/// A streamed file grows while its source is still being read; a buffered one would
+/// only appear once the source was finished. Watching from inside the reader is what
+/// tells the two apart. The final end-of-file read is not watched, because by then
+/// every byte has been handed over and both strategies would show a whole file.
+struct DiskWatchingReader {
+    cursor: Cursor<Vec<u8>>,
+    watched: PathBuf,
+    largest_seen: u64,
+}
+
+impl Read for DiskWatchingReader {
+    /// Notes the watched file's current size before a read that still returns bytes.
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let unread = self.cursor.position() < self.cursor.get_ref().len() as u64;
+        if unread && let Ok(metadata) = fs::metadata(&self.watched) {
+            self.largest_seen = self.largest_seen.max(metadata.len());
+        }
+        self.cursor.read(buffer)
+    }
+}
+
+/// Verifies a lone streamed image is buffered, held back, and named singularly.
+#[test]
+fn lone_streamed_image_is_held_back_and_written_under_the_base_name() {
+    let temp_dir = temp_test_dir("emission", "lone-streamed");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let payload = png_payload(150_000, 1);
+    let mut reader = Cursor::new(payload.clone());
+    let mut recorded = Vec::new();
+
+    let mut emission = ImageFileEmission::new(&placement);
+    let staged = emission
+        .stage_streamed(
+            streamed(
+                &mut reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |role| recorded.push(role),
+        )
+        .expect("staging a first streamed image should hold it back");
+    assert!(matches!(staged, StreamStaging::Staged));
+    assert!(recorded.is_empty());
+    assert!(!temp_dir.exists());
+
+    emission
+        .finish(|role| recorded.push(role))
+        .expect("finishing should write the held-back image");
+
+    assert!(matches!(recorded[..], [EmittedImageRole::Preserved]));
+    assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), payload);
+    assert_eq!(file_names_in(&temp_dir), ["sample.png"]);
+}
+
+/// Verifies streamed images are numbered in arrival order with every byte intact.
+///
+/// The second arrival is written before the held-back first one, so the ordinals,
+/// not the completion order, are what put each payload under its own name.
+#[test]
+fn streamed_images_are_numbered_in_arrival_order_byte_for_byte() {
+    let temp_dir = temp_test_dir("emission", "streamed-numbering");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let payloads = [
+        png_payload(2_000, 1),
+        png_payload(150_000, 2),
+        png_payload(150_000, 3),
+    ];
+    let mut tally = EmittedImageTally::default();
+    let mut record = normal_image_recorder(&mut tally);
+
+    let mut emission = ImageFileEmission::new(&placement);
+    for payload in &payloads {
+        let mut reader = Cursor::new(payload.clone());
+        let staged = emission
+            .stage_streamed(
+                streamed(
+                    &mut reader,
+                    EmittedImageRole::Preserved,
+                    ImageSizeLimit::DEFAULT,
+                ),
+                &mut record,
+            )
+            .expect("a readable streamed image should stage");
+        assert!(matches!(staged, StreamStaging::Staged));
+    }
+    emission
+        .finish(record)
+        .expect("finishing after numbering should write nothing more");
+
+    assert_eq!(tally.emitted(), 3);
+    for (ordinal, payload) in payloads.iter().enumerate() {
+        let name = format!("sample_{}.png", ordinal + 1);
+        assert_eq!(&fs::read(temp_dir.join(&name)).unwrap(), payload, "{name}");
+    }
+    assert_eq!(
+        file_names_in(&temp_dir),
+        ["sample_1.png", "sample_2.png", "sample_3.png"]
+    );
+}
+
+/// Verifies a streamed image's file fills while its source is still being read.
+#[test]
+fn streamed_image_is_written_while_its_source_is_still_being_read() {
+    let temp_dir = temp_test_dir("emission", "streamed-while-reading");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let second = png_payload(300_000, 2);
+    let mut first_reader = Cursor::new(png_payload(2_000, 1));
+    let mut second_reader = DiskWatchingReader {
+        cursor: Cursor::new(second.clone()),
+        watched: temp_dir.join("sample_2.png"),
+        largest_seen: 0,
+    };
+
+    let mut emission = ImageFileEmission::new(&placement);
+    emission
+        .stage_streamed(
+            streamed(
+                &mut first_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |_| {},
+        )
+        .expect("the first image should be held back");
+    emission
+        .stage_streamed(
+            streamed(
+                &mut second_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |_| {},
+        )
+        .expect("the second image should stream");
+
+    assert!(
+        second_reader.largest_seen > 0,
+        "the second file should have held bytes before its source was finished"
+    );
+    assert!(second_reader.largest_seen < second.len() as u64);
+    assert_eq!(fs::read(temp_dir.join("sample_2.png")).unwrap(), second);
+}
+
+/// Verifies a second image whose source fails partway leaves the first singular.
+///
+/// The arrival's file is claimed and partly written before the read fails, so this
+/// pins both halves of ADR-0030's order: the partial file is removed, and the
+/// held-back image was never committed to a numbered name.
+#[test]
+fn streamed_second_image_failing_to_read_leaves_the_first_singular() {
+    let temp_dir = temp_test_dir("emission", "streamed-second-unreadable");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let first = png_payload(2_000, 1);
+    let mut first_reader = Cursor::new(first.clone());
+    let mut failing_reader = FailAfterReader::new(png_payload(300_000, 2), 150_000);
+    let mut recorded = Vec::new();
+
+    let mut emission = ImageFileEmission::new(&placement);
+    emission
+        .stage_streamed(
+            streamed(
+                &mut first_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |role| recorded.push(role),
+        )
+        .expect("the first image should be held back");
+    let staged = emission
+        .stage_streamed(
+            streamed(
+                &mut failing_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |role| recorded.push(role),
+        )
+        .expect("a source that fails to read is a shortfall, not an error");
+    assert!(matches!(
+        staged,
+        StreamStaging::SourceFellShort(PayloadShortfall::Unreadable(_))
+    ));
+    assert!(recorded.is_empty());
+    assert!(!temp_dir.join("sample_2.png").exists());
+
+    emission
+        .finish(|role| recorded.push(role))
+        .expect("finishing should write the still-held-back image");
+
+    assert!(matches!(recorded[..], [EmittedImageRole::Preserved]));
+    assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), first);
+    assert_eq!(file_names_in(&temp_dir), ["sample.png"]);
+}
+
+/// Verifies a second image past the Image size limit leaves the first singular.
+#[test]
+fn streamed_second_image_past_the_limit_leaves_the_first_singular() {
+    let temp_dir = temp_test_dir("emission", "streamed-second-oversize");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let limit: ImageSizeLimit = "100K".parse().expect("test limit should parse");
+    let first = png_payload(2_000, 1);
+    let mut first_reader = Cursor::new(first.clone());
+    let mut oversize_reader = Cursor::new(png_payload(300_000, 2));
+
+    let mut emission = ImageFileEmission::new(&placement);
+    emission
+        .stage_streamed(
+            streamed(&mut first_reader, EmittedImageRole::Preserved, limit),
+            |_| {},
+        )
+        .expect("the first image should be held back");
+    let staged = emission
+        .stage_streamed(
+            streamed(&mut oversize_reader, EmittedImageRole::Preserved, limit),
+            |_| {},
+        )
+        .expect("a source past the limit is a shortfall, not an error");
+    assert!(matches!(
+        staged,
+        StreamStaging::SourceFellShort(PayloadShortfall::ExceedsLimit(seen)) if seen == limit
+    ));
+    emission
+        .finish(|_| {})
+        .expect("finishing should write the still-held-back image");
+
+    assert_eq!(fs::read(temp_dir.join("sample.png")).unwrap(), first);
+    assert_eq!(file_names_in(&temp_dir), ["sample.png"]);
+}
+
+/// Verifies a streamed source that runs short once numbering began uses no ordinal.
+#[test]
+fn streamed_source_running_short_while_numbering_leaves_no_gap() {
+    let temp_dir = temp_test_dir("emission", "streamed-no-gap");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let first = png_payload(2_000, 1);
+    let second = png_payload(150_000, 2);
+    let fourth = png_payload(150_000, 4);
+    let mut tally = EmittedImageTally::default();
+    let mut record = normal_image_recorder(&mut tally);
+
+    let mut emission = ImageFileEmission::new(&placement);
+    for payload in [&first, &second] {
+        let mut reader = Cursor::new(payload.clone());
+        emission
+            .stage_streamed(
+                streamed(
+                    &mut reader,
+                    EmittedImageRole::Preserved,
+                    ImageSizeLimit::DEFAULT,
+                ),
+                &mut record,
+            )
+            .expect("a readable streamed image should stage");
+    }
+    let mut failing_reader = FailAfterReader::new(png_payload(300_000, 3), 150_000);
+    let staged = emission
+        .stage_streamed(
+            streamed(
+                &mut failing_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            &mut record,
+        )
+        .expect("a source that fails to read is a shortfall, not an error");
+    assert!(matches!(staged, StreamStaging::SourceFellShort(_)));
+    let mut fourth_reader = Cursor::new(fourth.clone());
+    emission
+        .stage_streamed(
+            streamed(
+                &mut fourth_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            &mut record,
+        )
+        .expect("a readable streamed image should stage");
+    emission.finish(record).expect("finishing should succeed");
+
+    assert_eq!(tally.emitted(), 3);
+    assert_eq!(fs::read(temp_dir.join("sample_3.png")).unwrap(), fourth);
+    assert_eq!(
+        file_names_in(&temp_dir),
+        ["sample_1.png", "sample_2.png", "sample_3.png"]
+    );
+}
+
+/// Verifies a streamed arrival failing on output still leaves the held-back image written.
+///
+/// The streamed counterpart of the prepared-image test above: the arrival is a
+/// routed GIF whose destination is occupied by a regular file, so creating it fails.
+/// Under ADR-0022's order the held-back image was written before the arrival failed,
+/// and the streamed order must leave the same file on disk, recorded.
+#[test]
+fn streamed_arrival_failing_on_output_still_writes_the_held_back_image() {
+    let temp_dir = temp_test_dir("emission", "streamed-arrival-fails");
+    let gif_dir = temp_dir.join("gifs");
+    let output_dir = temp_dir.join("images");
+    fs::create_dir_all(&temp_dir).expect("temporary directory should be creatable");
+    fs::write(&gif_dir, b"not a directory").expect("blocking file should be writable");
+    let placement = OutputPlacement::new(&output_dir, "sample");
+    let first = png_payload(2_000, 1);
+    let mut first_reader = Cursor::new(first.clone());
+    let mut gif_reader = Cursor::new(b"GIF89a streamed routed payload".to_vec());
+    let mut recorded = Vec::new();
+
+    let mut emission = ImageFileEmission::new(&placement);
+    emission
+        .stage_streamed(
+            streamed(
+                &mut first_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |role| recorded.push(role),
+        )
+        .expect("the first image should be held back");
+    let error = emission
+        .stage_streamed(
+            streamed(
+                &mut gif_reader,
+                EmittedImageRole::RoutedGif(&gif_dir),
+                ImageSizeLimit::DEFAULT,
+            ),
+            |role| recorded.push(role),
+        )
+        .expect_err("an arrival whose directory cannot be created should fail");
+
+    assert!(format!("{error:#}").contains("Failed to create output directory"));
+    assert!(matches!(recorded[..], [EmittedImageRole::Preserved]));
+    assert_eq!(fs::read(output_dir.join("sample_1.png")).unwrap(), first);
+}
+
+/// Verifies a streamed and a prepared image share one numbering, in arrival order.
+///
+/// The visitor stages converted images as prepared and kept ones as streamed, so a
+/// document mixing both must still number by position.
+#[test]
+fn streamed_and_prepared_images_share_one_numbering() {
+    let temp_dir = temp_test_dir("emission", "mixed-staging");
+    let placement = OutputPlacement::new(&temp_dir, "sample");
+    let first = png_payload(2_000, 1);
+    let converted = b"\xFF\xD8\xFF converted payload".to_vec();
+    let third = png_payload(150_000, 3);
+    let mut first_reader = Cursor::new(first.clone());
+    let mut third_reader = Cursor::new(third.clone());
+
+    let mut emission = ImageFileEmission::new(&placement);
+    emission
+        .stage_streamed(
+            streamed(
+                &mut first_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |_| {},
+        )
+        .expect("the first image should be held back");
+    emission
+        .stage(
+            prepared(&converted, ImageFormat::Jpg, EmittedImageRole::Converted),
+            |_| {},
+        )
+        .expect("a prepared second image should write both");
+    emission
+        .stage_streamed(
+            streamed(
+                &mut third_reader,
+                EmittedImageRole::Preserved,
+                ImageSizeLimit::DEFAULT,
+            ),
+            |_| {},
+        )
+        .expect("a streamed third image should write");
+    emission.finish(|_| {}).expect("finishing should succeed");
+
+    assert_eq!(fs::read(temp_dir.join("sample_1.png")).unwrap(), first);
+    assert_eq!(fs::read(temp_dir.join("sample_2.jpg")).unwrap(), converted);
+    assert_eq!(fs::read(temp_dir.join("sample_3.png")).unwrap(), third);
 }

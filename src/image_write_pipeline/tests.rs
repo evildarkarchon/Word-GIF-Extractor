@@ -1187,3 +1187,195 @@ fn cover_scope_fallback_emission_failure_keeps_earlier_cover_facts() {
     );
     assert_eq!(failure.partial.tally.emitted(), 0);
 }
+
+/// Parses a test's Image size limit from its command-line spelling.
+fn limit_of(text: &str) -> ImageSizeLimit {
+    text.parse().expect("test size limit should parse")
+}
+
+/// Returns a PNG-identified payload of `len` bytes whose tail varies with `seed`.
+fn png_of_len(len: usize, seed: u8) -> Vec<u8> {
+    let mut payload = vec![0; len];
+    payload[..MINIMAL_PNG.len()].copy_from_slice(MINIMAL_PNG);
+    for (index, byte) in payload[MINIMAL_PNG.len()..].iter_mut().enumerate() {
+        *byte = ((index % 251) as u8).wrapping_add(seed);
+    }
+    payload
+}
+
+/// Proves a normal image past the Image size limit warns and takes no place in the
+/// numbering, so the images around it are named as if it were absent.
+#[test]
+fn image_past_the_size_limit_warns_and_the_others_number_without_it() {
+    let temp_dir = temp_test_dir("pipeline", "size-limit-normal");
+    let pipeline = ImageWritePipeline::new(
+        ImageWritePolicy::new(ImageFormat::all_set(), None, None)
+            .with_image_size_limit(limit_of("4K")),
+    );
+    let first = png_of_len(2_000, 1);
+    let third = png_of_len(3_000, 3);
+
+    let result = write_sources(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        vec![
+            named_source(first.clone(), "word/media/image1.png"),
+            named_source(png_of_len(50_000, 2), "word/media/image2.png"),
+            named_source(third.clone(), "word/media/image3.png"),
+        ],
+    )
+    .expect("an oversize image should be a warning, not a failure");
+
+    assert_eq!(result.tally.emitted(), 2);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::ImageSizeLimitExceeded {
+            source_name: "word/media/image2.png".to_string(),
+            limit: limit_of("4K"),
+        }]
+    );
+    assert_eq!(fs::read(temp_dir.join("sample_1.png")).unwrap(), first);
+    assert_eq!(fs::read(temp_dir.join("sample_2.png")).unwrap(), third);
+    assert!(!temp_dir.join("sample_3.png").exists());
+}
+
+/// Proves an image that has to be converted is held to the limit before decoding,
+/// so it warns for its size and never reaches conversion.
+#[test]
+fn image_to_convert_past_the_size_limit_warns_before_conversion() {
+    let temp_dir = temp_test_dir("pipeline", "size-limit-convert");
+    let pipeline = ImageWritePipeline::new(
+        preparation_policy(Some(ConversionTarget::Jpg), None).with_image_size_limit(limit_of("4K")),
+    );
+
+    let result = write_sources(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        vec![named_source(png_of_len(50_000, 1), "word/media/image1.png")],
+    )
+    .expect("an oversize image should be a warning, not a failure");
+
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::ImageSizeLimitExceeded {
+            source_name: "word/media/image1.png".to_string(),
+            limit: limit_of("4K"),
+        }]
+    );
+    assert!(!temp_dir.exists());
+}
+
+/// Proves a streamed image that conversion would skip warns only for running short
+/// when its source fails, as it did when every source was read before preparing.
+///
+/// SVG cannot be converted, so preparation keeps its bytes and the visitor streams
+/// it; the skip warning has to wait until the source is known to be read through.
+#[test]
+fn streamed_conversion_skip_that_fails_to_read_warns_only_for_the_read() {
+    let temp_dir = temp_test_dir("pipeline", "streamed-skip-unreadable");
+    let pipeline = pipeline_converting(
+        HashSet::from([ImageFormat::Svg]),
+        ConversionTarget::Png,
+        None,
+    );
+    let mut svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\">".to_vec();
+    svg.resize(4_096, b' ');
+    let mut failing_source = FailAfterReader::new(svg, 2_000);
+
+    let result = pipeline
+        .write_from(&OutputPlacement::new(&temp_dir, "sample"), |visitor| {
+            visitor.visit(
+                ArchiveImageSource::named("word/media/image1.svg"),
+                &mut failing_source,
+            )
+        })
+        .expect("a source that fails to read is a warning, not a failure");
+
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::ArchiveImageAcquisitionFailed {
+            source_name: "word/media/image1.svg".to_string(),
+            detail: "injected archive resource failure".to_string(),
+        }]
+    );
+    assert!(!temp_dir.exists());
+}
+
+/// Proves a required cover past the Image size limit writes no cover, so EPUB cover
+/// extraction moves on to its next candidate exactly as after a read failure.
+#[test]
+fn required_cover_past_the_size_limit_permits_another_candidate() {
+    let temp_dir = temp_test_dir("pipeline", "size-limit-cover");
+    let pipeline = ImageWritePipeline::new(
+        ImageWritePolicy::new(ImageFormat::all_set(), None, None)
+            .with_image_size_limit(limit_of("4K")),
+    );
+    let mut reader = Cursor::new(png_of_len(50_000, 1));
+
+    let (has_written_cover, result) = attempt_required_cover(
+        &pipeline,
+        &OutputPlacement::new(&temp_dir, "sample"),
+        "OPS/cover.png",
+        "image/png",
+        &mut reader,
+    )
+    .expect("an oversize cover should be a typed outcome");
+
+    assert!(!has_written_cover);
+    assert_eq!(result.tally.emitted(), 0);
+    assert_eq!(
+        result.warnings,
+        vec![ImageWriteWarning::ImageSizeLimitExceeded {
+            source_name: "OPS/cover.png".to_string(),
+            limit: limit_of("4K"),
+        }]
+    );
+    assert!(!temp_dir.exists());
+}
+
+/// Proves every kept-bytes outcome is planned without decoding, which is what lets
+/// the visitor stream it, and that only a convertible mismatch needs the bytes.
+#[test]
+fn preparation_plan_needs_the_bytes_only_for_a_real_conversion() {
+    let gif_dir = PathBuf::from("gifs");
+    let unconfigured = preparation_policy(None, Some(gif_dir.clone()));
+    let converting = preparation_policy(Some(ConversionTarget::Png), Some(gif_dir));
+
+    assert!(matches!(
+        plan_preparation("a.png", ImageFormat::Png, &unconfigured),
+        PreparationPlan::Original {
+            role: EmittedImageRole::Preserved,
+            conversion_warning: None
+        }
+    ));
+    assert!(matches!(
+        plan_preparation("a.gif", ImageFormat::Gif, &converting),
+        PreparationPlan::Original {
+            role: EmittedImageRole::RoutedGif(_),
+            conversion_warning: None
+        }
+    ));
+    assert!(matches!(
+        plan_preparation("a.png", ImageFormat::Png, &converting),
+        PreparationPlan::Original {
+            role: EmittedImageRole::Preserved,
+            conversion_warning: None
+        }
+    ));
+    assert!(matches!(
+        plan_preparation("a.emf", ImageFormat::Emf, &converting),
+        PreparationPlan::Original {
+            role: EmittedImageRole::ConversionSkipped,
+            conversion_warning: Some(ImageWriteWarning::ConversionSkipped {
+                format: ImageFormat::Emf,
+                ..
+            })
+        }
+    ));
+    assert!(matches!(
+        plan_preparation("a.jpg", ImageFormat::Jpg, &converting),
+        PreparationPlan::Convert(_)
+    ));
+}
